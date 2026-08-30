@@ -36,6 +36,11 @@ from deerflow.subagents.capacity import (
     get_subagent_execution_capacity,
 )
 from deerflow.subagents.config import SubagentConfig, resolve_subagent_model_name
+from deerflow.subagents.report_contract import (
+    build_acceptance_criteria_system_note,
+    build_report_contract_section,
+    render_acceptance_criteria_block,
+)
 from deerflow.subagents.step_events import capture_new_step_messages
 from deerflow.subagents.token_collector import SubagentTokenCollector
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY
@@ -557,6 +562,7 @@ class SubagentExecutor:
         deerflow_trace_id: str | None = None,
         extensions: Any | None = None,
         execution_capacity: SubagentExecutionCapacity | None = None,
+        acceptance_criteria: list[str] | None = None,
     ):
         """Initialize the executor.
 
@@ -589,6 +595,12 @@ class SubagentExecutor:
                 Direct ``create_deerflow_agent`` callers pass one through their
                 ``SubagentRuntime``; application factories fall back to the
                 startup-configured process singleton.
+            acceptance_criteria: Optional lead-supplied completion requirements
+                (RFC #4651 PR3). Criterion values are model-supplied untrusted
+                data, so ``_build_initial_state`` appends them to the task
+                ``HumanMessage`` (the channel ``InputSanitizationMiddleware``
+                sanitizes and boundary-frames); the subagent's ``SystemMessage``
+                carries only the framework-owned pointer note.
         """
         self.config = config
         self.app_config = app_config
@@ -629,6 +641,9 @@ class SubagentExecutor:
         # generation underneath the delegated work.
         self.extensions = extensions
         self.execution_capacity = execution_capacity
+        # Raw lead-supplied criteria; stripping/capping happens at render time
+        # in report_contract.render_acceptance_criteria_block.
+        self.acceptance_criteria = acceptance_criteria
 
         self._base_tools = _filter_tools(
             tools,
@@ -945,6 +960,26 @@ class SubagentExecutor:
         system_parts: list[str] = []
         if self.config.system_prompt:
             system_parts.append(self.config.system_prompt)
+        # RFC #4651 PR3: every subagent — built-in or custom — gets the same
+        # report contract, so the citation / verifiable-handle requirements
+        # never depend on the config author remembering them. The citation
+        # clause only makes sense while receipts render, so it follows
+        # verification.receipts_enabled.
+        verification_cfg = getattr(resolved_app_config, "verification", None)
+        receipts_enabled = getattr(verification_cfg, "receipts_enabled", True)
+        system_parts.append(build_report_contract_section(receipts_enabled=receipts_enabled))
+        # Acceptance criteria are model-supplied (ultimately user-influenceable)
+        # data with the same provenance as the delegated prompt, so criterion
+        # values travel in the task HumanMessage — the channel
+        # InputSanitizationMiddleware escapes and boundary-frames as untrusted
+        # input. The SystemMessage carries only a framework-owned pointer that
+        # names the list's location and authority, never the criterion text: a
+        # natural-language injection inside a criterion ("ignore the report
+        # contract…") keeps task-data priority and cannot override framework
+        # instructions via the system channel.
+        criteria_block = render_acceptance_criteria_block(self.acceptance_criteria)
+        if criteria_block:
+            system_parts.append(build_acceptance_criteria_system_note(receipts_enabled=receipts_enabled))
         if skills:
             if skill_setup.skill_names:
                 skills_section = get_skill_index_prompt_section(
@@ -978,8 +1013,10 @@ class SubagentExecutor:
             self._assembled_system_prompt = "\n\n".join(system_parts)
             messages.append(SystemMessage(content=self._assembled_system_prompt))
 
-        # Then the actual task
-        messages.append(HumanMessage(content=task))
+        # Then the actual task, with any lead-supplied acceptance criteria
+        # appended as untrusted data (see the channel note above).
+        task_content = f"{task}\n\n{criteria_block}" if criteria_block else task
+        messages.append(HumanMessage(content=task_content))
 
         state: dict[str, Any] = {
             "messages": messages,
