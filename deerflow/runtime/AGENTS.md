@@ -61,6 +61,25 @@ fetch-and-decode of every message row's tool outputs on long threads.
 client input, because a welded-in seq goes stale when a fork re-seeds the feed
 (#4380).
 
+**LLM response callback coalescing** (`runtime/journal.py`): a provider may fire
+`on_llm_end` twice for one LangChain run id, first without usage (or with all token
+counts zero) and immediately again with usage populated. The first callback's generation
+set is always canonical: `RunJournal` stages only its response events and immutable
+message-summary fields while retaining the first caller, and applies that callback's
+fallback state and tool-call bookkeeping immediately; those effects remain canonical.
+It must not retain provider-owned message objects because a provider may mutate and
+reuse the same response for the usage replay. Usage metadata is deep-snapshotted,
+including nested token-detail mappings, before it enters a staged or buffered event.
+An adjacent same-id positive-usage replay may enrich only each corresponding staged
+event's metadata/content usage fields. Replay
+generation-count differences never add, remove, or replace canonical messages. The next
+unrelated event, an effective buffer size (committed plus pending events) reaching the
+flush threshold, or an explicit flush commits the staged unit and updates the message
+summary. Once that ordering boundary is crossed, a late usage replay can still update the
+authoritative run token summary, but it cannot mutate the append-only message event,
+caller attribution, fallback state, or tool-call bookkeeping. Closed journals return
+from `on_llm_end` before inspecting the response or touching any run state.
+
 **Run delivery receipts** (`runtime/journal.py` + `runs/worker.py`):
 `RunJournal` records each non-empty artifact update once per tool `Command` for
 the terminal `run.delivery` event. When a command contains multiple messages, a
