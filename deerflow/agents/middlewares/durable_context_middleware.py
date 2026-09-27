@@ -32,6 +32,7 @@ from deerflow.config.pii_redaction_config import PiiRedactionConfig
 from deerflow.config.summarization_config import DEFAULT_SKILL_FILE_READ_TOOL_NAMES
 from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH
 from deerflow.runtime.context_keys import CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY
+from deerflow.tools.artifact_registry import render_artifact_registry
 
 _DURABLE_CONTEXT_DATA_KEY = "durable_context_data"
 _SUMMARY_RENDER_CHAR_BUDGET = 6000
@@ -69,7 +70,7 @@ def _bound_text(text: str, cap: int) -> str:
     return f"{text[:head]}{omitted_marker}{text[-tail:]}"
 
 
-def _render_durable_context_data(summary_text: str | None, ledger: list, skills: list, task_notes: dict | None = None, task_history: dict | None = None) -> str:
+def _render_durable_context_data(summary_text: str | None, ledger: list, skills: list, task_notes: dict | None = None, task_history: dict | None = None, artifacts: list | None = None) -> str:
     data_parts: list[str] = []
     if summary_text:
         bounded_summary = _bound_text(str(summary_text), _SUMMARY_RENDER_CHAR_BUDGET)
@@ -83,6 +84,9 @@ def _render_durable_context_data(summary_text: str | None, ledger: list, skills:
     if skill_block:
         data_parts.append(skill_block)
 
+    artifact_block = render_artifact_registry(artifacts or [])
+    if artifact_block:
+        data_parts.append(artifact_block)
     if task_notes is not None:
         history = normalize_task_history(task_history)
         note_data = json.dumps({"notes": normalize_task_notes(task_notes), "history_status": history.get("status", "no_compaction_yet"), "omitted_records": history.get("omitted_records", 0)}, ensure_ascii=False)
@@ -258,6 +262,7 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
         *,
         skills_container_path: str | None = None,
         skill_file_read_tool_names: Collection[str] | None = None,
+        inject_tool_artifacts: bool = True,
         task_continuity_enabled: bool = False,
         pii_redaction_config: PiiRedactionConfig | None = None,
     ) -> None:
@@ -266,6 +271,7 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
         self._pii_redaction_config = pii_redaction_config
         self._skills_root = _normalize_skills_root(skills_container_path)
         self._skill_read_tool_names = frozenset(DEFAULT_SKILL_FILE_READ_TOOL_NAMES if skill_file_read_tool_names is None else skill_file_read_tool_names)
+        self._inject_tool_artifacts = inject_tool_artifacts
 
     def release_policy_parameters(self) -> dict[str, object]:
         """Describe the normalized inputs that govern capture and injection."""
@@ -273,6 +279,7 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
             "skills_container_path": self._skills_root,
             "skill_file_read_tool_names": sorted(self._skill_read_tool_names),
             "task_continuity_enabled": self._task_continuity_enabled,
+            "inject_tool_artifacts": self._inject_tool_artifacts,
             "pii_redaction_enabled": bool(self._pii_redaction_config and self._pii_redaction_config.enabled),
         }
 
@@ -321,12 +328,23 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
 
     def _inject(self, request: ModelRequest) -> ModelRequest:
         state = request.state or {}
+        artifacts = []
+        if self._inject_tool_artifacts:
+            for entry in state.get("tool_artifacts") or []:
+                # Redact raw labels before HTML escaping; state and real_ref
+                # remain intact for server-side resolution. Handles are generated.
+                projected = dict(entry)
+                for field in ("display_name", "artifact_type", "tool_name", "mime_type"):
+                    if isinstance(projected.get(field), str):
+                        projected[field] = redact_text(projected[field], self._pii_redaction_config)
+                artifacts.append(projected)
         data_block = _render_durable_context_data(
             redact_text(state.get("summary_text"), self._pii_redaction_config),
             state.get("delegations") or [],
             state.get("skill_context") or [],
             (state.get("task_notes") or {}) if self._task_continuity_enabled else None,
             state.get("task_history") if self._task_continuity_enabled else None,
+            artifacts=artifacts,
         )
         if not data_block:
             return request
