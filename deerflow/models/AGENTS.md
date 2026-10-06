@@ -86,6 +86,13 @@ Each omitted tool result emits a warning with its normalized content length;
 the warning never includes the result content.
 Coverage: `tests/test_codex_provider.py`.
 
+Codex function-tool conversion preserves explicit `strict=True` and `False`
+for wrapped and flat dictionaries; missing or `None` stays omitted to preserve
+the provider default. Wrapped dictionaries and converted `BaseTool` schemas
+share `_convert_tools` so binding cannot discard the setting. Keep caller
+schemas and definitions unchanged. Offline sync/async request and tool-followup
+coverage: `tests/test_codex_tool_strict.py`.
+
 ### Codex SSE termination (`packages/harness/deerflow/models/openai_codex_provider.py`)
 
 Completed responses with null, omitted, or empty `usage` retain their text,
