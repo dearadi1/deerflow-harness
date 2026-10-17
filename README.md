@@ -36,6 +36,16 @@ Python 包要求 Python 3.12 或更新版本。依赖由 `pyproject.toml` 管理
 
 ## 同步上游
 
+### 交给 Agent 自动完成
+
+在仓库目录内启动 Agent，直接发送：
+
+> 请阅读并执行根目录 `SYNC_UPSTREAM_PROMPT.md`，将原版 DeerFlow 的最新 Harness 更新合并到本仓库，完成检查、测试、推送、PR 合并及本地同步，并报告结果。
+
+完整指导见 [Agent 上游同步提示词](SYNC_UPSTREAM_PROMPT.md)。根目录 `AGENTS.md` 也已关联该流程，支持直接提出“同步原版 DeerFlow 更新”。Agent 会保留本地定制，通过 merge commit 合并；遇到需要业务决策或无法满足的合并条件时报告具体事项。
+
+### 手动运行同步脚本
+
 `chore/upstream_module` 永远只保存上游原版模块历史；定制代码通过功能分支和 PR 合入 `main`。
 
 先确保当前分支是希望接收更新的最新代码，并且工作区干净：

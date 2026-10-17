@@ -1,5 +1,7 @@
 # 模块维护约定
 
+用户要求“同步原版”“合并上游更新”或调用上游同步提示词时，先阅读并执行根目录 [SYNC_UPSTREAM_PROMPT.md](SYNC_UPSTREAM_PROMPT.md)。该流程覆盖验证、推送、PR 合并及本地同步；以用户本次明确指定的执行范围为准。
+
 - `deerflow/` 与 `pyproject.toml` 来自上游 `backend/packages/harness`，业务定制在功能分支上进行。
 - 禁止直接在 `main` / `master` 提交；通过分支提交和 PR 合入。
 - 分支采用 `feat/`、`fix/`、`chore/` 等前缀，名称使用小写和下划线。
