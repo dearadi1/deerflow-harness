@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/bytedance/deer-flow.git",
+  "branch": "main",
+  "prefix": "backend/packages/harness",
+  "requested_module": "backend/packages/harness/deerflow",
+  "initial_source_commit": "169002a4c995881ae046f34a540bb83b6ac828d6",
+  "initial_split_commit": "9cbebc42dbae647a273698ba8aa2316040af1ad1",
+  "license_sha256": "b23dff4d4bac8d17b6efaaa7e88c2b730149c4dda45699ce676b719cfdffe7e1"
+}
