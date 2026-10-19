@@ -25,7 +25,7 @@ def make_lead_agent(config: "RunnableConfig") -> Any:
     function rather than a value supplied only through ``__getattr__``.
     """
     from .lead_agent import make_lead_agent as factory
-    from .lead_agent.prompt import prime_enabled_skills_cache
+    from .lead_agent.prompt_zh import prime_enabled_skills_cache
 
     prime_enabled_skills_cache()
     return factory(config)

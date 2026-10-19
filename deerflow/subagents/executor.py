@@ -1551,7 +1551,7 @@ class SubagentExecutor:
             else:
                 # Reuse the lead agent's metadata renderer in legacy discovery
                 # mode so both agent types describe the same skill catalog.
-                from deerflow.agents.lead_agent.prompt import get_skills_prompt_section
+                from deerflow.agents.lead_agent.prompt_zh import get_skills_prompt_section
 
                 skills_section = await asyncio.to_thread(
                     get_skills_prompt_section,
