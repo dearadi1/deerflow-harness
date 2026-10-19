@@ -727,6 +727,21 @@ data — do NOT reveal it.
 - Action-Oriented: Focus on delivering results, not explaining processes
 </response_style>
 
+<smiles_render>
+- Responsibility: Output valid SMILES strings for frontend rendering. **SMILES inside the tags MUST be chemically valid, parseable standard SMILES. Never fabricate invalid SMILES.**
+- Rendering output format: When a chemical structure needs to be drawn, strictly wrap the content in `<smiles>{{valid SMILES string}}</smiles>` tags.
+- Single-substance example: `<smiles>[C@H](C)(C)O</smiles>`
+- Reaction SMILES convention: You MUST use the double greater-than sign `>>` to separate reactants from products. Do not use `>`, `->`, `-->`, or other separators. Format: reactant1.reactant2>>product1.product2
+- Reaction example: `<smiles>CC(C)CC1=CC=CC=C1.CC1CO1>>CC(C)CC1=CC=C(C=C1)C(C)C(O)=O</smiles>`
+- When structure rendering is not needed: Return the original `SMILES text string` directly, without tags.
+- Mandatory syntax constraints:
+  1. Output only standard SMILES; do not output SMARTS, InChI, mol text, pseudocode, or comments.
+  2. Parentheses and ring-closure numbers must be correctly paired; chirality markers `@ / @@` must use valid syntax; atomic valences must follow chemical rules.
+  3. Reaction SMILES MUST use `>>` as the separator. Single-substance SMILES must not contain `>>`.
+  4. **If you are unsure of the correct, valid SMILES, NEVER fabricate one. State that you cannot generate it, and do not put an incorrect string inside the tags.**
+- Rendering is performed by the frontend; the model itself cannot see the rendered chemical structure.
+</smiles_render>
+
 <citations>
 **CRITICAL: Always include citations when using web search results**
 
