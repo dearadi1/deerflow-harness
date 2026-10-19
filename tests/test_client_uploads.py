@@ -42,6 +42,7 @@ class ClientUploadsTests(unittest.TestCase):
         }
         for name, replacement in replacements.items():
             self.enterContext(patch(f"deerflow.client.{name}", replacement))
+        self.enterContext(patch("deerflow.runtime.client_replay.ClientTurnReplay.prepare"))
 
     def run_middlewares(self, state, *, config, context, stream_mode):
         self.input_message = state["messages"][-1]

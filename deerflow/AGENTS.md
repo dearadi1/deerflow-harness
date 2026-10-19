@@ -96,6 +96,12 @@ drift.
 
 Upload capture, filename claims and publication: [guide](uploads/AGENTS.md).
 
+同步客户端最近一轮重生成由 `runtime/client_replay.py` 外挂实现，通过
+`stream(..., replay_last_turn=True)` / `chat(..., replay_last_turn=True)` 使用。
+修改时保持原有流事件协议，复用 checkpoint accessor、状态替换图及 worker 的完整状态
+替换规则；失败恢复还需清理原图的待执行节点。范围、并发及鉴权边界见
+[使用说明](../docs/client_replay.md)，回归测试为 `tests/test_client_replay.py`。
+
 **Tests**: `tests/test_client.py` is offline, including `TestGatewayConformance`.
 `tests/test_client_live.py` requires root `config.yaml`, valid API credentials,
 and opt-in via `make test-live` or `DEER_FLOW_RUN_LIVE_TESTS=1`. It calls real

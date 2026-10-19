@@ -64,6 +64,7 @@ from deerflow.runtime.checkpoint_mode import (
     freeze_checkpoint_snapshot_frequency,
     inject_checkpoint_mode,
 )
+from deerflow.runtime.client_replay import ClientTurnReplay, stream_client_turn
 from deerflow.runtime.goal import DEFAULT_MAX_GOAL_CONTINUATIONS, build_goal_state, goal_thread_lock, read_thread_goal, write_thread_goal
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.describe import build_skill_search_setup
@@ -861,6 +862,7 @@ class DeerFlowClient:
         message: str,
         *,
         thread_id: str | None = None,
+        replay_last_turn: bool = False,
         **kwargs,
     ) -> Generator[StreamEvent, None, None]:
         """Stream a conversation turn with a DeerFlow request trace context.
@@ -872,6 +874,8 @@ class DeerFlowClient:
 
         kwargs 中的 files 声明本轮新上传文件的元数据（filename、size），透传至消息的
         additional_kwargs.files，由上传中间件校验已落盘文件并注入上下文。
+        replay_last_turn=True 时用 message 替换最近一轮输入并重新生成；传原问题即重试，
+        传新问题即修改生成。仅恢复线程状态，不撤销长期记忆、文件或外部工具副作用。
         """
         # Resolve the id once, without mutating the caller's context.
         trace_id = get_current_trace_id() or generate_trace_id()
@@ -885,7 +889,7 @@ class DeerFlowClient:
         # Per-step set/reset keeps LangGraph node execution and its log
         # records inside the binding while returning control to the caller
         # with the ContextVar restored.
-        inner = self._stream_turn(message, thread_id=thread_id, **kwargs)
+        inner = stream_client_turn(self, message, thread_id=thread_id, replay_last_turn=replay_last_turn, **kwargs)
         _EXHAUSTED = object()
         try:
             while True:
@@ -918,6 +922,7 @@ class DeerFlowClient:
         message: str,
         *,
         thread_id: str | None = None,
+        _turn_replay: ClientTurnReplay | None = None,
         **kwargs,
     ) -> Generator[StreamEvent, None, None]:
         """Stream a conversation turn, yielding events incrementally.
@@ -1076,6 +1081,10 @@ class DeerFlowClient:
         context[DEERFLOW_TRACE_METADATA_KEY] = deerflow_trace_id
         if self._agent_name:
             context["agent_name"] = self._agent_name
+
+        # 将重放外挂在图执行前，复用后续事件格式化与沙箱清理，不侵入上游 Agent。
+        if _turn_replay is not None:
+            _turn_replay.prepare(self._agent, checkpointer, state, config, context, self._checkpoint_channel_mode)
 
         # Last message object seen per id in ``values`` snapshots. A later node,
         # such as a guard's ``after_model``, can replace a message under the same

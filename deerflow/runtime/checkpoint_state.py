@@ -199,7 +199,7 @@ class CheckpointStateAccessor:
     def update(
         self,
         config: dict[str, Any],
-        values: dict[str, Any],
+        values: dict[str, Any] | None,
         *,
         as_node: str | None = None,
     ) -> dict[str, Any]:
@@ -210,7 +210,7 @@ class CheckpointStateAccessor:
     async def aupdate(
         self,
         config: dict[str, Any],
-        values: dict[str, Any],
+        values: dict[str, Any] | None,
         *,
         as_node: str | None = None,
     ) -> dict[str, Any]:
