@@ -869,6 +869,9 @@ class DeerFlowClient:
         for the turn so logs, Langfuse metadata, and delegated work correlate.
         A caller that opened its own scope with ``request_trace_context`` keeps
         that id; otherwise the turn gets a fresh one.
+
+        kwargs 中的 files 声明本轮新上传文件的元数据（filename、size），透传至消息的
+        additional_kwargs.files，由上传中间件校验已落盘文件并注入上下文。
         """
         # Resolve the id once, without mutating the caller's context.
         trace_id = get_current_trace_id() or generate_trace_id()
@@ -986,6 +989,7 @@ class DeerFlowClient:
                 plan_mode, subagent_enabled, recursion_limit). Trusted embedded
                 callers may also provide user_id, user_role, oauth_provider,
                 oauth_id, channel_user_id, is_internal, and authz_attributes.
+                files 用于声明本轮新上传文件元数据，仅透传已落盘文件声明，不负责上传。
 
         Yields:
             StreamEvent with one of:
@@ -1066,7 +1070,9 @@ class DeerFlowClient:
             deerflow_trace_id=deerflow_trace_id,
         )
 
-        state: dict[str, Any] = {"messages": [HumanMessage(content=message, additional_kwargs={"run_id": run_id})]}
+        files = kwargs.get("files")
+        message_metadata = {"run_id": run_id, **({"files": files} if files is not None else {})}
+        state: dict[str, Any] = {"messages": [HumanMessage(content=message, additional_kwargs=message_metadata)]}
         context[DEERFLOW_TRACE_METADATA_KEY] = deerflow_trace_id
         if self._agent_name:
             context["agent_name"] = self._agent_name
