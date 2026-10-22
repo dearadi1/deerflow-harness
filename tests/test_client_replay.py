@@ -171,6 +171,32 @@ class ClientReplayTests(unittest.TestCase):
                     self.stream(client, "问题三")
                     self.assertEqual(self.users(harness.snapshot()), ["问题一", "修改后的问题二", "问题三"])
 
+    def test_child_end_cannot_commit_an_unfinished_replay(self):
+        for mode in ("full", "delta"):
+            with self.subTest(mode=mode):
+                harness, client = self.harness(mode)
+                self.stream(client, "原问题")
+                original_values = deepcopy(harness.snapshot().values)
+                original_stream = harness.graph.stream
+
+                def child_finishes_first(*args, **kwargs):
+                    for index, item in enumerate(original_stream(*args, **kwargs)):
+                        yield item
+                        if index == 0:
+                            yield ("custom", {"type": "task_completed", "task_id": "child_task"})
+
+                with patch.object(harness.graph, "stream", side_effect=child_finishes_first):
+                    stream = client.stream("修改问题", thread_id="thread_001", user_id="user_001", replay_last_turn=True)
+                    for event in stream:
+                        if event.type == "end" and event.agent_id == "child_task":
+                            break
+                    else:
+                        self.fail("未收到子智能体结束事件")
+                    stream.close()
+                self.assertEqual(harness.snapshot().values, original_values)
+                self.stream(client, "重试问题", replay_last_turn=True)
+                self.assertEqual(self.users(harness.snapshot()), ["重试问题"])
+
     def test_first_turn_can_be_replayed_repeatedly(self):
         for mode in ("full", "delta"):
             with self.subTest(mode=mode):
@@ -219,7 +245,7 @@ class ClientReplayTests(unittest.TestCase):
                 original = deepcopy(harness.snapshot().values)
                 stream = client.stream("提前中断修改", thread_id="thread_001", user_id="user_001", replay_last_turn=True)
                 for event in stream:
-                    if event.type == "messages-tuple" and event.data.get("type") == "tool":
+                    if event.type == "tool_result":
                         break
                 stream.close()
                 self.assertEqual(harness.snapshot().values, original)
@@ -321,7 +347,7 @@ class ClientReplayTests(unittest.TestCase):
                 client._agent = harness.graph
                 self.stream(client, "原始问题")
                 events = self.stream(client, "修改问题", replay_last_turn=True)
-                deltas = [event.data["content"] for event in events if event.type == "messages-tuple" and event.data.get("type") == "ai"]
+                deltas = [event.data.content for event in events if event.type == "answer_content"]
                 self.assertEqual("".join(deltas), "新回答")
                 self.assertGreater(len(deltas), 1)
                 self.assertEqual(self.users(harness.snapshot()), ["修改问题"])
