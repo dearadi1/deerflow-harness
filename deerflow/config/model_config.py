@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationInfo, field_validator, model_validator
@@ -131,10 +132,25 @@ class ReasoningCapabilities(BaseModel):
         return self
 
 
+class ModelPriceConfig(BaseModel):
+    """独立计费配置，不能作为模型服务商的请求参数。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    price_input_normal: Decimal = Field(ge=0, allow_inf_nan=False, description="普通输入价格，元/百万 Token")
+    price_output_normal: Decimal = Field(ge=0, allow_inf_nan=False, description="输出价格，元/百万 Token")
+    price_input_cache_hit: Decimal = Field(ge=0, allow_inf_nan=False, description="缓存命中输入价格，元/百万 Token")
+
+    @field_validator("price_input_normal", "price_output_normal", "price_input_cache_hit", mode="before")
+    @classmethod
+    def reject_boolean_price(cls, value: object, info: ValidationInfo) -> object:
+        return reject_boolean(value, info, kind="a number")
+
+
 class ModelConfig(BaseModel):
     """Config section for a model"""
 
     name: str = Field(..., description="Unique name for the model")
+    price: ModelPriceConfig | None = Field(default=None, description="客户端费用计算单价，不透传给模型服务商")
     request_admission: RequestAdmissionConfig | None = Field(default=None, description="Opt-in process-local RPM pacing. Changing an active group's policy requires a process restart.")
     display_name: str | None = Field(..., default_factory=lambda: None, description="Display name for the model")
     description: str | None = Field(..., default_factory=lambda: None, description="Description for the model")
