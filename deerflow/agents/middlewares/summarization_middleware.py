@@ -21,6 +21,7 @@ from langgraph.constants import TAG_NOSTREAM
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
 
+from deerflow.agents.middlewares.context_events import CompactionObservation, aemit_context_event, aobserve_compaction, emit_context_event, mark_reused_summary, observe_compaction, skip_compaction
 from deerflow.agents.middlewares.dynamic_context_middleware import is_dynamic_context_reminder
 from deerflow.agents.middlewares.message_utils import is_genuine_user_message
 from deerflow.agents.middlewares.pii_redaction_middleware import redact_text
@@ -311,17 +312,21 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         source = self._summary_source_text(messages_to_summarize)
         retry_key = self._summary_retry_key(runtime, messages_to_summarize, previous_summary)
         if self._summary_retry_blocked(retry_key, len(source)):
+            skip_compaction("retry_cooldown")
             return None
         summary = self._bound_summary_carry(previous_summary) if previous_summary else None
         if previous_summary and summary is None:
+            skip_compaction("input_budget_exceeded")
             return None
         cursor, chunks, all_reused = 0, 0, True
         while cursor < len(source):
             if self._summary_chunk_limit_reached(chunks, cursor, len(source), summary):
                 self._remember_summary_chunk_breach(retry_key, len(source))
+                skip_compaction("chunk_limit_exceeded")
                 return None
             step = self._next_summary_step(source, cursor, summary)
             if step is None:
+                skip_compaction("input_budget_exceeded")
                 return None
             prompt, end = step
             summary = self._summarize_prompt(prompt, summary)
@@ -341,17 +346,21 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         source = self._summary_source_text(messages_to_summarize)
         retry_key = self._summary_retry_key(runtime, messages_to_summarize, previous_summary)
         if self._summary_retry_blocked(retry_key, len(source)):
+            skip_compaction("retry_cooldown")
             return None
         summary = self._bound_summary_carry(previous_summary) if previous_summary else None
         if previous_summary and summary is None:
+            skip_compaction("input_budget_exceeded")
             return None
         cursor, chunks, all_reused = 0, 0, True
         while cursor < len(source):
             if self._summary_chunk_limit_reached(chunks, cursor, len(source), summary):
                 self._remember_summary_chunk_breach(retry_key, len(source))
+                skip_compaction("chunk_limit_exceeded")
                 return None
             step = self._next_summary_step(source, cursor, summary)
             if step is None:
+                skip_compaction("input_budget_exceeded")
                 return None
             prompt, end = step
             summary = await self._asummarize_prompt(prompt, summary, task_store=task_store)
@@ -732,6 +741,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         trigger_messages = self._messages_for_trigger_count(messages, previous_summary)
         total_tokens = self.token_counter(trigger_messages)
         if not force and not self._should_summarize(trigger_messages, total_tokens):
+            skip_compaction("not_triggered")
             return None
 
         # Todo reminders are snapshots of state["todos"], not conversation history.
@@ -743,6 +753,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
 
         cutoff_index = self._determine_cutoff_index(messages)
         if cutoff_index <= 0:
+            skip_compaction("no_compactable_messages")
             return None
 
         # The latest real user message (the current request) must survive: peer
@@ -760,6 +771,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         messages_to_summarize, preserved_messages = self._partition_messages(messages, cutoff_index)
         messages_to_summarize, preserved_messages = self._preserve_required_context(messages_to_summarize, preserved_messages, latest_user_id=latest_user_id)
         if not messages_to_summarize:
+            skip_compaction("no_compactable_messages")
             return None
         return messages_to_summarize, preserved_messages, previous_summary, total_tokens
 
@@ -858,6 +870,20 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         force: bool = False,
         raise_on_failure: bool = False,
     ) -> ContextCompactionResult | None:
+        """观测完整压缩尝试，保持失败回退及手动压缩的异常语义。"""
+        with observe_compaction(runtime) as observation:
+            observation.result = self._compact_state(state, runtime, observation, force=force, raise_on_failure=raise_on_failure)
+            return observation.result
+
+    def _compact_state(
+        self,
+        state: AgentState,
+        runtime: Runtime,
+        observation: CompactionObservation,
+        *,
+        force: bool = False,
+        raise_on_failure: bool = False,
+    ) -> ContextCompactionResult | None:
         """Summarize old context and retain the active tail.
 
         ``force`` bypasses the automatic trigger threshold (a manual caller always
@@ -869,6 +895,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         prepared = self._prepare_compaction(state, force=force)
         if prepared is None:
             return None
+        emit_context_event(runtime, observation.start_payload(prepared))
         messages_to_summarize, preserved_messages, previous_summary, total_tokens = prepared
         source_content_hashes = self._freeze_compaction_sources(messages_to_summarize)
         summary = self._summarize_with(messages_to_summarize, previous_summary=previous_summary, runtime=runtime)
@@ -877,6 +904,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
                 raise SummaryGenerationError("summary generation failed")
             return None
         llm_call_skipped = isinstance(summary, _ReusedSummary)
+        mark_reused_summary(llm_call_skipped)
         summary = str(summary)
         self._record_summary_telemetry(runtime, previous_summary, summary, len(messages_to_summarize), llm_call_skipped=llm_call_skipped)
         # Fire hooks only once a replacement summary exists — flushing pre-compaction
@@ -911,10 +939,25 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         force: bool = False,
         raise_on_failure: bool = False,
     ) -> ContextCompactionResult | None:
+        """异步观测压缩，异步图内使用对应的 custom 回调发送路径。"""
+        async with aobserve_compaction(runtime) as observation:
+            observation.result = await self._acompact_state(state, runtime, observation, force=force, raise_on_failure=raise_on_failure)
+            return observation.result
+
+    async def _acompact_state(
+        self,
+        state: AgentState,
+        runtime: Runtime,
+        observation: CompactionObservation,
+        *,
+        force: bool = False,
+        raise_on_failure: bool = False,
+    ) -> ContextCompactionResult | None:
         """Async counterpart of :meth:`compact_state` (see it for ``raise_on_failure``)."""
         prepared = self._prepare_compaction(state, force=force)
         if prepared is None:
             return None
+        await aemit_context_event(runtime, observation.start_payload(prepared))
         messages_to_summarize, preserved_messages, previous_summary, total_tokens = prepared
         from deerflow_extension_api import task_store_from_runtime
 
@@ -930,6 +973,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
                 raise SummaryGenerationError("summary generation failed")
             return None
         llm_call_skipped = isinstance(summary, _ReusedSummary)
+        mark_reused_summary(llm_call_skipped)
         summary = str(summary)
         self._record_summary_telemetry(runtime, previous_summary, summary, len(messages_to_summarize), llm_call_skipped=llm_call_skipped)
         # Fire hooks only once a replacement summary exists (see compact_state).

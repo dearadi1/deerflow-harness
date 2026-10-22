@@ -177,6 +177,23 @@ class SubagentResult:
     _knowledge_messages: list[Any] = field(default_factory=list, init=False, repr=False)
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _state_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _context_events: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
+
+    def capture_context_event(self, payload: Any) -> None:
+        """只缓存普通委派需要转发的上下文事件，避免后台批任务积累无人消费的数据。"""
+        if not self.external_task_id or not isinstance(payload, dict):
+            return
+        if payload.get("type") not in ("context_compaction_start", "context_compaction_end", "context_used"):
+            return
+        with self._state_lock:
+            if not self.status.is_terminal:
+                self._context_events.append(deepcopy(payload))
+
+    def drain_context_events(self) -> list[dict[str, Any]]:
+        """父循环取走已发布事件；不把父循环的 writer 传入子循环。"""
+        with self._state_lock:
+            events, self._context_events = self._context_events, []
+        return events
 
     def __post_init__(self):
         """Initialize mutable defaults."""
@@ -1848,9 +1865,12 @@ class SubagentExecutor:
                 return result
 
             cancelled_during_stream = False
-            stream = agent.astream(state, config=run_config, context=context, stream_mode="values")  # type: ignore[arg-type]
+            stream = agent.astream(state, config=run_config, context=context, stream_mode=["values", "custom"])  # type: ignore[arg-type]
             try:
-                async for chunk in stream:
+                async for mode, chunk in stream:
+                    if mode == "custom":
+                        result.capture_context_event(chunk)
+                        continue
                     # A yielded values chunk is already executed state.  Retain it
                     # before observing cooperative cancellation so terminal receipt
                     # harvesting includes a tool result that completed while the

@@ -1053,10 +1053,13 @@ async def task_tool(
                     error=error,
                 )
 
-            # Log status changes for debugging
-            if result.status != last_status:
-                logger.info(f"[trace={trace_id}] Task {tool_call_id} execution {execution_id} status: {result.status.value}")
-                last_status = result.status
+            # 先固定状态再取事件，避免刚好结束的子任务漏发最后一批上下文事件。
+            status = result.status
+            for context_event in result.drain_context_events():
+                await aemit_custom_event({**context_event, "agent_id": tool_call_id}, writer=writer)
+            if status != last_status:
+                logger.info(f"[trace={trace_id}] Task {tool_call_id} execution {execution_id} status: {status.value}")
+                last_status = status
 
             # The collector publishes cumulative records. Reuse one snapshot for
             # both live progress and the terminal event so the frontend can
@@ -1086,7 +1089,7 @@ async def task_tool(
                 last_message_count = current_message_count
 
             # Check if task completed, failed, or timed out
-            if result.status == SubagentStatus.COMPLETED:
+            if status == SubagentStatus.COMPLETED:
                 _report_subagent_usage(runtime, result)
                 await aemit_custom_event(
                     {
@@ -1142,7 +1145,7 @@ async def task_tool(
                     acceptance_verdict=acceptance_verdict,
                     knowledge_sources=getattr(result, "knowledge_sources", None),
                 )
-            elif result.status == SubagentStatus.FAILED:
+            elif status == SubagentStatus.FAILED:
                 _report_subagent_usage(runtime, result)
                 await aemit_custom_event(
                     {
@@ -1169,7 +1172,7 @@ async def task_tool(
                     tool_receipts=getattr(result, "tool_receipts", None),
                     source_messages=getattr(result, "ai_messages", None),
                 )
-            elif result.status == SubagentStatus.CANCELLED:
+            elif status == SubagentStatus.CANCELLED:
                 _report_subagent_usage(runtime, result)
                 await aemit_custom_event(
                     {
@@ -1192,7 +1195,7 @@ async def task_tool(
                     tool_receipts=getattr(result, "tool_receipts", None),
                     source_messages=getattr(result, "ai_messages", None),
                 )
-            elif result.status == SubagentStatus.TIMED_OUT:
+            elif status == SubagentStatus.TIMED_OUT:
                 _report_subagent_usage(runtime, result)
                 await aemit_custom_event(
                     {

@@ -58,6 +58,7 @@ from langchain.agents.middleware.types import ModelCallResult, ModelRequest, Mod
 from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
 from langgraph.runtime import Runtime
 
+from deerflow.agents.middlewares.context_events import aemit_context_event, context_used_payload, emit_context_event
 from deerflow.projects.context import build_project_context_message, is_project_context_message, pinned_project_snapshot, project_context_insertion_index, render_documents_block, render_project_block
 from deerflow.runtime.context_keys import CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY
 from deerflow.runtime.user_context import resolve_runtime_user_id
@@ -795,6 +796,7 @@ class DynamicContextMiddleware(AgentMiddleware):
         # Record only after the call succeeded: a failed assembly must not
         # claim the context was delivered.
         self._record_context_event(request.messages, getattr(request, "runtime", None), project_block, documents_block)
+        emit_context_event(request.runtime, self._context_usage_payload(request, project_block, documents_block))
         return response
 
     @override
@@ -803,4 +805,10 @@ class DynamicContextMiddleware(AgentMiddleware):
         request, project_block, documents_block = self._assemble_project_request(request)
         response = await handler(request)
         self._record_context_event(request.messages, getattr(request, "runtime", None), project_block, documents_block)
+        await aemit_context_event(request.runtime, self._context_usage_payload(request, project_block, documents_block))
         return response
+
+    def _context_usage_payload(self, request: ModelRequest, project_block: str | None, documents_block: str | None) -> dict | None:
+        """复用记忆来源校验，只公开实际用于本次请求的渲染内容。"""
+        memory = self._effective_memory_message_for_request(request.messages, request.runtime)
+        return context_used_payload(memory=memory.content if memory is not None else None, project=project_block, documents=documents_block)
