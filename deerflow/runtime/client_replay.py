@@ -16,6 +16,8 @@ from typing import Any
 
 from langgraph.graph import END
 
+from deerflow_protocol import ClientStreamEvent
+
 from deerflow.agents.middlewares.message_utils import is_genuine_user_message
 from deerflow.runtime.checkpoint_state import CheckpointStateAccessor, build_state_mutation_graph, graph_state_schema
 from deerflow.runtime.context_keys import CHECKPOINT_AGENT_NAME_METADATA_KEY, DEFAULT_AGENT_NAME_METADATA_VALUE
@@ -64,7 +66,7 @@ def _reserve_turn(client: Any, thread_id: str) -> Iterator[None]:
             lock.release()
 
 
-def stream_client_turn(client: Any, message: str, *, thread_id: str | None, replay_last_turn: bool, **kwargs: Any) -> Iterator[Any]:
+def stream_client_turn(client: Any, message: str, *, thread_id: str | None, replay_last_turn: bool, **kwargs: Any) -> Iterator[ClientStreamEvent]:
     """保留原流事件协议，并在异常或提前关闭时恢复重放前的有效状态。"""
     if not isinstance(replay_last_turn, bool):
         raise TypeError("replay_last_turn 必须是布尔值")
@@ -76,7 +78,7 @@ def stream_client_turn(client: Any, message: str, *, thread_id: str | None, repl
         inner = client._stream_turn(message, thread_id=thread_id, _turn_replay=replay, **kwargs)
         try:
             for event in inner:
-                if event.type == "end":
+                if event.type == "end" and event.agent_id == "main": # 仅识别主agent结束
                     replay.committed = True
                 yield event
         finally:

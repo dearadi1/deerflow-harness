@@ -20,6 +20,7 @@ scanner reached from the ``skill_manage`` tool (``skills/security_scanner.py``'s
 ``tools/skill_manage_tool.py`` is the in-graph choke point and passes the flag,
 while its standalone callers keep the default). Any new in-graph
 ``create_chat_model`` call must add to this list and pass the flag.
+推荐追问中间件的同步与异步调用也继承图级回调，并关闭模型侧重复绑定。
 """
 
 from __future__ import annotations
@@ -667,6 +668,11 @@ def build_middlewares(
             extensions=resolved_extensions,
         )
     )
+
+    if resolved_app_config.suggestions.enabled:
+        from deerflow.agents.middlewares.follow_up_suggestions_middleware import FollowUpSuggestionsMiddleware
+
+        middlewares.append(FollowUpSuggestionsMiddleware(app_config=resolved_app_config, model_name=model_name))
 
     # Add MemoryMiddleware after TitleMiddleware. Tool mode normally skips it;
     # conversation-extraction backends may explicitly retain passive writes.

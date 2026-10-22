@@ -23,6 +23,7 @@ from langchain.agents.middleware.types import ModelCallResult, ModelRequest, Mod
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.runtime import Runtime
 
+from deerflow.agents.middlewares.context_events import aemit_context_event, context_used_payload, emit_context_event
 from deerflow.agents.middlewares.delegation_ledger import extract_delegations, render_delegation_ledger
 from deerflow.agents.middlewares.message_utils import insert_after_leading_system_messages
 from deerflow.agents.middlewares.pii_redaction_middleware import redact_text
@@ -398,6 +399,9 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
         return updates or None
 
     def _inject(self, request: ModelRequest) -> ModelRequest:
+        return self._inject_with_context(request)[0]
+
+    def _inject_with_context(self, request: ModelRequest) -> tuple[ModelRequest, str | None]:
         state = request.state or {}
         goal_objective = redact_text(_active_goal_objective(state.get("goal")), self._pii_redaction_config)
         artifacts = []
@@ -420,7 +424,7 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
             goal_objective=goal_objective,
         )
         if not data_block:
-            return request
+            return request, None
         messages = insert_after_leading_system_messages(
             list(request.messages),
             [
@@ -446,7 +450,7 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
                 ),
             ],
         )
-        return request.override(messages=messages)
+        return request.override(messages=messages), data_block
 
     @override
     def wrap_model_call(
@@ -454,7 +458,10 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
-        return handler(self._inject(request))
+        request, data_block = self._inject_with_context(request)
+        response = handler(request)
+        emit_context_event(request.runtime, context_used_payload(durable_context=data_block))
+        return response
 
     @override
     async def awrap_model_call(
@@ -462,4 +469,7 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
-        return await handler(self._inject(request))
+        request, data_block = self._inject_with_context(request)
+        response = await handler(request)
+        await aemit_context_event(request.runtime, context_used_payload(durable_context=data_block))
+        return response

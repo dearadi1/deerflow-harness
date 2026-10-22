@@ -37,6 +37,7 @@ _MODEL_METADATA_FIELDS: frozenset[str] = frozenset(
         # display) — must never reach the provider client, which would
         # forward unknown kwargs into the completion request payload.
         "pricing",
+        "price",
         "request_admission",
     }
 )

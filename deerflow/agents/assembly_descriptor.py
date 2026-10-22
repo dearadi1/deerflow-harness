@@ -50,6 +50,7 @@ _MODEL_METADATA_FIELDS = frozenset(
         "use",
         "context_window",
         "pricing",
+        "price",
         # ``reasoning`` is deliberately *not* excluded: as a bool or level
         # string it is ChatOllama's native provider kwarg, and as a declared
         # contract its dialect/history change the request payload. Both must

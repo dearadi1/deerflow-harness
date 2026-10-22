@@ -1,20 +1,12 @@
-"""Runtime bridge between ``DeerFlowClient`` streaming and the view-state reducer.
-
-Two layers, both kept free of Textual:
-
-* :func:`translate` — pure: one ``StreamEvent`` -> zero or more reducer actions.
-* :func:`stream_actions` — drives ``client.stream()`` and yields a bracketed
-  action sequence (``RunStarted`` … translated actions … ``RunEnded``), turning
-  model errors into an ``AssistantError`` row instead of crashing.
-
-The Textual app runs :func:`stream_actions` in a worker thread and applies each
-yielded action to the reducer on the UI thread.
-"""
+"""将客户端协议转换为终端视图动作，在工作线程内消费并保留主会话结束边界。"""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from typing import Any, Protocol
+
+from deerflow_protocol import ClientStreamEvent
 
 from .view_state import (
     Action,
@@ -28,65 +20,27 @@ from .view_state import (
 )
 
 
-class _StreamEventLike(Protocol):
-    type: str
-    data: dict
-
-
 class _ClientLike(Protocol):
-    def stream(self, message: str, *, thread_id: str | None = None, **kwargs: Any) -> Iterator[Any]:
+    def stream(self, message: str, *, thread_id: str | None = None, **kwargs: Any) -> Iterator[ClientStreamEvent]:
         """Yield streaming events for *message* (see ``DeerFlowClient.stream``)."""
 
 
-def translate(event: _StreamEventLike) -> list[Action]:
-    """Map a single ``StreamEvent`` to reducer actions. Pure."""
-    if event.type == "messages-tuple":
-        return _translate_message(event.data)
+def translate(event: ClientStreamEvent) -> list[Action]:
+    """将协议模型转换为视图动作，子智能体结束不终止主会话。"""
+    if event.agent_id != "main":
+        return []
+    if event.type == "answer_content":
+        return [AssistantDelta(id=event.data.id, text=event.data.content)] if event.data.content else []
+    if event.type == "tool_calls":
+        return [ToolStarted(tool_call_id=call.tool_call_id, tool_name=call.function.name, args=json.loads(call.function.arguments)) for call in event.data]
+    if event.type == "tool_result":
+        data = event.data
+        return [ToolResult(tool_call_id=data.tool_call_id, content=_extract_text(data.content), is_error=data.status == "error", tool_name=_as_str(data.name))]
     if event.type == "end":
-        usage = event.data.get("usage") if isinstance(event.data, dict) else None
-        return [RunEnded(usage=usage)]
-    if event.type == "values" and isinstance(event.data, dict):
-        title = event.data.get("title")
-        if isinstance(title, str) and title.strip():
-            return [ThreadTitle(title=title.strip())]
-        return []
-    # "custom" events are not rendered incrementally.
+        return [RunEnded(usage=event.data.usage_metadata.model_dump(exclude_unset=True))]
+    if event.type == "title" and event.data.content.strip():
+        return [ThreadTitle(title=event.data.content.strip())]
     return []
-
-
-def _translate_message(data: Any) -> list[Action]:
-    if not isinstance(data, dict):
-        return []
-
-    message_type = data.get("type")
-    actions: list[Action] = []
-
-    if message_type == "ai":
-        text = _extract_text(data.get("content"))
-        if text:
-            actions.append(AssistantDelta(id=_as_str(data.get("id")), text=text))
-        for tool_call in data.get("tool_calls") or []:
-            if not isinstance(tool_call, dict):
-                continue
-            actions.append(
-                ToolStarted(
-                    tool_call_id=_as_str(tool_call.get("id")),
-                    tool_name=_as_str(tool_call.get("name")),
-                    args=tool_call.get("args") or {},
-                )
-            )
-    elif message_type == "tool":
-        is_error = bool(data.get("is_error")) or data.get("status") == "error"
-        actions.append(
-            ToolResult(
-                tool_call_id=_as_str(data.get("tool_call_id")),
-                content=_extract_text(data.get("content")),
-                is_error=is_error,
-                tool_name=_as_str(data.get("name")),
-            )
-        )
-
-    return actions
 
 
 def _as_str(value: Any) -> str:
@@ -106,7 +60,7 @@ def stream_actions(client: _ClientLike, message: str, *, thread_id: str | None =
     try:
         for event in client.stream(message, thread_id=thread_id, **kwargs):
             yield from translate(event)
-            if event.type == "end":
+            if event.type == "end" and event.agent_id == "main":
                 return  # RunEnded already emitted by translate()
         yield RunEnded()
     except Exception as exc:  # noqa: BLE001 - surface any model/runtime error in-UI

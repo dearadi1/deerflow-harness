@@ -15,10 +15,9 @@ import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
-if TYPE_CHECKING:
-    from deerflow.client import StreamEvent
+from deerflow_protocol import ClientStreamEvent, MessageMetadata
 
 _UNSET = object()
 
@@ -72,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="*",
         default=_UNSET,
         metavar="MESSAGE",
-        help="headless streaming: emit newline-delimited JSON StreamEvents and exit",
+        help="headless streaming: emit newline-delimited JSON events and exit",
     )
     parser.add_argument("--tui", action="store_true", help="force the terminal UI (error if unavailable)")
     parser.add_argument(
@@ -309,15 +308,15 @@ class _RunOutcome:
         from deerflow.client import _AIMessageAccumulator
 
         self._messages = _AIMessageAccumulator()
-        self._errors: dict[str, dict] = {}
+        self._errors: dict[str, MessageMetadata] = {}
 
-    def observe(self, event: StreamEvent) -> None:
+    def observe(self, event: ClientStreamEvent) -> None:
         self._messages.observe(event)
-        if event.type != "messages-tuple" or event.data.get("type") != "ai":
+        if event.type != "answer_content" or event.agent_id != "main":
             return
-        msg_id = event.data.get("id") or ""
-        additional_kwargs = event.data.get("additional_kwargs") or {}
-        if additional_kwargs.get("deerflow_error_fallback"):
+        msg_id = event.data.id
+        additional_kwargs = event.data.additional_kwargs
+        if additional_kwargs and getattr(additional_kwargs, "deerflow_error_fallback", False):
             self._errors[msg_id] = additional_kwargs
 
     def answer(self) -> str:
@@ -329,7 +328,7 @@ class _RunOutcome:
         error = self._errors.get(self._messages.last_id)
         if error is None:
             return None
-        details = ", ".join(f"{key}={error[key]}" for key in ("error_type", "error_reason") if error.get(key))
+        details = ", ".join(f"{key}={getattr(error, key)}" for key in ("error_type", "error_reason") if getattr(error, key, None))
         return f"LLM request failed ({details})" if details else "LLM request failed"
 
 
@@ -379,8 +378,7 @@ def _run_json(plan: LaunchPlan) -> int:
         outcome = _RunOutcome()
         for event in session.client.stream(message, thread_id=thread_id, **_run_overrides(plan)):
             outcome.observe(event)
-            payload = {"type": event.type, "data": event.data}
-            sys.stdout.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+            sys.stdout.write(event.model_dump_json(exclude_unset=True) + "\n")
             sys.stdout.flush()
     except Exception as exc:  # noqa: BLE001 - headless boundary: report, never traceback
         return _report_json_error(_error_text(exc))
