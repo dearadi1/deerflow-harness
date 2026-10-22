@@ -18,7 +18,7 @@
 # ============================================================================
 # 配置架构发生变化时，请递增此版本号。
 # 运行 `make config-upgrade`，将新增字段合并到本地 `config.yaml`。
-config_version: 60
+config_version: 62
 
 # 可选：由运维人员维护的提示词文本扩展（参见 CONFIGURATION.md）：
 # lead_prompt_overlay:
@@ -138,6 +138,14 @@ max_recursion_limit: 1000
 #     output_per_million: 32.0         # 每百万输出 Token 的价格
 #     input_cache_hit_per_million: 0.8 # 每百万命中缓存的输入 Token 价格
 #                                      # （可选；省略时按未命中缓存的价格计费）
+
+# 客户端流使用独立的 price 配置块（人民币，元/百万 Token）：
+#   price:
+#     price_input_normal: 12.0
+#     price_output_normal: 36.0
+#     price_input_cache_hit: 1.5
+# 缓存命中数量包含在 input_tokens 内，计费时先扣除，避免重复计费。
+# 缺少单价或必要的缓存用量时，流事件将标记为无法计价。
 
 models:
   # 示例：火山引擎（豆包）模型
@@ -1363,13 +1371,16 @@ tool_artifacts:
   resolve_handles_in_args: true
 
 # ============================================================================
-# 建议配置
+# 推荐追问中间件配置
 # ============================================================================
-# 配置 Agent 是否在每次回复末尾自动生成后续问题建议。
+# enabled 是服务统一开关，客户端调用无需传入启用参数。
+# 回答完成后一次返回 suggestions 块，位于主 agent 的 end 前。
 
 suggestions:
   enabled: true
   max_suggestions: 3
+  max_chars: 100 # 每条追问的字符上限
+  model_name: null # null = 使用本轮主模型；可指定 models 中的快速模型名称
 
 
 # ============================================================================
