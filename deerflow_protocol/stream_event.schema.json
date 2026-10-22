@@ -1,0 +1,1418 @@
+{
+  "$defs": {
+    "AnswerContentEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "answer_content",
+          "default": "answer_content",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/ContentData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "AnswerContentEvent",
+      "type": "object"
+    },
+    "ContentData": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "additional_kwargs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id",
+        "content"
+      ],
+      "title": "ContentData",
+      "type": "object"
+    },
+    "ContextCompactionEndData": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "skipped"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "summary_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary Text"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "compacted_message_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Compacted Message Count",
+          "type": "integer"
+        },
+        "kept_message_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Kept Message Count",
+          "type": "integer"
+        },
+        "llm_call_skipped": {
+          "default": false,
+          "title": "Llm Call Skipped",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "status"
+      ],
+      "title": "ContextCompactionEndData",
+      "type": "object"
+    },
+    "ContextCompactionEndEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "context_compaction_end",
+          "default": "context_compaction_end",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/ContextCompactionEndData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "ContextCompactionEndEvent",
+      "type": "object"
+    },
+    "ContextCompactionStartData": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "compacted_message_count": {
+          "minimum": 0,
+          "title": "Compacted Message Count",
+          "type": "integer"
+        },
+        "kept_message_count": {
+          "minimum": 0,
+          "title": "Kept Message Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "input_tokens",
+        "compacted_message_count",
+        "kept_message_count"
+      ],
+      "title": "ContextCompactionStartData",
+      "type": "object"
+    },
+    "ContextCompactionStartEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "context_compaction_start",
+          "default": "context_compaction_start",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/ContextCompactionStartData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "ContextCompactionStartEvent",
+      "type": "object"
+    },
+    "ContextItem": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "enum": [
+            "memory",
+            "project",
+            "documents",
+            "durable_context"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "content": {
+          "minLength": 1,
+          "title": "Content",
+          "type": "string"
+        },
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "content",
+        "content_sha256"
+      ],
+      "title": "ContextItem",
+      "type": "object"
+    },
+    "ContextUsedData": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "contexts": {
+          "items": {
+            "$ref": "#/$defs/ContextItem"
+          },
+          "minItems": 1,
+          "title": "Contexts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "contexts"
+      ],
+      "title": "ContextUsedData",
+      "type": "object"
+    },
+    "ContextUsedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "context_used",
+          "default": "context_used",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/ContextUsedData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "ContextUsedEvent",
+      "type": "object"
+    },
+    "EndData": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "usage_metadata": {
+          "$ref": "#/$defs/TokenUsage"
+        },
+        "model_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Name"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenCost"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "required": [
+        "id",
+        "usage_metadata"
+      ],
+      "title": "EndData",
+      "type": "object"
+    },
+    "EndEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "end",
+          "default": "end",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/EndData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "EndEvent",
+      "type": "object"
+    },
+    "InputTokenDetails": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "properties": {
+        "cache_read": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Read"
+        },
+        "cache_creation": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Creation"
+        },
+        "audio": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Audio"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "title": "InputTokenDetails",
+      "type": "object"
+    },
+    "MessageMetadata": {
+      "additionalProperties": true,
+      "description": "供应商及中间件的扩展元数据保持开放，避免协议升级丢失原始信息。",
+      "properties": {},
+      "title": "MessageMetadata",
+      "type": "object"
+    },
+    "ModelPrice": {
+      "additionalProperties": false,
+      "description": "人民币单价，单位为元/百万 Token。",
+      "properties": {
+        "price_input_normal": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "ge": 0,
+          "title": "Price Input Normal"
+        },
+        "price_output_normal": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "ge": 0,
+          "title": "Price Output Normal"
+        },
+        "price_input_cache_hit": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "ge": 0,
+          "title": "Price Input Cache Hit"
+        }
+      },
+      "required": [
+        "price_input_normal",
+        "price_output_normal",
+        "price_input_cache_hit"
+      ],
+      "title": "ModelPrice",
+      "type": "object"
+    },
+    "OutputTokenDetails": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "properties": {
+        "reasoning": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning"
+        },
+        "audio": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Audio"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "title": "OutputTokenDetails",
+      "type": "object"
+    },
+    "ReasoningContentEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "reasoning_content",
+          "default": "reasoning_content",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/ContentData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "ReasoningContentEvent",
+      "type": "object"
+    },
+    "SuggestionsData": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "questions": {
+          "items": {
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 5,
+          "minItems": 1,
+          "title": "Questions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "questions"
+      ],
+      "title": "SuggestionsData",
+      "type": "object"
+    },
+    "SuggestionsEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "suggestions",
+          "default": "suggestions",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/SuggestionsData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "SuggestionsEvent",
+      "type": "object"
+    },
+    "TitleData": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "content"
+      ],
+      "title": "TitleData",
+      "type": "object"
+    },
+    "TitleEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "title",
+          "default": "title",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/TitleData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "TitleEvent",
+      "type": "object"
+    },
+    "TokenCost": {
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "const": "CNY",
+          "default": "CNY",
+          "title": "Currency",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "priced",
+            "unpriced"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelPrice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_normal_cost": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "ge": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Normal Cost"
+        },
+        "input_cache_hit_cost": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "ge": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Cache Hit Cost"
+        },
+        "output_cost": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "ge": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Cost"
+        },
+        "total_cost": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "ge": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Cost"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "TokenCost",
+      "type": "object"
+    },
+    "TokenUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "total_tokens": {
+          "title": "Total Tokens",
+          "type": "integer"
+        },
+        "input_token_details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InputTokenDetails"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "output_token_details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputTokenDetails"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "total_tokens"
+      ],
+      "title": "TokenUsage",
+      "type": "object"
+    },
+    "TokenUsageData": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "usage_metadata": {
+          "$ref": "#/$defs/TokenUsage"
+        },
+        "model_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Name"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenCost"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id",
+        "usage_metadata"
+      ],
+      "title": "TokenUsageData",
+      "type": "object"
+    },
+    "TokenUsageEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "token_usage",
+          "default": "token_usage",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/TokenUsageData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "TokenUsageEvent",
+      "type": "object"
+    },
+    "ToolCallData": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "minLength": 1,
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "function",
+          "default": "function",
+          "title": "Type",
+          "type": "string"
+        },
+        "function": {
+          "$ref": "#/$defs/ToolFunction"
+        }
+      },
+      "required": [
+        "index",
+        "id",
+        "tool_call_id",
+        "function"
+      ],
+      "title": "ToolCallData",
+      "type": "object"
+    },
+    "ToolCallsEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "tool_calls",
+          "default": "tool_calls",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "items": {
+            "$ref": "#/$defs/ToolCallData"
+          },
+          "title": "Data",
+          "type": "array"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "ToolCallsEvent",
+      "type": "object"
+    },
+    "ToolChunkData": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "minLength": 1,
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "function",
+          "default": "function",
+          "title": "Type",
+          "type": "string"
+        },
+        "function": {
+          "$ref": "#/$defs/ToolFunctionChunk"
+        }
+      },
+      "required": [
+        "index",
+        "id",
+        "tool_call_id",
+        "function"
+      ],
+      "title": "ToolChunkData",
+      "type": "object"
+    },
+    "ToolChunkEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "tool_chunk",
+          "default": "tool_chunk",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "items": {
+            "$ref": "#/$defs/ToolChunkData"
+          },
+          "title": "Data",
+          "type": "array"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "ToolChunkEvent",
+      "type": "object"
+    },
+    "ToolFunction": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "arguments": {
+          "title": "Arguments",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "arguments"
+      ],
+      "title": "ToolFunction",
+      "type": "object"
+    },
+    "ToolFunctionChunk": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "arguments": {
+          "title": "Arguments",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "arguments"
+      ],
+      "title": "ToolFunctionChunk",
+      "type": "object"
+    },
+    "ToolResultData": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            }
+          ],
+          "title": "Content"
+        },
+        "tool_call_id": {
+          "minLength": 1,
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "status": {
+          "default": "success",
+          "title": "Status",
+          "type": "string"
+        },
+        "artifact": {
+          "default": null,
+          "title": "Artifact"
+        },
+        "additional_kwargs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "tool_call_id"
+      ],
+      "title": "ToolResultData",
+      "type": "object"
+    },
+    "ToolResultEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "tool_result",
+          "default": "tool_result",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "minLength": 1,
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/ToolResultData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "ToolResultEvent",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "answer_content": "#/$defs/AnswerContentEvent",
+      "context_compaction_end": "#/$defs/ContextCompactionEndEvent",
+      "context_compaction_start": "#/$defs/ContextCompactionStartEvent",
+      "context_used": "#/$defs/ContextUsedEvent",
+      "end": "#/$defs/EndEvent",
+      "reasoning_content": "#/$defs/ReasoningContentEvent",
+      "suggestions": "#/$defs/SuggestionsEvent",
+      "title": "#/$defs/TitleEvent",
+      "token_usage": "#/$defs/TokenUsageEvent",
+      "tool_calls": "#/$defs/ToolCallsEvent",
+      "tool_chunk": "#/$defs/ToolChunkEvent",
+      "tool_result": "#/$defs/ToolResultEvent"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ReasoningContentEvent"
+    },
+    {
+      "$ref": "#/$defs/AnswerContentEvent"
+    },
+    {
+      "$ref": "#/$defs/TitleEvent"
+    },
+    {
+      "$ref": "#/$defs/SuggestionsEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolChunkEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolCallsEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolResultEvent"
+    },
+    {
+      "$ref": "#/$defs/TokenUsageEvent"
+    },
+    {
+      "$ref": "#/$defs/ContextCompactionStartEvent"
+    },
+    {
+      "$ref": "#/$defs/ContextCompactionEndEvent"
+    },
+    {
+      "$ref": "#/$defs/ContextUsedEvent"
+    },
+    {
+      "$ref": "#/$defs/EndEvent"
+    }
+  ]
+}
