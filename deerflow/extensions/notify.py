@@ -397,6 +397,52 @@ def task_store_for_system_call(invoke_config: object) -> ExtensionData | None:
     return store if isinstance(store, ExtensionData) else None
 
 
+def observe_system_model_call_sync(
+    extensions: LoadedExtensions,
+    kind: SystemOperationKind,
+    *,
+    messages: Any,
+    model_name: str | None,
+    invoke_config: Any,
+    invoke: Callable[[], Any],
+    task_store: ExtensionData | None = None,
+) -> Any:
+    """同步模型调用复用通知队列，避免为扩展观察阻塞当前图执行线程。"""
+    if not extensions.has_system_model_observers:
+        return invoke()
+
+    store = task_store if task_store is not None else task_store_for_system_call(invoke_config)
+    request = SystemModelRequest(
+        messages=messages,
+        model_name=model_name,
+        invoke_config=(invoke_config if isinstance(invoke_config, Mapping) else None),
+    )
+    started = time.monotonic()
+    response = None
+    error = None
+    try:
+        response = invoke()
+        return response
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        dispatch_system_model_observation(
+            notify_system_model_call(
+                extensions,
+                store,
+                kind,
+                request,
+                SystemModelResult(
+                    response=response,
+                    error=error,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                ),
+            ),
+            kind.value,
+        )
+
+
 async def observe_system_model_call(
     extensions: LoadedExtensions,
     kind: SystemOperationKind,

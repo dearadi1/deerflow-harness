@@ -2,6 +2,7 @@
 
 import logging
 import re
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NotRequired, override
@@ -9,7 +10,7 @@ from unicodedata import category
 
 from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
-from langgraph.config import get_config
+from langgraph.config import get_config, get_stream_writer
 from langgraph.constants import TAG_NOSTREAM
 from langgraph.runtime import Runtime
 
@@ -17,9 +18,13 @@ from deerflow.agents.middlewares.dynamic_context_middleware import is_dynamic_co
 from deerflow.agents.middlewares.pii_redaction_middleware import redact_texts
 from deerflow.config.title_config import get_title_config
 from deerflow.models import create_chat_model
+from deerflow.utils.custom_events import StreamWriter, aemit_custom_event, emit_custom_event
 from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, get_original_user_content_text
 
 if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import AIMessage
+
     from deerflow.config.app_config import AppConfig
     from deerflow.config.title_config import TitleConfig
 
@@ -313,6 +318,70 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         user_msg = self._get_title_user_message(state)
         return {"title": self._fallback_title(user_msg)}
 
+    def _title_model_request(self, state: TitleMiddlewareState) -> tuple["BaseChatModel", str, str, dict[str, Any]]:
+        """同步与异步入口使用同一模型配置，避免标题策略分叉。"""
+        config = self._get_title_config()
+        prompt, user_msg = self._build_title_prompt(state)
+        # 图级回调已携带追踪处理器，模型侧再次绑定会重复生成调用记录。
+        model_kwargs = {"thinking_enabled": False, "attach_tracing": False}
+        if self._app_config is not None:
+            model_kwargs["app_config"] = self._app_config
+        model = create_chat_model(name=config.model_name, **model_kwargs)
+        return model, prompt, user_msg, self._get_runnable_config()
+
+    def _needs_title_model(self, state: TitleMiddlewareState) -> bool:
+        return bool(
+            self._get_title_config().model_name
+            and self._get_title_user_message(state).strip()
+            and self._attachment_only_title(state) is None
+        )
+
+    def _title_model_result(self, response: "AIMessage", user_msg: str) -> tuple[dict, dict]:
+        """标题消息不进入对话历史；通过自定义事件保留其身份和真实用量。"""
+        title = self._parse_title(response.content) or self._fallback_title(user_msg)
+        payload = {
+            "type": "title_generated",
+            "id": response.id or f"title_{uuid.uuid4().hex}",
+            "title": title,
+            "model_name": self._get_title_config().model_name,
+            "usage_metadata": response.usage_metadata,
+        }
+        return {"title": title}, payload
+
+    @staticmethod
+    def _title_stream_writer() -> StreamWriter:
+        try:
+            return get_stream_writer()
+        except RuntimeError:
+            # 直接调用中间件时没有图上下文，仍需正常返回标题。
+            return lambda payload: None
+
+    def _generate_model_title_result(self, state: TitleMiddlewareState, *, task_store=None) -> dict | None:
+        fallback = self._generate_title_result(state)
+        if fallback is None or not self._needs_title_model(state):
+            return fallback
+        try:
+            from deerflow_extension_api import SystemOperationKind
+
+            from deerflow.extensions.notify import observe_system_model_call_sync
+
+            model, prompt, user_msg, invoke_config = self._title_model_request(state)
+            response = observe_system_model_call_sync(
+                self._extensions,
+                SystemOperationKind.TITLE,
+                messages=prompt,
+                model_name=self._get_title_config().model_name,
+                invoke_config=invoke_config,
+                invoke=lambda: model.invoke(prompt, config=invoke_config),
+                task_store=task_store,
+            )
+            result, payload = self._title_model_result(response, user_msg)
+            emit_custom_event(payload, writer=self._title_stream_writer())
+            return result
+        except Exception:
+            logger.warning("LLM 标题生成失败，回退到本地标题", exc_info=True)
+            return fallback
+
     async def _agenerate_title_result(
         self,
         state: TitleMiddlewareState,
@@ -320,34 +389,12 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         task_store=None,
     ) -> dict | None:
         """Generate a configured LLM title asynchronously and fall back locally."""
-        if not self._should_generate_title(state):
-            return None
-
-        attachment_title = self._attachment_only_title(state)
-        if attachment_title is not None:
-            return {"title": attachment_title}
-
-        user_msg = self._get_title_user_message(state)
-        # An attachment-only first turn has no user-authored text. Do not let a
-        # configured title model infer a title from the assistant response.
-        if not user_msg.strip():
-            return {"title": self._fallback_title(user_msg)}
-
-        config = self._get_title_config()
-        if not config.model_name:
-            return {"title": self._fallback_title(user_msg)}
+        fallback = self._generate_title_result(state)
+        if fallback is None or not self._needs_title_model(state):
+            return fallback
 
         try:
-            prompt, user_msg = self._build_title_prompt(state)
-            # attach_tracing=False because ``_get_runnable_config()`` inherits
-            # the graph-level RunnableConfig (set in ``_make_lead_agent``) whose
-            # callbacks already carry tracing handlers; binding them again at
-            # the model level would emit duplicate spans.
-            model_kwargs = {"thinking_enabled": False, "attach_tracing": False}
-            if self._app_config is not None:
-                model_kwargs["app_config"] = self._app_config
-            model = create_chat_model(name=config.model_name, **model_kwargs)
-            invoke_config = self._get_runnable_config()
+            model, prompt, user_msg, invoke_config = self._title_model_request(state)
 
             from deerflow_extension_api import SystemOperationKind
 
@@ -357,21 +404,23 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
                 self._extensions,
                 SystemOperationKind.TITLE,
                 messages=prompt,
-                model_name=config.model_name,
+                model_name=self._get_title_config().model_name,
                 invoke_config=invoke_config,
                 invoke=lambda: model.ainvoke(prompt, config=invoke_config),
                 task_store=task_store,
             )
-            title = self._parse_title(response.content)
-            if title:
-                return {"title": title}
+            result, payload = self._title_model_result(response, user_msg)
+            await aemit_custom_event(payload, writer=self._title_stream_writer())
+            return result
         except Exception:
-            logger.debug("Failed to generate async title; falling back to local title", exc_info=True)
-        return {"title": self._fallback_title(user_msg)}
+            logger.warning("异步 LLM 标题生成失败，回退到本地标题", exc_info=True)
+        return fallback
 
     @override
     def after_model(self, state: TitleMiddlewareState, runtime: Runtime) -> dict | None:
-        return self._generate_title_result(state)
+        from deerflow_extension_api import task_store_from_runtime
+
+        return self._generate_model_title_result(state, task_store=task_store_from_runtime(runtime))
 
     @override
     async def aafter_model(self, state: TitleMiddlewareState, runtime: Runtime) -> dict | None:
