@@ -24,18 +24,21 @@ import os
 import tempfile
 import uuid
 from collections.abc import Generator, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+
+from deerflow_protocol import ClientStreamEvent
 
 from deerflow.agents.lead_agent.agent import _authorize_model_name, build_middlewares
 from deerflow.agents.lead_agent.prompt_zh import apply_prompt_template, get_enabled_skills_for_config, has_bash_tool
 from deerflow.agents.middlewares.tool_declarations import layer_one_outcome, narrow_declared_tools, verify_declared_tool_view
+from deerflow.client_stream import ClientStreamParser
+from deerflow.client_stream_pricing import ClientStreamPricing
 from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
 from deerflow.authz.principal import build_principal_from_context
 from deerflow.config.agents_config import AGENT_NAME_PATTERN, load_agent_config
@@ -130,27 +133,6 @@ def _run_async_from_sync(coro):
     return asyncio.run(coro)
 
 
-StreamEventType = Literal["values", "messages-tuple", "custom", "end"]
-
-
-@dataclass
-class StreamEvent:
-    """A single event from the streaming agent response.
-
-    Event types align with the LangGraph SSE protocol:
-        - ``"values"``: State snapshot (title, messages, artifacts, summary_text).
-        - ``"messages-tuple"``: Per-message update (AI text, tool calls, tool results).
-        - ``"end"``: Stream finished.
-
-    Attributes:
-        type: Event type.
-        data: Event payload. Contents vary by type.
-    """
-
-    type: StreamEventType
-    data: dict[str, Any] = field(default_factory=dict)
-
-
 class _AIMessageAccumulator:
     """Accumulate text for the last content-bearing AI message id.
 
@@ -163,11 +145,12 @@ class _AIMessageAccumulator:
         self._chunks: dict[str, list[str]] = {}
         self.last_id = ""
 
-    def observe(self, event: StreamEvent) -> None:
-        if event.type != "messages-tuple" or event.data.get("type") != "ai":
+    def observe(self, event: ClientStreamEvent) -> None:
+        if event.type != "answer_content" or event.agent_id != "main":
             return
-        if delta := event.data.get("content", ""):
-            msg_id = event.data.get("id") or ""
+        data = event.data
+        if delta := data.content:
+            msg_id = data.id
             self._chunks.setdefault(msg_id, []).append(delta)
             self.last_id = msg_id
 
@@ -597,43 +580,6 @@ class DeerFlowClient:
         return None
 
     @staticmethod
-    def _ai_text_event(msg_id: str | None, text: str, usage: dict | None, additional_kwargs: dict[str, Any] | None = None) -> "StreamEvent":
-        """Build a ``messages-tuple`` AI text event."""
-        data: dict[str, Any] = {"type": "ai", "content": text, "id": msg_id}
-        if usage:
-            data["usage_metadata"] = usage
-        if additional_kwargs:
-            data["additional_kwargs"] = additional_kwargs
-        return StreamEvent(type="messages-tuple", data=data)
-
-    @staticmethod
-    def _ai_tool_calls_event(msg_id: str | None, tool_calls, additional_kwargs: dict[str, Any] | None = None) -> "StreamEvent":
-        """Build a ``messages-tuple`` AI tool-calls event."""
-        data: dict[str, Any] = {
-            "type": "ai",
-            "content": "",
-            "id": msg_id,
-            "tool_calls": DeerFlowClient._serialize_tool_calls(tool_calls),
-        }
-        if additional_kwargs:
-            data["additional_kwargs"] = additional_kwargs
-        return StreamEvent(type="messages-tuple", data=data)
-
-    @staticmethod
-    def _tool_message_event(msg: ToolMessage) -> "StreamEvent":
-        """Build a ``messages-tuple`` tool-result event from a ToolMessage."""
-        data: dict[str, Any] = {
-            "type": "tool",
-            "content": DeerFlowClient._extract_text(msg.content),
-            "name": msg.name,
-            "tool_call_id": msg.tool_call_id,
-            "id": msg.id,
-        }
-        if (artifact := getattr(msg, "artifact", None)) is not None:
-            data["artifact"] = artifact
-        return StreamEvent(type="messages-tuple", data=data)
-
-    @staticmethod
     def _serialize_message(msg) -> dict:
         """Serialize a LangChain message to a plain dict for values events."""
         if isinstance(msg, AIMessage):
@@ -864,7 +810,7 @@ class DeerFlowClient:
         thread_id: str | None = None,
         replay_last_turn: bool = False,
         **kwargs,
-    ) -> Generator[StreamEvent, None, None]:
+    ) -> Generator[ClientStreamEvent, None, None]:
         """Stream a conversation turn with a DeerFlow request trace context.
 
         The embedded entry point, and like every other one it binds a trace id
@@ -876,6 +822,7 @@ class DeerFlowClient:
         additional_kwargs.files，由上传中间件校验已落盘文件并注入上下文。
         replay_last_turn=True 时用 message 替换最近一轮输入并重新生成；传原问题即重试，
         传新问题即修改生成。仅恢复线程状态，不撤销长期记忆、文件或外部工具副作用。
+        推荐追问统一由应用配置 suggestions.enabled 控制，默认生成 3 个。
         """
         # Resolve the id once, without mutating the caller's context.
         trace_id = get_current_trace_id() or generate_trace_id()
@@ -924,89 +871,12 @@ class DeerFlowClient:
         thread_id: str | None = None,
         _turn_replay: ClientTurnReplay | None = None,
         **kwargs,
-    ) -> Generator[StreamEvent, None, None]:
-        """Stream a conversation turn, yielding events incrementally.
+    ) -> Generator[ClientStreamEvent, None, None]:
+        """按 deerflow_protocol 输出事件模型，消息增量与快照按 ID 对齐。
 
-        Each call sends one user message and yields events until the agent
-        finishes its turn. A ``checkpointer`` must be provided at init time
-        for multi-turn context to be preserved across calls.
-
-        Event types align with the LangGraph SSE protocol so that
-        consumers can switch between HTTP streaming and embedded mode
-        without changing their event-handling logic.
-
-        Token-level streaming
-        ~~~~~~~~~~~~~~~~~~~~~
-        This method subscribes to LangGraph's ``messages`` stream mode, so
-        ``messages-tuple`` events for AI text are emitted as **deltas** as
-        the model generates tokens, not as one cumulative dump at node
-        completion.  Each delta carries a stable ``id`` — consumers that
-        want the full text must accumulate ``content`` per ``id``.
-        ``chat()`` already does this for you.
-
-        Tool calls and tool results are still emitted once per logical
-        message.  ``values`` events continue to carry full state snapshots
-        after each graph node finishes. On resumed threads, historical messages
-        remain in those snapshots, but are not emitted again as per-message
-        events or counted in this turn's usage. AI text already delivered via
-        the ``messages`` stream is **not** re-synthesized from the snapshot to
-        avoid duplicate deliveries. When a later node replaces a delivered AI
-        message under the same id and appends to its text (a guard's stop
-        notice), only the appended text is emitted, as one more delta for that
-        id; new ``additional_kwargs`` arrive as a metadata-only follow-up.
-
-        Why not reuse Gateway's ``run_agent``?
-        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        Gateway (``runtime/runs/worker.py``) has a complete streaming
-        pipeline: ``run_agent`` → ``StreamBridge`` → ``sse_consumer``.  It
-        looks like this client duplicates that work, but the two paths
-        serve different audiences and **cannot** share execution:
-
-        * ``run_agent`` is ``async def`` and uses ``agent.astream()``;
-          this method is a sync generator using ``agent.stream()`` so
-          callers can write ``for event in client.stream(...)`` without
-          touching asyncio.  Bridging the two would require spinning up
-          an event loop + thread per call.
-        * Gateway events are JSON-serialized by ``serialize()`` for SSE
-          wire transmission.  This client yields in-process stream event
-          payloads directly as Python data structures (``StreamEvent``
-          with ``data`` as a plain ``dict``), without the extra
-          JSON/SSE serialization layer used for HTTP delivery.
-        * ``StreamBridge`` is an asyncio-queue decoupling producers from
-          consumers across an HTTP boundary (``Last-Event-ID`` replay,
-          heartbeats, multi-subscriber fan-out).  A single in-process
-          caller with a direct iterator needs none of that.
-
-        So ``DeerFlowClient.stream()`` is a parallel, sync, in-process
-        consumer of the same ``create_agent()`` factory — not a wrapper
-        around Gateway.  The two paths **should** stay in sync on which
-        LangGraph stream modes they subscribe to; that invariant is
-        enforced by ``tests/test_client.py::test_messages_mode_emits_token_deltas``
-        rather than by a shared constant, because the three layers
-        (Graph, Platform SDK, HTTP) each use their own naming
-        (``messages`` vs ``messages-tuple``) and cannot literally share
-        a string.
-
-        Args:
-            message: User message text.
-            thread_id: Thread ID for conversation context. Auto-generated if None.
-            **kwargs: Override client defaults (model_name, thinking_enabled,
-                plan_mode, subagent_enabled, recursion_limit). Trusted embedded
-                callers may also provide user_id, user_role, oauth_provider,
-                oauth_id, channel_user_id, is_internal, and authz_attributes.
-                files 用于声明本轮新上传文件元数据，仅透传已落盘文件声明，不负责上传。
-
-        Yields:
-            StreamEvent with one of:
-            - type="values"          data={"title": str|None, "messages": [...], "artifacts": [...], "summary_text": str|None}
-            - type="custom"          data={...}
-            - type="messages-tuple"  data={"type": "ai", "content": <delta>, "id": str}
-            - type="messages-tuple"  data={"type": "ai", "content": <delta>, "id": str, "usage_metadata": {...}}
-            - type="messages-tuple"  data={"type": "ai", "content": "", "id": str, "tool_calls": [...]}
-            - type="messages-tuple"  data={"type": "ai", "content": "", "id": str, "additional_kwargs": {...}}
-            - type="messages-tuple"  data={"type": "tool", "content": str, "name": str, "tool_call_id": str, "id": str}
-              Tool results also include ``"artifact"`` when the source ToolMessage has a non-None artifact.
-            - type="end"             data={"usage": {"input_tokens": int, "output_tokens": int, "total_tokens": int}}
+        同时订阅 messages、values 和 custom，分别保留模型分片、完整消息及
+        子智能体步骤。解析器按轮隔离状态，以免并行工具及历史消息互相污染。
+        files 仍通过 kwargs 声明已上传文件；重放复用相同的解析和清理流程。
         """
         thread_id = resolve_thread_id(thread_id)
 
@@ -1086,255 +956,31 @@ class DeerFlowClient:
         if _turn_replay is not None:
             _turn_replay.prepare(self._agent, checkpointer, state, config, context, self._checkpoint_channel_mode)
 
-        # Last message object seen per id in ``values`` snapshots. A later node,
-        # such as a guard's ``after_model``, can replace a message under the same
-        # id, so a different object for a known id is looked at again.
-        seen_messages: dict[str, Any] = {}
-        # AI text already emitted per id. A replacement that appends to it (a
-        # guard's stop notice) only needs the part that was added.
-        sent_text_by_id: dict[str, str] = {}
-        # Cross-mode handoff: ids already streamed via LangGraph ``messages``
-        # mode so the ``values`` path skips re-synthesis of the same message.
-        streamed_ids: set[str] = set()
-        # A resumed thread's values snapshots include prior turns. They remain
-        # in the full-state event, but must not become new deltas or usage.
-        historical_message_ids: set[str] = set()
-        # AI messages whose tool calls arrived as streamed fragments. The
-        # arguments only parse once the message is complete, so their
-        # tool_calls event is emitted from the values snapshot instead.
-        pending_tool_call_ids: set[str] = set()
-        # Chunks carry additive usage; complete messages carry the total.
-        # Reconcile that total once, without counting the streamed part again.
-        streamed_usage_by_id: dict[str, dict[str, int]] = {}
-        counted_usage_ids: set[str] = set()
-        sent_additional_kwargs_by_id: dict[str, dict[str, Any]] = {}
-        cumulative_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-
-        def _account_usage(msg_id: str | None, usage: Any, *, is_chunk: bool = False) -> dict | None:
-            """Accumulate chunk deltas or reconcile a complete message once.
-
-            ``usage`` is a ``langchain_core.messages.UsageMetadata`` TypedDict
-            or ``None``; typed as ``Any`` because TypedDicts are not
-            structurally assignable to plain ``dict`` under strict type
-            checking.  Returns the newly accounted usage (for attaching
-            to an event) when we accepted it, otherwise ``None``.
-            """
-            if not usage:
-                return None
-            if msg_id and msg_id in counted_usage_ids:
-                return None
-            delta = {key: usage.get(key, 0) or 0 for key in cumulative_usage}
-            if msg_id:
-                if is_chunk:
-                    streamed = streamed_usage_by_id.setdefault(msg_id, {})
-                    for key, value in delta.items():
-                        streamed[key] = streamed.get(key, 0) + value
-                else:
-                    counted_usage_ids.add(msg_id)
-                    streamed = streamed_usage_by_id.pop(msg_id, {})
-                    # State rewrites may lower totals; do not retract streamed usage.
-                    # Signed provider corrections remain valid in the chunk path.
-                    delta = {key: max(value - streamed.get(key, 0), 0) for key, value in delta.items()}
-            for key, value in delta.items():
-                cumulative_usage[key] += value
-            return delta
-
-        def _unsent_additional_kwargs(msg_id: str | None, additional_kwargs: dict[str, Any] | None) -> dict[str, Any] | None:
-            if not additional_kwargs:
-                return None
-            if not msg_id:
-                return additional_kwargs
-
-            sent = sent_additional_kwargs_by_id.setdefault(msg_id, {})
-            delta = {key: value for key, value in additional_kwargs.items() if sent.get(key) != value}
-            if not delta:
-                return None
-
-            sent.update(delta)
-            return delta
-
+        pricing = ClientStreamPricing(
+            getattr(getattr(self, "_app_config", None), "models", ()),
+            default_model=effective_model_name or configurable.get("model_name") or self._model_name,
+        )
+        parser = ClientStreamParser(thread_id, run_id, pricing=pricing)
         agent_items = self._agent.stream(
             state,
             config=config,
             context=context,
-            stream_mode=["values", "messages", "custom"],
+            stream_mode=["messages", "values", "custom"],
         )
-        for item in _stream_with_sandbox_lease_cleanup(agent_items, context):
-            if isinstance(item, tuple) and len(item) == 2:
-                mode, chunk = item
-                mode = str(mode)
-            else:
-                mode, chunk = "values", item
-
-            if mode == "custom":
-                yield StreamEvent(type="custom", data=chunk)
-                continue
-
-            if mode == "messages":
-                # LangGraph ``messages`` mode emits ``(message_chunk, metadata)``.
-                if isinstance(chunk, tuple) and len(chunk) == 2:
-                    msg_chunk, _metadata = chunk
-                else:
-                    msg_chunk = chunk
-
-                msg_id = getattr(msg_chunk, "id", None)
-                if msg_id and msg_id in historical_message_ids:
-                    continue
-
-                if isinstance(msg_chunk, AIMessage):
-                    text = self._extract_text(msg_chunk.content)
-                    additional_kwargs = self._serialize_additional_kwargs(msg_chunk)
-                    counted_usage = _account_usage(msg_id, msg_chunk.usage_metadata, is_chunk=isinstance(msg_chunk, AIMessageChunk))
-                    sent_additional_kwargs = False
-
-                    if text:
-                        if msg_id:
-                            streamed_ids.add(msg_id)
-                            sent_text_by_id[msg_id] = sent_text_by_id.get(msg_id, "") + text
-                        additional_kwargs_delta = _unsent_additional_kwargs(msg_id, additional_kwargs)
-                        yield self._ai_text_event(
-                            msg_id,
-                            text,
-                            counted_usage,
-                            additional_kwargs_delta,
-                        )
-                        sent_additional_kwargs = bool(additional_kwargs_delta)
-
-                    # A chunk without an id can't be matched to its values
-                    # snapshot, so it keeps the per-chunk event below.
-                    if isinstance(msg_chunk, AIMessageChunk) and msg_chunk.tool_call_chunks and msg_id:
-                        streamed_ids.add(msg_id)
-                        pending_tool_call_ids.add(msg_id)
-                    elif msg_chunk.tool_calls:
-                        if msg_id:
-                            streamed_ids.add(msg_id)
-                        additional_kwargs_delta = None if sent_additional_kwargs else _unsent_additional_kwargs(msg_id, additional_kwargs)
-                        yield self._ai_tool_calls_event(
-                            msg_id,
-                            msg_chunk.tool_calls,
-                            additional_kwargs_delta,
-                        )
-
-                elif isinstance(msg_chunk, ToolMessage):
-                    if msg_id:
-                        streamed_ids.add(msg_id)
-                    yield self._tool_message_event(msg_chunk)
-                continue
-
-            # mode == "values"
-            messages = chunk.get("messages", [])
-
-            current_user_index = next(
-                (index for index, msg in enumerate(messages) if isinstance(msg, HumanMessage) and (getattr(msg, "additional_kwargs", None) or {}).get("run_id") == run_id),
-                None,
-            )
-            if current_user_index is not None:
-                historical_message_ids.update(msg_id for msg in messages[:current_user_index] if (msg_id := getattr(msg, "id", None)))
-
-            for index, msg in enumerate(messages):
-                msg_id = getattr(msg, "id", None)
-                if (current_user_index is not None and index < current_user_index) or (msg_id and msg_id in historical_message_ids):
-                    continue
-                if msg_id and msg_id in seen_messages:
-                    if seen_messages[msg_id] is msg:
-                        continue
-                    seen_messages[msg_id] = msg
-                    if isinstance(msg, AIMessage):
-                        # Replaced after it was sent. Emit text appended to what
-                        # was already sent, plus any new metadata.
-                        text = self._extract_text(msg.content)
-                        sent_text = sent_text_by_id.get(msg_id, "")
-                        additional_kwargs_delta = _unsent_additional_kwargs(msg_id, self._serialize_additional_kwargs(msg))
-                        if len(text) > len(sent_text) and text.startswith(sent_text):
-                            sent_text_by_id[msg_id] = text
-                            yield self._ai_text_event(msg_id, text[len(sent_text) :], None, additional_kwargs_delta)
-                        elif additional_kwargs_delta:
-                            yield self._ai_text_event(msg_id, "", None, additional_kwargs_delta)
-                    continue
-                if msg_id:
-                    seen_messages[msg_id] = msg
-
-                # Already streamed via ``messages`` mode; emit only text added
-                # before this first snapshot, plus unsent tool calls/metadata.
-                if msg_id and msg_id in streamed_ids:
-                    if isinstance(msg, AIMessage):
-                        _account_usage(msg_id, getattr(msg, "usage_metadata", None))
-                        additional_kwargs = self._serialize_additional_kwargs(msg)
-                        additional_kwargs_delta = _unsent_additional_kwargs(msg_id, additional_kwargs)
-                        text = self._extract_text(msg.content)
-                        sent_text = sent_text_by_id.get(msg_id, "")
-                        if len(text) > len(sent_text) and text.startswith(sent_text):
-                            sent_text_by_id[msg_id] = text
-                            yield self._ai_text_event(msg_id, text[len(sent_text) :], None, additional_kwargs_delta)
-                            additional_kwargs_delta = None
-                        if msg_id in pending_tool_call_ids and msg.tool_calls:
-                            pending_tool_call_ids.discard(msg_id)
-                            yield self._ai_tool_calls_event(msg_id, msg.tool_calls, additional_kwargs_delta)
-                        elif additional_kwargs_delta:
-                            # Metadata-only follow-up: ``messages-tuple`` has no
-                            # dedicated attribution event, so clients should
-                            # merge this empty-content AI event by message id
-                            # and ignore it for text rendering.
-                            yield self._ai_text_event(msg_id, "", None, additional_kwargs_delta)
-                    continue
-
-                if isinstance(msg, AIMessage):
-                    counted_usage = _account_usage(msg_id, msg.usage_metadata)
-                    additional_kwargs = self._serialize_additional_kwargs(msg)
-                    sent_additional_kwargs = False
-
-                    if msg.tool_calls:
-                        additional_kwargs_delta = _unsent_additional_kwargs(msg_id, additional_kwargs)
-                        yield self._ai_tool_calls_event(
-                            msg_id,
-                            msg.tool_calls,
-                            additional_kwargs_delta,
-                        )
-                        sent_additional_kwargs = bool(additional_kwargs_delta)
-
-                    text = self._extract_text(msg.content)
-                    if text:
-                        if msg_id:
-                            sent_text_by_id[msg_id] = text
-                        additional_kwargs_delta = None if sent_additional_kwargs else _unsent_additional_kwargs(msg_id, additional_kwargs)
-                        yield self._ai_text_event(
-                            msg_id,
-                            text,
-                            counted_usage,
-                            additional_kwargs_delta,
-                        )
-                    elif msg_id:
-                        additional_kwargs_delta = None if sent_additional_kwargs else _unsent_additional_kwargs(msg_id, additional_kwargs)
-                        if not additional_kwargs_delta:
-                            continue
-                        # See the metadata-only follow-up convention above.
-                        yield self._ai_text_event(msg_id, "", None, additional_kwargs_delta)
-
-                elif isinstance(msg, ToolMessage):
-                    yield self._tool_message_event(msg)
-
-            # Emit a values event for each state snapshot
-            yield StreamEvent(
-                type="values",
-                data={
-                    "title": chunk.get("title"),
-                    "summary_text": chunk.get("summary_text"),
-                    "messages": [self._serialize_message(m) for m in messages],
-                    "artifacts": chunk.get("artifacts", []),
-                },
-            )
-
-        yield StreamEvent(type="end", data={"usage": cumulative_usage})
+        items = _stream_with_sandbox_lease_cleanup(agent_items, context)
+        try:
+            for item in items:
+                yield from parser.parse(item)
+            yield from parser.finish()
+        finally:
+            if close := getattr(items, "close", None):
+                close()
 
     def chat(self, message: str, *, thread_id: str | None = None, **kwargs) -> str:
         """Send a message and return the final text response.
 
-        Convenience wrapper around :meth:`stream` that accumulates delta
-        ``messages-tuple`` events per ``id`` and returns the text of the
-        **last** AI message to complete.  Intermediate AI messages (e.g.
-        planner drafts) are discarded — only the final id's accumulated
-        text is returned.  Use :meth:`stream` directly if you need every
-        delta as it arrives.
+        按消息 ID 累积主智能体的 answer_content，返回最后一条有正文的消息。
+        思考、工具结果和子智能体回答不会覆盖主智能体的最终答复。
 
         Args:
             message: User message text.
@@ -1355,12 +1001,7 @@ class DeerFlowClient:
     # ------------------------------------------------------------------
 
     def list_models(self) -> dict:
-        """List available models from configuration.
-
-        Returns:
-            Dict with "models" key containing list of model info dicts,
-            matching the Gateway API ``ModelsListResponse`` schema.
-        """
+        """返回模型能力及配置单价；单价以精确十进制字符串输出，未配置时为 None。"""
         token_usage_enabled = getattr(getattr(self._app_config, "token_usage", None), "enabled", False)
         if not isinstance(token_usage_enabled, bool):
             token_usage_enabled = False
@@ -1375,6 +1016,7 @@ class DeerFlowClient:
                     "supports_thinking": getattr(model, "supports_thinking", False),
                     "supports_reasoning_effort": getattr(model, "supports_reasoning_effort", False),
                     "reasoning": reasoning_capabilities_payload(resolve_reasoning_contract(model)),
+                    "price": price.model_dump(mode="json") if (price := getattr(model, "price", None)) is not None else None,
                 }
                 for model in self._app_config.models
             ],
