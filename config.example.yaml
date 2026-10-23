@@ -854,13 +854,13 @@ tools:
   #   max_total_chars: 8000
 
   # 网页搜索工具（使用 DuckDuckGo，无需 API 密钥）
-  - name: web_search
-    group: web
-    use: deerflow.community.ddg_search.tools:web_search_tool
-    max_results: 5
-    # backend: auto          # DDGS 后端：auto、duckduckgo、brave、wikipedia 等
-    # region: wt-wt          # backend 包含 auto/all/wikipedia 时，Wikipedia 会将 wt-wt 规范化处理。
-    # safesearch: moderate   # on, moderate, off
+  # - name: web_search
+  #   group: web
+  #   use: deerflow.community.ddg_search.tools:web_search_tool
+  #   max_results: 5
+  #   # backend: auto          # DDGS 后端：auto、duckduckgo、brave、wikipedia 等
+  #   # region: wt-wt          # backend 包含 auto/all/wikipedia 时，Wikipedia 会将 wt-wt 规范化处理。
+  #   # safesearch: moderate   # on, moderate, off
 
   # 网页搜索工具（使用 SearXNG，自托管，无需 API 密钥）
   # SearXNG 是免费的互联网元搜索引擎，可汇总多个搜索服务的结果。部署自有实例：https://github.com/searxng/searxng
@@ -926,6 +926,18 @@ tools:
   #   #   - developer.mozilla.org
   #   # exclude_domains: []
   #   # api_key: $TAVILY_API_KEY  # 按需设置
+
+  # 网络检索工具（使用 Metaso，需要 METASO_API_KEY）
+  # 默认启用；模型可通过 scope 选择六种检索范围。
+  - name: web_search
+    group: web
+    use: deerflow.community.metaso.tools:web_search_tool
+    max_results: 10
+    include_summary: false
+    include_raw_content: false
+    concise_snippet: false
+    timeout: 30
+    # api_key: $METASO_API_KEY  # 省略时读取环境变量
 
   # 网页搜索工具（使用 InfoQuest，需要 InfoQuest API 密钥）
   # - name: web_search
@@ -1010,7 +1022,7 @@ tools:
   # 部署自有实例：https://github.com/browserless/browserless
   # Docker 部署时，请使用 Docker 服务名称，而不是 localhost。
   # 注意：同一时间只能启用一个 web_fetch 服务提供方。
-  # 启用此项前，请注释掉下方 Jina AI 的 web_fetch 条目。
+  # 启用此项前，请注释掉默认启用的 Metaso web_fetch 条目。
   # - name: web_fetch
   #   group: web
   #   use: deerflow.community.browserless.tools:web_fetch_tool
@@ -1042,7 +1054,7 @@ tools:
   # 请使用 >= 0.8.7；包括 0.8.6 在内的早期镜像存在已知的预授权远程代码执行漏洞。
   # Docker 部署时，请使用 Docker 服务名称，而不是 localhost。
   # 注意：同一时间只能启用一个 web_fetch 服务提供方。
-  # 启用此项前，请注释掉下方 Jina AI 的 web_fetch 条目。
+  # 启用此项前，请注释掉默认启用的 Metaso web_fetch 条目。
   # - name: web_fetch
   #   group: web
   #   use: deerflow.community.crawl4ai.tools:web_fetch_tool
@@ -1138,24 +1150,32 @@ tools:
 
   # 网页抓取工具（使用 Exa）
   # 注意：同一时间只能启用一个 web_fetch 服务提供方。
-  # 启用此项前，请注释掉下方 Jina AI 的 web_fetch 条目。
+  # 启用此项前，请注释掉默认启用的 Metaso web_fetch 条目。
   # - name: web_fetch
   #   group: web
   #   use: deerflow.community.exa.tools:web_fetch_tool
   #   # api_key: $EXA_API_KEY
 
   # 网页抓取工具（使用 Jina AI Reader）
+  # - name: web_fetch
+  #   group: web
+  #   use: deerflow.community.jina_ai.tools:web_fetch_tool
+  #   timeout: 10
+  #   # 主动启用重试可能增加上游请求数和费用。
+  #   # max_retries: 0
+  #   # retry_budget_seconds: 30
+  #   # 可选代理，适用于受限网络 / Docker / WSL。
+  #   # 代理运行在宿主机时，请使用 host.docker.internal，而非 127.0.0.1。
+  #   # proxy: $HTTPS_PROXY
+  #   # trust_env: true
+
+  # 网页抓取工具（使用 Metaso，需要 METASO_API_KEY）
+  # 默认启用，返回完整正文文本。
   - name: web_fetch
     group: web
-    use: deerflow.community.jina_ai.tools:web_fetch_tool
-    timeout: 10
-    # 主动启用重试可能增加上游请求数和费用。
-    # max_retries: 0
-    # retry_budget_seconds: 30
-    # 可选代理，适用于受限网络 / Docker / WSL。
-    # 代理运行在宿主机时，请使用 host.docker.internal，而非 127.0.0.1。
-    # proxy: $HTTPS_PROXY
-    # trust_env: true
+    use: deerflow.community.metaso.tools:web_fetch_tool
+    timeout: 30
+    # api_key: $METASO_API_KEY  # 省略时读取环境变量
 
   # 网页抓取工具（使用 InfoQuest）
   # - name: web_fetch
@@ -1182,7 +1202,7 @@ tools:
   # 网页抓取工具（使用 GroundRoute，需要 GROUNDROUTE_API_KEY）
   # 通过 GroundRoute 的 mode=page 获取页面提取后的文本。
   # 注意：同一时间只能启用一个 web_fetch 服务提供方。
-  # 启用此项前，请注释掉上方 Jina AI 的 web_fetch 条目。
+  # 启用此项前，请注释掉默认启用的 Metaso web_fetch 条目。
   # - name: web_fetch
   #   group: web
   #   use: deerflow.community.groundroute.tools:web_fetch_tool
@@ -1191,7 +1211,7 @@ tools:
   # 网页抓取工具（使用 fastCRW - 兼容 Firecrawl 的网页抓取器，单一二进制文件，
   # 支持自托管或云服务。云服务需要 CRW_API_KEY；自托管服务可能无需密钥。）
   # 注意：同一时间只能启用一个 web_fetch 服务提供方。
-  # 启用此项前，请注释掉上方 Jina AI 的 web_fetch 条目。
+  # 启用此项前，请注释掉默认启用的 Metaso web_fetch 条目。
   # - name: web_fetch
   #   group: web
   #   use: deerflow.community.fastcrw.tools:web_fetch_tool
@@ -1205,7 +1225,7 @@ tools:
   # 网页抓取工具（使用 Sofya，需要 SOFYA_API_KEY）
   # 以 Markdown 形式返回页面内容，也支持 PDF、DOCX 等文档。
   # 注意：同一时间只能启用一个 web_fetch 服务提供方。
-  # 启用此项前，请注释掉上方 Jina AI 的 web_fetch 条目。
+  # 启用此项前，请注释掉默认启用的 Metaso web_fetch 条目。
   # - name: web_fetch
   #   group: web
   #   use: deerflow.community.sofya.tools:web_fetch_tool
@@ -1216,7 +1236,7 @@ tools:
   # 则回退到托管云浏览器。
   # 请在 https://unbrowse.ai/app 获取密钥。
   # 注意：同一时间只能启用一个 web_fetch 服务提供方。
-  # 启用此项前，请注释掉上方 Jina AI 的 web_fetch 条目。
+  # 启用此项前，请注释掉默认启用的 Metaso web_fetch 条目。
   # - name: web_fetch
   #   group: web
   #   use: deerflow.community.unbrowse.tools:web_fetch_tool
