@@ -11,5 +11,15 @@ build/
 !.env.example
 config.yaml
 extensions_config.json
-.deer-flow/
+/.deer-flow/*
+!/.deer-flow/agents/
+/.deer-flow/agents/*
+!/.deer-flow/agents/voris/
+/.deer-flow/agents/voris/*
+!/.deer-flow/agents/voris/config.yaml
+!/.deer-flow/agents/voris/SOUL.md
 .DS_Store
+example/
+*.ipynb
+scripts/
+!scripts/sync_upstream.py
