@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterator, ParamSpec, TypeVar
 
 import yaml
 
-from deerflow.config.app_config import get_app_config, reload_app_config
+from deerflow.client_config import load_client_config
 from deerflow.config.paths import get_paths
 from deerflow.skills.frontmatter import split_skill_markdown
 from deerflow.skills.parser import parse_allowed_tools, parse_required_secrets
@@ -80,6 +80,7 @@ def _chinese_errors(method: Callable[_Parameters, _Result]) -> Callable[_Paramet
 class DeerFlowSkillClient:
     """管理指定用户拥有的技能，不需要初始化 Agent。
 
+    config_path 未传或为 None 时使用包所在项目根目录的 config.yaml。
     create_skill 和 copy_skill 返回实际存储目录的绝对路径，不包含 SKILL.md；列表中的
     skill_path 使用容器路径，host_path 使用实际目录的绝对路径。
     所有文件参数均相对于技能根目录，父目录
@@ -90,9 +91,7 @@ class DeerFlowSkillClient:
 
     @_chinese_errors
     def __init__(self, config_path: str | None = None) -> None:
-        if config_path is not None:
-            reload_app_config(config_path)
-        self._app_config = get_app_config()
+        self._app_config = load_client_config(config_path)
 
     @staticmethod
     def _check_owned_path(base: Path, target: Path) -> Path:
