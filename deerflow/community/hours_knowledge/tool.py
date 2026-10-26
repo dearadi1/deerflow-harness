@@ -65,15 +65,12 @@ def knowledge_base_search_tool(
     query: str,
     top_k: int = 5,
 ) -> list[dict[str, Any]] | str:
-    """检索知识库，按来源文档归并匹配段落，便于回答中引用依据。
-
-    每个来源包含标题及段落列表，段落提供相关性得分、内容和引用链接。
-    检索失败时返回以 "Error: " 开头的字符串。
+    """Searches the enterprise knowledge base for specific documents, procedures, and domain knowledge.
 
     Args:
-        description: 简述本次检索的目的，作为第一个参数提供。
-        query: 根据多轮对话中的用户意图组织完整、独立的查询，将代词和上下文指代替换为明确名称或术语。
-        top_k: 最多检索的匹配段落数，范围为 1 到 100，默认 5。
+        description: A brief description of the purpose of this search, supplied as the first parameter.
+        query: A complete, independent search query formulated based on the user's intent from multi-turn conversations, with pronouns and contextual references replaced by explicit names or terms.
+        top_k: Maximum number of matching passages to retrieve, ranging from 1 to 100. Defaults to 5.
     """
     return _search_sync(runtime, description, query, top_k)
 
