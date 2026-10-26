@@ -37,7 +37,8 @@ from functools import wraps
 from typing import Any
 
 from deerflow.client import DeerFlowClient
-from deerflow.config.app_config import get_app_config, reload_app_config
+from deerflow.client_config import load_client_config
+from deerflow.config.app_config import get_app_config
 from deerflow.runtime.user_context import CurrentUser, get_current_user, reset_current_user, set_current_user
 
 __all__ = ["DeerFlowClientPool", "AgentClientSession", "PoolClosedError", "PoolTimeoutError", "PoolQueueFullError"]
@@ -126,8 +127,11 @@ class _ClientSlot:
 class DeerFlowClientPool:
     """固定容量的同步池，按等待者入队顺序分配空闲实例。
 
-    client_kwargs 原样传给 DeerFlowClient，config_path 仅在建池时加载一次。
+    除 config_path 外的 client_kwargs 原样传给 DeerFlowClient，配置仅在建池时
+    加载一次。config_path 未传或为 None 时使用包所在项目根目录的 config.yaml，
+    不受调用方工作目录影响；显式相对路径仍相对于调用方工作目录。
     client_factory 与 client_kwargs 互斥，工厂必须每次返回独立客户端。
+    自定义工厂自行负责配置加载。
     acquire_timeout=None 表示无限等待，0 表示立即尝试；max_waiters=None
     表示不限制等待人数，0 表示不排队。size 限制借用数，不限制后台任务数量。
 
@@ -176,9 +180,8 @@ class DeerFlowClientPool:
         # 配置加载会修改进程级状态，建池时串行初始化，避免池之间重复冷启动。
         with _INITIALIZATION_LOCK:
             options = dict(client_kwargs)
-            config_path = options.pop("config_path", None)
-            if config_path is not None:
-                reload_app_config(config_path)
+            if client_factory is None:
+                load_client_config(options.pop("config_path", None))
             factory = client_factory or (lambda: DeerFlowClient(**options))
             clients = [factory() for _ in range(size)]
             if len({id(client) for client in clients}) != size:

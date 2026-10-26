@@ -18,6 +18,7 @@ from threading import RLock
 
 from langgraph.checkpoint.base import BaseCheckpointSaver, empty_checkpoint
 
+from deerflow.client_config import load_client_config
 from deerflow.config.paths import get_paths
 from deerflow.uploads.companions import invalidate_overwritten_upload, register_companion, resolve_companion
 from deerflow.uploads.manager import (
@@ -76,16 +77,14 @@ def _convert_document(source: Path, output: Path) -> Path | None:
 class DeerFlowThreadClient:
     """按显式 user_id 隔离线程，不依赖或修改当前用户上下文。
 
+    config_path 未传或为 None 时使用包所在项目根目录的 config.yaml。
     user_id 使用 DeerFlow 的存储用户 ID。线程 ID 在共享 checkpointer 中必须
     全局唯一，本管理器创建时使用 UUID。文件列表仅返回原始上传文件的绝对路径，
     排除有有效归属记录的转码文件；用户直接上传的 Markdown 仍正常返回。
     """
 
     def __init__(self, config_path: str | None = None, checkpointer: BaseCheckpointSaver | None = None) -> None:
-        if config_path is not None:
-            from deerflow.config.app_config import reload_app_config
-
-            reload_app_config(config_path)
+        load_client_config(config_path)
         self._checkpointer = checkpointer
 
     def _get_checkpointer(self) -> BaseCheckpointSaver:
