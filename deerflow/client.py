@@ -823,6 +823,9 @@ class DeerFlowClient:
         replay_last_turn=True 时用 message 替换最近一轮输入并重新生成；传原问题即重试，
         传新问题即修改生成。仅恢复线程状态，不撤销长期记忆、文件或外部工具副作用。
         推荐追问统一由应用配置 suggestions.enabled 控制，默认生成 3 个。
+        临时约定：knowledge_search_kwargs={"kb_ids": [...]} 经 runtime.context 透传给
+        注册的知识库检索函数，也可包含 dense_weight、sparse_weight 等宿主参数。
+        模型仅提供 description、query、top_k；后续将改为正式的知识库上下文接口。
         """
         # Resolve the id once, without mutating the caller's context.
         trace_id = get_current_trace_id() or generate_trace_id()
@@ -924,6 +927,10 @@ class DeerFlowClient:
         for key in _EMBEDDED_AUTHORIZATION_CONTEXT_KEYS:
             if key in kwargs:
                 context[key] = kwargs[key]
+
+        # TODO：知识库宿主参数暂借 stream(**kwargs) 逐轮透传，后续迁移到正式上下文接口。
+        if "knowledge_search_kwargs" in kwargs:
+            context["knowledge_search_kwargs"] = copy.deepcopy(kwargs["knowledge_search_kwargs"])
 
         deerflow_trace_id = ensure_trace_id()
         effective_user_id = context.get("user_id") or get_effective_user_id()
