@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import errno
 import mimetypes
+import os
 import shutil
 import stat
 import tempfile
+import threading
 from contextlib import contextmanager
-from functools import wraps
+from copy import deepcopy
+from functools import lru_cache, wraps
 from pathlib import Path
 from typing import Any, Callable, Iterator, ParamSpec, TypeVar
 
@@ -21,11 +24,12 @@ from deerflow.skills.parser import parse_allowed_tools, parse_required_secrets
 from deerflow.skills.permissions import make_skill_tree_sandbox_readable, make_skill_written_path_sandbox_readable
 from deerflow.skills.projection import _projection_lock, get_skill_projection_paths
 from deerflow.skills.storage import UserScopedSkillStorage, get_or_new_user_skill_storage
-from deerflow.skills.types import SKILL_MD_FILE, Skill, SkillCategory
+from deerflow.skills.types import SKILL_MD_FILE, SkillCategory
 
 
 _Parameters = ParamSpec("_Parameters")
 _Result = TypeVar("_Result")
+_METADATA_CACHE_LOCK = threading.RLock()
 _FILESYSTEM_ERRORS = {
     errno.ENOENT: "文件或目录不存在",
     errno.EEXIST: "目标文件或目录已存在",
@@ -45,6 +49,10 @@ _FILESYSTEM_ERRORS = {
     errno.ENFILE: "系统打开的文件数量已达上限",
     errno.EIO: "读取或写入文件时发生输入输出错误",
 }
+
+
+class _SkillMetadataChangedError(RuntimeError):
+    """读取期间文件变化时重新读取，避免把不同版本的内容放入同一缓存条目。"""
 
 
 def _chinese_errors(method: Callable[_Parameters, _Result]) -> Callable[_Parameters, _Result]:
@@ -174,7 +182,7 @@ class DeerFlowSkillClient:
         return self._app_config.skills.get_skill_container_path(name, category=SkillCategory.CUSTOM.value)
 
     @staticmethod
-    def _validate_markdown(name: str, content: str) -> None:
+    def _validate_markdown(name: str, content: str) -> dict[str, Any]:
         parts, error = split_skill_markdown(content)
         if parts is None:
             messages = {
@@ -189,6 +197,7 @@ class DeerFlowSkillClient:
         if not isinstance(description, str) or not description.strip():
             raise ValueError("SKILL.md 的 description 必须是非空字符串")
         DeerFlowSkillClient._validate_runtime_fields(parts.metadata)
+        return parts.metadata
 
     @staticmethod
     def _validate_runtime_fields(metadata: dict[str, object]) -> None:
@@ -313,24 +322,94 @@ class DeerFlowSkillClient:
             self._delete_skill_metadata(storage, directory.name)
             shutil.rmtree(directory)
 
-    def _skill_info(self, storage: UserScopedSkillStorage, skill: Skill) -> dict[str, str]:
-        directory = self._check_owned_path(storage.get_user_custom_root(), skill.skill_dir)
+    @staticmethod
+    def _metadata_signature(skill_file: Path) -> tuple[int, ...]:
+        details = skill_file.lstat()
+        if stat.S_ISLNK(details.st_mode):
+            raise ValueError(f"不允许通过符号链接读取技能信息: {skill_file}")
+        if stat.S_ISDIR(details.st_mode):
+            raise IsADirectoryError(f"SKILL.md 必须是普通文件: {skill_file}")
+        if not stat.S_ISREG(details.st_mode):
+            raise ValueError(f"SKILL.md 必须是普通文件: {skill_file}")
+        return (details.st_dev, details.st_ino, details.st_size, details.st_mtime_ns, details.st_ctime_ns)
+
+    @staticmethod
+    @lru_cache(maxsize=1024)
+    def _load_metadata_snapshot(skill_file: Path, signature: tuple[int, ...]) -> tuple[dict[str, Any] | None, str | None]:
+        """按绝对路径及文件版本缓存完整 YAML，跨客户端复用且限制内存条目数量。"""
+        content = skill_file.read_bytes()
+        if DeerFlowSkillClient._metadata_signature(skill_file) != signature:
+            raise _SkillMetadataChangedError("读取技能信息期间文件发生变化")
+        try:
+            return DeerFlowSkillClient._validate_markdown(skill_file.parent.name, content.decode("utf-8")), None
+        except UnicodeDecodeError:
+            return None, "SKILL.md 必须使用有效的 UTF-8 编码"
+        except ValueError as error:
+            # 无效文档也按版本缓存，避免列表请求不断重复解析同一份损坏的 YAML。
+            return None, str(error)
+
+    def _read_skill_metadata(self, directory: Path) -> dict[str, Any]:
+        skill_file = self._check_owned_path(directory, directory / SKILL_MD_FILE)
+        with _METADATA_CACHE_LOCK:
+            for _attempt in range(3):
+                signature = self._metadata_signature(skill_file)
+                try:
+                    metadata, error = self._load_metadata_snapshot(skill_file, signature)
+                except _SkillMetadataChangedError:
+                    continue
+                if metadata is None:
+                    raise ValueError(error or "无法解析 SKILL.md 的 YAML 头")
+                # 调用方可以修改返回的嵌套字段，不能让这些修改污染进程内共享缓存。
+                return deepcopy(metadata)
+        raise RuntimeError("技能文件持续发生变化，暂时无法读取技能信息，请稍后重试")
+
+    @_chinese_errors
+    def get_skill_info(self, user_id: str, skill_name: str) -> dict[str, Any]:
+        """返回该用户 custom 技能的完整 YAML 头，保留各字段原始类型。
+
+        文件未变化时直接复用进程内解析缓存；每次仅检查文件属性，不重复读取
+        文件内容。文件被更新、替换或删除后，下次查询立即识别新状态。
+        """
+        directory = self._skill_dir(self._storage(user_id), skill_name)
+        return self._read_skill_metadata(directory)
+
+    @staticmethod
+    def _raise_walk_error(error: OSError) -> None:
+        raise error
+
+    def _iter_custom_skill_directories(self, root: Path) -> Iterator[Path]:
+        if not root.exists():
+            return
+        self._require_directory(root)
+        for current, directories, files in os.walk(root, followlinks=False, onerror=self._raise_walk_error):
+            directory = self._check_owned_path(root, Path(current))
+            directories[:] = sorted(name for name in directories if not name.startswith(".") and not (directory / name).is_symlink())
+            if SKILL_MD_FILE in files:
+                # 与运行时发现规则一致，技能包内的示例文档不作为独立技能列出。
+                directories.clear()
+                yield directory
+
+    def _skill_info(self, root: Path, directory: Path, metadata: dict[str, Any]) -> dict[str, str]:
         return {
-            "name": skill.name,
-            "description": skill.description,
-            "skill_path": self._container_path(skill.skill_path),
+            "name": metadata["name"],
+            "description": metadata["description"].strip(),
+            "skill_path": self._container_path(directory.relative_to(root).as_posix()),
             "host_path": str(directory),
         }
 
     @_chinese_errors
     def list_skills(self, user_id: str) -> list[dict[str, str]]:
-        """返回可解析的用户技能，包括禁用项，不包含 public、legacy 和集成技能。"""
+        """仅扫描当前用户的 custom 目录，复用详情缓存，包含禁用项并跳过无效文档。"""
         storage = self._storage(user_id)
-        return [
-            self._skill_info(storage, skill)
-            for skill in storage.load_skills(enabled_only=False)
-            if skill.category == SkillCategory.CUSTOM
-        ]
+        root = storage.get_user_custom_root()
+        skills_by_name: dict[str, dict[str, str]] = {}
+        for directory in self._iter_custom_skill_directories(root):
+            try:
+                metadata = self._read_skill_metadata(directory)
+            except (ValueError, FileNotFoundError):
+                continue
+            skills_by_name[metadata["name"]] = self._skill_info(root, directory, metadata)
+        return [skills_by_name[name] for name in sorted(skills_by_name)]
 
     @_chinese_errors
     def get_resource_tree(self, user_id: str, skill_name: str) -> list[dict[str, Any]]:
