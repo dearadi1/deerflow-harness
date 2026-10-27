@@ -70,9 +70,7 @@ def _search_payload(query: str, scope: str, options: dict) -> dict:
 
 
 def _normalize_result(result: dict) -> dict:
-    # 保留各类来源的元数据；图片结果可能只有 imageUrl，没有 link 和 snippet。
     return {
-        **result,
         "title": str(result.get("title") or ""),
         "url": str(result.get("url") or result.get("link") or result.get("imageUrl") or ""),
         "snippet": str(result.get("snippet") or ""),
@@ -110,7 +108,9 @@ def _error_result(error: Exception) -> str:
 
 @tool("web_search", parse_docstring=True)
 async def web_search_tool(query: str, scope: str = "webpage") -> str:
-    """Search webpages, documents, scholarly resources, images, videos, or podcasts and return a JSON list of results.
+    """Search webpages, documents, scholarly resources, images, videos, or podcasts.
+
+    Return a JSON list with only title, url, and snippet for each result, or an error string starting with "Error: ".
 
     Args:
         query: The question or keywords to search for.

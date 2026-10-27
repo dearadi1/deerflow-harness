@@ -45,7 +45,7 @@ class MetasoToolsTests(unittest.IsolatedAsyncioTestCase):
     async def fetch(self):
         return await tools.web_fetch_tool.ainvoke({"url": "https://example.com/article"})
 
-    async def test_all_live_scope_shapes_preserve_metadata(self):
+    async def test_all_scope_shapes_return_only_public_fields(self):
         cases = [
             ("webpage", "webpages", {"link": "https://example.com/web", "snippet": "网页摘要", "date": "2025年04月30日"}),
             ("document", "documents", {"link": "https://example.com/doc", "snippet": "文档摘要", "authors": ["作者"]}),
@@ -59,11 +59,11 @@ class MetasoToolsTests(unittest.IsolatedAsyncioTestCase):
                 item = {"title": "人工智能", "score": "high", "position": 1, **fields}
                 self.response = httpx.Response(200, json={"credits": 3, container: [item], "total": 10})
                 results = json.loads(await self.search(scope))
-                self.assertEqual(len(results), 1)
-                self.assertEqual(results[0]["url"], fields.get("link") or fields["imageUrl"])
-                self.assertEqual(results[0]["snippet"], fields.get("snippet", ""))
-                for key, value in item.items():
-                    self.assertEqual(results[0][key], value)
+                self.assertEqual(results, [{
+                    "title": "人工智能",
+                    "url": fields.get("link") or fields["imageUrl"],
+                    "snippet": fields.get("snippet", ""),
+                }])
                 self.assertTrue(self.clients[-1].is_closed)
 
     async def test_search_defaults_and_config_parameters(self):
