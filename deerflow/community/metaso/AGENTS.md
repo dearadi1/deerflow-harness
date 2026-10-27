@@ -51,9 +51,9 @@
 | `podcast` | `podcasts` | 作者、日期、`duration`，摘要可能为空 |
 
 成功检索返回 JSON 数组的字符串，使用 `indent=2, ensure_ascii=False`，不增加外层包装。
-每项统一包含字符串字段 `title`、`url`、`snippet`，缺失或空值归一化为空字符串。
-`url` 依次采用非空的 `url`、`link`、`imageUrl`。保留其余原始字段，包括 `link`、
-图片尺寸、作者、时长及未来新增字段；不得仅提取三个公共字段而丢弃元数据。
+每项仅包含字符串字段 `title`、`url`、`snippet`，缺失或空值归一化为空字符串。
+`url` 依次采用非空的 `url`、`link`、`imageUrl`。其余原始字段不进入输出，
+包括 `link`、图片尺寸、作者、时长及未来新增字段。
 
 响应顶层必须是对象，且包含当前 scope 对应的容器。容器为 `null` 或空列表时返回
 `[]`；容器不是列表、非空列表完全没有对象项、顶层包含非空 `error` 或 `errCode`
@@ -81,7 +81,7 @@ HTTP 状态错误保留状态码，超时返回明确提示；其他异常仅暴
 .venv/bin/python -m unittest discover -s tests -p 'test_metaso_tools.py' -v
 ```
 
-离线测试使用真实工具入口和 HTTPX `MockTransport`，覆盖六种响应结构、元数据保留、
+离线测试使用真实工具入口和 HTTPX `MockTransport`，覆盖六种响应结构、仅输出三个公共字段、
 配置和凭据隔离、空及畸形响应、HTTP 与网络错误、连接关闭、取消传播、完整正文及工具参数。
 
 修改 scope 映射或响应归一化时，逐个真实调用六种 scope，检查各自结果容器和字段，

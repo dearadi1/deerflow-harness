@@ -186,12 +186,24 @@ class StreamPricingTests(unittest.TestCase):
         model = self.model()
         model.price = ModelPriceConfig(price_input_normal="12.000000000000000001", price_output_normal="36.0", price_input_cache_hit=0)
         model.api_key = "test_placeholder"
+        model.display_name = "模型展示名称"
+        model.description = "模型介绍"
+        model.supports_vision = True
+        model.supports_thinking = True
         client._app_config = SimpleNamespace(models=[model], token_usage=SimpleNamespace(enabled=True))
 
         response = client.list_models()
         payload = json.loads(json.dumps(response))
         self.assertEqual(payload["models"][0]["price"], {"price_input_normal": "12.000000000000000001", "price_output_normal": "36.0", "price_input_cache_hit": "0"})
-        self.assertEqual(payload["models"][0]["name"], model.name)
+        expected_fields = {
+            "name": model.name,
+            "display_name": "模型展示名称",
+            "description": "模型介绍",
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_reasoning_effort": False,
+        }
+        self.assertEqual({key: payload["models"][0][key] for key in expected_fields}, expected_fields)
         self.assertEqual(payload["token_usage"], {"enabled": True})
         self.assertNotIn("api_key", payload["models"][0])
         response["models"][0]["price"]["price_input_normal"] = "999"
@@ -203,6 +215,7 @@ class StreamPricingTests(unittest.TestCase):
 
         payload = json.loads(json.dumps(client.list_models()))
         self.assertEqual([model["price"] for model in payload["models"]], [None, None])
+        self.assertEqual([model["supports_vision"] for model in payload["models"]], [False, False])
         self.assertEqual(payload["token_usage"], {"enabled": False})
 
     def test_downstream_price_mutation_cannot_change_later_costs(self):
