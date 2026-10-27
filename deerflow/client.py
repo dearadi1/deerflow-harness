@@ -1020,6 +1020,7 @@ class DeerFlowClient:
                     "model": getattr(model, "model", None),
                     "display_name": getattr(model, "display_name", None),
                     "description": getattr(model, "description", None),
+                    "supports_vision": getattr(model, "supports_vision", False),
                     "supports_thinking": getattr(model, "supports_thinking", False),
                     "supports_reasoning_effort": getattr(model, "supports_reasoning_effort", False),
                     "reasoning": reasoning_capabilities_payload(resolve_reasoning_contract(model)),
