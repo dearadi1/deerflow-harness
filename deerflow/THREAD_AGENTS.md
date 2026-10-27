@@ -15,7 +15,7 @@ manager = DeerFlowThreadClient(
 
 | 输入 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `config_path` | `str \| None` | `None` | 指定时重新加载该配置文件；省略时沿用当前配置。 |
+| `config_path` | `str \| None` | `None` | 省略或为 `None` 时加载包所在项目根目录的 `config.yaml`；显式相对路径按调用方工作目录解析。同一进程的管理接口应使用同一个配置文件。 |
 | `checkpointer` | `BaseCheckpointSaver \| None` | `None` | 同步 checkpoint 存储实例；省略时按现有配置获取默认实例。若 `DeerFlowClient` 使用自定义实例，此处必须传入同一个实例。 |
 
 输出：`DeerFlowThreadClient` 实例。
@@ -65,6 +65,17 @@ def upload_file(self, user_id: str, thread_id: str, file_name: str, file_bytes: 
 - `.pdf`、`.ppt`、`.pptx`、`.xls`、`.xlsx`、`.doc`、`.docx` 按现有配置转换为 Markdown；转码文件重名时自动使用带编号的名称。
 - 转换器返回失败时保留原文件，记录 `文件已上传，但 Markdown 转换失败: <文件名>` 日志，方法仍返回 `None`。
 
+### 下载文件
+
+```python
+def download_file(self, user_id: str, thread_id: str, file_name: str) -> bytes
+```
+
+- 输入：`user_id`、`thread_id`、`file_name`；仅接受单个文件名，例如 `report.pdf`，不接受任何路径。
+- 输出：原始文件的二进制内容 `bytes`，空文件返回 `b""`。
+- 只读取当前用户、当前线程 `uploads` 目录的直属普通文件，不搜索子目录或其他线程。
+- 文件或线程不存在时抛出 `FileNotFoundError`；目录、符号链接等非普通文件抛出 `UnsafeUploadPathError`。
+
 ### 删除文件
 
 ```python
@@ -83,15 +94,14 @@ def thread_files(self, user_id: str, thread_id: str) -> list[str]
 ```
 
 - 输入：`user_id`、`thread_id`。
-- 输出：按文件名排序的上传文件绝对路径列表，例如 `["/data/.deer-flow/users/user_001/threads/<线程ID>/user-data/uploads/report.pdf"]`；实际路径由当前配置决定。
+- 输出：按文件名排序的列表，例如 `["report.pdf", "test.txt"]`，不包含任何目录前缀。
+- 只列出 `uploads` 直属文件，不递归列出子目录。例如 `uploads/report.pdf` 返回 `"report.pdf"`，`uploads/data/result.csv` 不列入结果。
 - 排除目录、符号链接、上传暂存文件及归属验证通过的转码 Markdown。用户独立上传或无法确认归属的 `.md` 仍会返回。
 - 没有文件或指定用户的线程目录不存在时返回 `[]`。
 
 ## 调用示例
 
 ```python
-from pathlib import Path
-
 from deerflow.thread_client import DeerFlowThreadClient
 
 manager = DeerFlowThreadClient()
@@ -99,10 +109,11 @@ user_id = "user_001"
 thread_id = manager.create_thread(user_id)
 
 manager.upload_file(user_id, thread_id, "hello.txt", b"hello")
-file_paths = manager.thread_files(user_id, thread_id)
+file_names = manager.thread_files(user_id, thread_id)
 
-for file_path in file_paths:
-    manager.delete_file(user_id, thread_id, Path(file_path).name)
+for file_name in file_names:
+    file_bytes = manager.download_file(user_id, thread_id, file_name)
+    manager.delete_file(user_id, thread_id, file_name)
 
 manager.delete_thread(user_id, thread_id)
 ```
@@ -129,8 +140,8 @@ answer = client.chat("你好", user_id="user_001", thread_id=thread_id)
 | --- | --- |
 | `ValueError` | 用户 ID、线程 ID 或文件名不符合校验要求。例如 `user_id 必须是非空字符串`、`file_name 必须是单个文件名，不能包含目录`。底层校验也可能返回英文报错。 |
 | `TypeError` | `file_bytes` 不是 `bytes`：`file_bytes 必须是 bytes`。 |
-| `FileNotFoundError` | 上传或删除文件时线程目录不存在：`用户线程不存在: <user_id>/<thread_id>`；删除的文件不存在或不是普通文件：`File not found: <file_name>`；配置文件缺失也可能触发。 |
-| `UnsafeUploadPathError` | 线程路径中的目录是符号链接，或上传目标是符号链接、目录等不安全目标。此异常继承自 `ValueError`，从 `deerflow.uploads.manager` 导入。 |
+| `FileNotFoundError` | 上传、下载或删除文件时线程目录不存在：`用户线程不存在: <user_id>/<thread_id>`；下载文件不存在；删除的文件不存在或不是普通文件：`File not found: <file_name>`；配置文件缺失也可能触发。 |
+| `UnsafeUploadPathError` | 线程路径中的目录是符号链接，上传或下载目标是符号链接、目录等不安全目标，或下载目标在打开时被替换。此异常继承自 `ValueError`，从 `deerflow.uploads.manager` 导入。 |
 | `PathTraversalError` | 底层文件路径校验发现越界，例如符号链接指向上传目录外。此异常继承自 `ValueError`，从 `deerflow.uploads.manager` 导入。 |
 | `NotADirectoryError` | 应为线程目录或上传目录的路径实际是普通文件。 |
 | `PermissionError` | 删除线程时 checkpoint 的 `user_id` 明确属于其他用户：`checkpoint 属于其他用户，不能删除`；文件系统权限不足也可能触发。 |

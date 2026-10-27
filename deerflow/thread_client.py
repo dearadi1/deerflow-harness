@@ -9,7 +9,10 @@ checkpointer；若 DeerFlowClient 使用自定义实例，此处必须传入同�
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
+import os
+import stat
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -46,6 +49,29 @@ def _validate_filename(file_name: str) -> str:
     return file_name
 
 
+def _read_upload_file(path: Path) -> bytes:
+    original = path.lstat()
+    if not stat.S_ISREG(original.st_mode):
+        raise UnsafeUploadPathError(f"下载目标必须是普通文件: {path.name}")
+    # 沙箱可修改上传目录，打开时拒绝链接，并核对文件身份后再读取内容。
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise UnsafeUploadPathError(f"下载目标不能是符号链接: {path.name}") from error
+        raise
+    try:
+        opened = os.fstat(descriptor)
+        current = path.lstat()
+        if not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode) or not os.path.samestat(original, opened) or not os.path.samestat(current, opened):
+            raise UnsafeUploadPathError(f"下载目标在打开时发生变化: {path.name}")
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            return source.read()
+    finally:
+        os.close(descriptor)
+
+
 def _check_directory(path: Path) -> None:
     """拒绝存储根目录下的目录链接，防止跨用户读写或递归删除。"""
     base = get_paths().base_dir
@@ -79,7 +105,8 @@ class DeerFlowThreadClient:
 
     config_path 未传或为 None 时使用包所在项目根目录的 config.yaml。
     user_id 使用 DeerFlow 的存储用户 ID。线程 ID 在共享 checkpointer 中必须
-    全局唯一，本管理器创建时使用 UUID。文件列表仅返回原始上传文件的绝对路径，
+    全局唯一，本管理器创建时使用 UUID。上传、下载和删除仅接受单个文件名。
+    文件列表仅返回 uploads 直属文件的文件名，不递归列出子目录，
     排除有有效归属记录的转码文件；用户直接上传的 Markdown 仍正常返回。
     """
 
@@ -194,6 +221,12 @@ class DeerFlowThreadClient:
             companion = publish_upload_copy(original.parent, output.name, converted, claim_seed=output.name, seen_names={original.name})
             register_companion(original, companion)
 
+    def download_file(self, user_id: str, thread_id: str, file_name: str) -> bytes:
+        file_name = _validate_filename(file_name)
+        with _thread_lock(user_id, thread_id):
+            uploads = self._uploads_dir(user_id, thread_id)
+            return _read_upload_file(uploads / file_name)
+
     def delete_file(self, user_id: str, thread_id: str, file_name: str) -> None:
         """只连带删除归属记录验证通过的 Markdown，不按同名猜测删除。"""
         file_name = _validate_filename(file_name)
@@ -213,4 +246,4 @@ class DeerFlowThreadClient:
             uploads = self._uploads_dir(user_id, thread_id)
             files = list_files_in_dir(uploads)["files"]
             companions = {companion.name for item in files if (companion := resolve_companion(uploads / item["filename"])) is not None}
-            return [item["path"] for item in files if item["filename"] not in companions]
+            return [item["filename"] for item in files if item["filename"] not in companions]
