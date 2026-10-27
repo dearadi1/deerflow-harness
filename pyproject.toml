@@ -12,7 +12,7 @@ dependencies = [
     # 有意精确锁定（扩展系统版本契约）：宿主锁定其实现的契约版本，扩展声明版本范围。
     # 若此处使用范围，pip 可能解析出高于本 Harness 实际实现版本的契约包，
     # 导致较新的扩展在运行时看似受支持。
-    # "deerflow-extension-api==0.2.7",
+    "deerflow-extension-api==0.2.9",
     "dotenv>=0.9.9",
     "exa-py>=1.0.0",
     "httpx>=0.28.0",
