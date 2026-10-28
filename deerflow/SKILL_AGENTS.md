@@ -1,6 +1,6 @@
 # DeerFlowSkillClient 接口说明
 
-本文对应 [skill_client.py](skill_client.py) 中的 `DeerFlowSkillClient`。所有技能操作均针对指定用户的 `custom` 技能。
+本文对应 [skill_client.py](skill_client.py) 中的 `DeerFlowSkillClient`。原有接口管理指定用户的 `custom` 技能；新增 `client.public` 入口管理不绑定用户的全局 `public` 技能。两类操作共用技能包校验和文件操作规则。
 
 ## 初始化与通用输入
 
@@ -35,7 +35,54 @@ client = DeerFlowSkillClient(config_path="/absolute/path/config.yaml")
 - 资源读写不允许通过符号链接访问。`get_resource_tree` 可以展示链接节点，但不递归展开目标目录。
 - 以下接口均为同步方法；失败时抛出异常，不返回错误字典。
 
-## 技能管理与查询
+## public 技能接口
+
+`client.public` 与当前客户端共享配置，无需额外初始化或传入 `user_id`。public 原始目录为配置解析得到的 `<skills 根目录>/public/`；该根目录沿用 `skills.path`、`DEER_FLOW_SKILLS_PATH` 等现有解析规则。custom 原始目录仍为 `<数据目录>/users/<user_id>/skills/custom/`。
+
+下表列出 public 的全部 14 个同步接口。除复制方向和删除状态外，参数校验、返回结构和异常规则与下文对应的 custom 接口相同。
+
+| public 方法签名 | 输出与行为 |
+| --- | --- |
+| `create_skill(name: str, description: str, **extra_fields: str) -> str` | 创建 public 技能及 `SKILL.md`，返回实际技能目录绝对路径 |
+| `copy_skill(skill_name: str, target_user_id: str) -> str` | 将 public 技能复制到目标用户的 custom，返回目标技能目录绝对路径 |
+| `delete_skill(skill_name: str) -> None` | 删除 public 技能目录；保留全局按名称共享的启用配置和各用户的状态、历史及 custom 技能 |
+| `get_skill_info(skill_name: str) -> dict[str, Any]` | 返回完整 YAML 头，保留原始字段类型 |
+| `list_skills() -> list[dict[str, str]]` | 仅列出 public，包含禁用项，跳过无效文档，按名称排序 |
+| `get_resource_tree(skill_name: str) -> list[dict[str, Any]]` | 返回该 public 技能的资源树 |
+| `create_file(skill_name: str, path: str) -> None` | 创建空文件，父目录必须存在 |
+| `create_folder(skill_name: str, path: str) -> None` | 创建空目录，父目录必须存在 |
+| `delete_file(skill_name: str, path: str) -> None` | 删除普通文件 |
+| `delete_folder(skill_name: str, path: str) -> None` | 递归删除目录 |
+| `move_file(skill_name: str, path: str, new_path: str) -> None` | 移动或重命名文件，不覆盖已有目标 |
+| `move_folder(skill_name: str, path: str, new_path: str) -> None` | 移动或重命名目录，不覆盖已有目标 |
+| `upload_file(skill_name: str, path: str, file_bytes: bytes) -> None` | 用无 NUL 的 UTF-8 文本覆盖已有文件；也接受 `bytearray` |
+| `download_file(skill_name: str, path: str) -> bytes` | 返回文件原始字节 |
+
+```python
+public_path = client.public.create_skill("shared-helper", "公共助手")
+client.public.create_folder("shared-helper", "scripts")
+client.public.create_file("shared-helper", "scripts/main.py")
+client.public.upload_file("shared-helper", "scripts/main.py", b"print('hello')\n")
+info = client.public.get_skill_info("shared-helper")
+skills = client.public.list_skills()
+tree = client.public.get_resource_tree("shared-helper")
+content = client.public.download_file("shared-helper", "scripts/main.py")
+
+# 用户得到独立副本，随后可以通过原有 custom 接口自行修改。
+custom_path = client.public.copy_skill(skill_name="shared-helper", target_user_id="lyj")
+client.upload_file("lyj", "shared-helper", "scripts/main.py", b"print('custom')\n")
+client.public.delete_skill("shared-helper")
+```
+
+`copy_skill(skill_name, target_user_id)` 固定从 public 复制到指定用户的 custom。保留技能名称和包内所有普通资源，包括隐藏文件、空目录和二进制文件；自动创建目标用户缺失的 custom 根目录。目标同名路径存在时抛出 `FileExistsError`，不覆盖、不合并；源文档无效、包内包含符号链接或特殊文件时拒绝复制。复制后的文件独立，用户修改或 public 后续删除均不会改变另一份资源。此接口不复制启用状态和历史记录；目标仍受现有全局按名称配置及该用户自身状态约束，不保证复制后启用。
+
+public 列表项与 custom 使用相同字段，其中 `skill_path` 为 `<容器技能根目录>/public/<技能相对目录>`，`host_path` 为实际目录绝对路径。public 和 custom 同名时，各管理入口只操作自身目录；运行时继续遵循现有的用户 custom 优先规则。
+
+public 写入会在全局 public 投影锁内修改并重建沙箱视图，成功后失效本进程已加载的技能提示词缓存，并发布全局共享缓存失效标记；public 复制到 custom 后仅通知目标用户的缓存。共享标记只有在能解析到 extensions 配置路径时才会发布，其他进程在后续缓存检查时识别，通常有至多约一秒的轮询延迟；不共享配置目录的进程不会收到通知。已开始运行的快照遵循原有运行时行为。
+
+如果文件已修改成功、共享缓存失效通知随后发布失败，接口会抛出 `RuntimeError("技能已修改，但共享技能缓存失效通知发布失败")`；此时先查询实际内容，不要将异常当成修改未发生。public 管理要求全局本地文件存储实现，其他存储实现会抛出 `TypeError`。public 写入面向全局管理调用方，应用层自行控制调用权限。
+
+## custom 技能管理与查询
 
 ### create_skill
 

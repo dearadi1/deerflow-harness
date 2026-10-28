@@ -1,4 +1,4 @@
-"""独立的用户 custom skill 管理器，复用 DeerFlow 配置和存储隔离。"""
+"""独立管理用户 custom 与全局 public 技能，复用 DeerFlow 配置和存储隔离。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import mimetypes
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -18,12 +19,13 @@ from typing import Any, Callable, Iterator, ParamSpec, TypeVar
 import yaml
 
 from deerflow.client_config import load_client_config
+from deerflow.config.app_config import AppConfig
 from deerflow.config.paths import get_paths
 from deerflow.skills.frontmatter import split_skill_markdown
 from deerflow.skills.parser import parse_allowed_tools, parse_required_secrets
 from deerflow.skills.permissions import make_skill_tree_sandbox_readable, make_skill_written_path_sandbox_readable
-from deerflow.skills.projection import _projection_lock, get_skill_projection_paths
-from deerflow.skills.storage import UserScopedSkillStorage, get_or_new_user_skill_storage
+from deerflow.skills.projection import _projection_lock, get_skill_projection_paths, skill_projection_mutation
+from deerflow.skills.storage import LocalSkillStorage, SkillStorage, UserScopedSkillStorage, get_or_new_skill_storage, get_or_new_user_skill_storage
 from deerflow.skills.types import SKILL_MD_FILE, SkillCategory
 
 
@@ -77,21 +79,12 @@ def _chinese_errors(method: Callable[_Parameters, _Result]) -> Callable[_Paramet
     return wrapped
 
 
-class DeerFlowSkillClient:
-    """管理指定用户拥有的技能，不需要初始化 Agent。
+class _SkillOperations:
+    """复用技能包操作，由分类决定存储根目录、锁和删除元数据。"""
 
-    config_path 未传或为 None 时读取 DEERFLOW_CONFIG_PATH，两者均未提供时报错。
-    create_skill 和 copy_skill 返回实际存储目录的绝对路径，不包含 SKILL.md；列表中的
-    skill_path 使用容器路径，host_path 使用实际目录的绝对路径。
-    所有文件参数均相对于技能根目录，父目录
-    必须已存在。delete_folder 递归删除目录，upload_file 仅接受 UTF-8 文本。
-    根目录的 SKILL.md 由 create_skill 创建，只能通过 upload_file 更新，
-    不能单独创建、删除或移动；删除整个技能请使用 delete_skill。
-    """
-
-    @_chinese_errors
-    def __init__(self, config_path: str | None = None) -> None:
-        self._app_config = load_client_config(config_path)
+    def __init__(self, app_config: AppConfig, *, category: SkillCategory = SkillCategory.CUSTOM) -> None:
+        self._app_config = app_config
+        self._category = category
 
     @staticmethod
     def _check_owned_path(base: Path, target: Path) -> Path:
@@ -100,14 +93,23 @@ class DeerFlowSkillClient:
         try:
             relative = target.relative_to(base)
         except ValueError as error:
-            raise ValueError(f"目标路径必须位于当前用户的技能目录内: {target}") from error
+            raise ValueError(f"目标路径必须位于当前作用域的技能目录内: {target}") from error
         for part in relative.parts:
             current = current / part
             if current.is_symlink():
                 raise ValueError(f"不允许通过符号链接操作技能: {current}")
         return current
 
-    def _storage(self, user_id: str) -> UserScopedSkillStorage:
+    def _storage(self, user_id: str | None) -> SkillStorage:
+        if self._category == SkillCategory.PUBLIC:
+            storage = get_or_new_skill_storage(app_config=self._app_config)
+            if not isinstance(storage, LocalSkillStorage) or isinstance(storage, UserScopedSkillStorage):
+                raise TypeError("public 技能管理需要全局本地技能存储")
+            self._check_owned_path(storage.get_skills_root_path(), self._root(storage))
+            return storage
+        return self._user_storage(user_id)
+
+    def _user_storage(self, user_id: str | None) -> UserScopedSkillStorage:
         if not isinstance(user_id, str) or not user_id.strip():
             raise ValueError("user_id 必须是非空字符串")
         storage = get_or_new_user_skill_storage(user_id, app_config=self._app_config)
@@ -116,9 +118,22 @@ class DeerFlowSkillClient:
         self._check_owned_path(get_paths().base_dir, storage.get_user_custom_root())
         return storage
 
-    def _skill_dir(self, storage: UserScopedSkillStorage, name: str, *, exists: bool = True) -> Path:
+    def _root(self, storage: SkillStorage) -> Path:
+        if self._category == SkillCategory.PUBLIC:
+            return storage.get_skills_root_path() / SkillCategory.PUBLIC.value
+        if not isinstance(storage, UserScopedSkillStorage):
+            raise TypeError("custom 技能管理需要用户隔离的本地技能存储")
+        return storage.get_user_custom_root()
+
+    def _projection_mutation(self, storage: SkillStorage):
+        if self._category == SkillCategory.PUBLIC:
+            return skill_projection_mutation(storage, "public")
+        return storage._skill_projection_mutation()
+
+    def _skill_dir(self, storage: SkillStorage, name: str, *, exists: bool = True) -> Path:
         name = self._validate_skill_name(name)
-        directory = self._check_owned_path(storage.get_user_custom_root(), storage.get_custom_skill_dir(name))
+        root = self._root(storage)
+        directory = self._check_owned_path(root, root / name)
         if exists:
             self._require_directory(directory)
         return directory
@@ -161,12 +176,12 @@ class DeerFlowSkillClient:
     @contextmanager
     def _mutation(
         self,
-        user_id: str,
+        user_id: str | None,
         skill_name: str,
         *,
         exists: bool = True,
         protected_paths: tuple[str, ...] = (),
-    ) -> Iterator[tuple[UserScopedSkillStorage, Path]]:
+    ) -> Iterator[tuple[SkillStorage, Path]]:
         storage = self._storage(user_id)
         name = self._validate_skill_name(skill_name)
         directory = self._skill_dir(storage, name, exists=exists)
@@ -174,11 +189,33 @@ class DeerFlowSkillClient:
         for path in protected_paths:
             self._protect_skill_markdown(directory, self._relative_path(directory, path))
         # 与现有编辑入口共用锁及视图刷新，避免沙箱继续使用过期的技能副本。
-        with storage._skill_projection_mutation():
+        with self._projection_mutation(storage):
             yield storage, self._skill_dir(storage, name, exists=exists)
+        if self._category == SkillCategory.PUBLIC:
+            self._notify_skill_change()
+
+    @staticmethod
+    def _notify_skill_change(*, user_id: str | None = None) -> None:
+        """仅失效已加载的提示词模块，避免独立管理接口初始化 Agent 依赖。"""
+        from deerflow.config.shared_reset_marker import SharedResetMarker, resolve_shared_config_path
+
+        module_names = ("deerflow.agents.lead_agent.prompt", "deerflow.agents.lead_agent.prompt_zh")
+        modules = [sys.modules[name] for name in module_names if name in sys.modules]
+        for module in modules:
+            if user_id is None:
+                module.clear_skills_system_prompt_cache()
+            else:
+                module.invalidate_user_skill_cache(user_id)
+        try:
+            config_path = resolve_shared_config_path()
+            if config_path is not None:
+                SharedResetMarker("skills-cache-reset").publish(config_path, user_id=user_id)
+        except (OSError, ValueError) as error:
+            # 内容已提交，不能让调用方将发布失败误判为技能不存在或参数错误。
+            raise RuntimeError("技能已修改，但共享技能缓存失效通知发布失败") from error
 
     def _container_path(self, name: str) -> str:
-        return self._app_config.skills.get_skill_container_path(name, category=SkillCategory.CUSTOM.value)
+        return self._app_config.skills.get_skill_container_path(name, category=self._category.value)
 
     @staticmethod
     def _validate_markdown(name: str, content: str) -> dict[str, Any]:
@@ -195,7 +232,7 @@ class DeerFlowSkillClient:
         description = parts.metadata.get("description")
         if not isinstance(description, str) or not description.strip():
             raise ValueError("SKILL.md 的 description 必须是非空字符串")
-        DeerFlowSkillClient._validate_runtime_fields(parts.metadata)
+        _SkillOperations._validate_runtime_fields(parts.metadata)
         return parts.metadata
 
     @staticmethod
@@ -226,15 +263,26 @@ class DeerFlowSkillClient:
     def create_skill(self, user_id: str, name: str, description: str, **extra_fields: str) -> str:
         name = self._validate_skill_name(name)
         content = self._build_markdown(name, description, extra_fields)
+        self._require_absent(self._skill_dir(self._storage(user_id), name, exists=False))
         with self._mutation(user_id, name, exists=False) as (storage, directory):
-            storage.get_user_custom_root().mkdir(parents=True, exist_ok=True)
-            directory.mkdir()
-            try:
-                self._write_text(directory, directory / SKILL_MD_FILE, content)
-            except Exception:
-                shutil.rmtree(directory)
-                raise
+            self._root(storage).mkdir(parents=True, exist_ok=True)
+            conflict = self._create_skill_package(directory, content)
+        if conflict is not None:
+            raise conflict
         return str(directory.resolve())
+
+    def _create_skill_package(self, directory: Path, content: str) -> FileExistsError | None:
+        # 并发创建的同名冲突须正常退出视图更新，不能清掉胜出请求的技能视图。
+        try:
+            directory.mkdir()
+        except FileExistsError as error:
+            return error
+        try:
+            self._write_text(directory, directory / SKILL_MD_FILE, content)
+        except Exception:
+            shutil.rmtree(directory)
+            raise
+        return None
 
     @_chinese_errors
     def copy_skill(self, source_user_id: str, target_user_id: str, skill_name: str) -> str:
@@ -247,8 +295,9 @@ class DeerFlowSkillClient:
         name = self._validate_skill_name(skill_name)
         source_storage = self._storage(source_user_id)
         source = self._skill_dir(source_storage, name)
-        target_storage = self._storage(target_user_id)
-        target = self._skill_dir(target_storage, name, exists=False)
+        target_operations = self if self._category == SkillCategory.CUSTOM else _SkillOperations(self._app_config)
+        target_storage = self._user_storage(target_user_id)
+        target = target_operations._skill_dir(target_storage, name, exists=False)
         self._require_absent(target)
         self._validate_copy_package(source)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -256,7 +305,9 @@ class DeerFlowSkillClient:
         with tempfile.TemporaryDirectory(prefix=".copy-skill-", dir=target.parent) as temporary:
             staged = Path(temporary) / name
             self._stage_skill_copy(source_storage, name, staged)
-            self._publish_skill_copy(target_user_id, name, staged)
+            target_operations._publish_skill_copy(target_user_id, name, staged)
+        if self._category == SkillCategory.PUBLIC:
+            self._notify_skill_change(user_id=target_user_id)
         return str(target.resolve())
 
     def _validate_copy_package(self, directory: Path) -> None:
@@ -269,9 +320,11 @@ class DeerFlowSkillClient:
         self._require_file(skill_file)
         self._validate_markdown(directory.name, skill_file.read_text(encoding="utf-8"))
 
-    def _stage_skill_copy(self, storage: UserScopedSkillStorage, name: str, staged: Path) -> None:
+    def _stage_skill_copy(self, storage: SkillStorage, name: str, staged: Path) -> None:
         # 复制快照时阻止源技能被管理接口修改；发布前释放源锁，避免双向复制死锁。
-        with _projection_lock(get_skill_projection_paths(storage).custom.parent):
+        paths = get_skill_projection_paths(storage)
+        lock_root = paths.public.parent if self._category == SkillCategory.PUBLIC else paths.custom.parent
+        with _projection_lock(lock_root):
             source = self._skill_dir(storage, name)
             self._validate_copy_package(source)
             try:
@@ -303,8 +356,11 @@ class DeerFlowSkillClient:
             target.rmdir()
             raise
 
-    def _delete_skill_metadata(self, storage: UserScopedSkillStorage, name: str) -> None:
-        root = storage.get_user_custom_root()
+    def _delete_skill_metadata(self, storage: SkillStorage, name: str) -> None:
+        # 全局启用配置按名称共享，删除 public 时不能影响同名 custom 的状态。
+        if self._category == SkillCategory.PUBLIC:
+            return
+        root = self._root(storage)
         history = self._check_owned_path(root, storage.get_skill_history_file(name))
         states_file = self._check_owned_path(root.parent, root.parent / "_skill_states.json")
         history.unlink(missing_ok=True)
@@ -337,10 +393,10 @@ class DeerFlowSkillClient:
     def _load_metadata_snapshot(skill_file: Path, signature: tuple[int, ...]) -> tuple[dict[str, Any] | None, str | None]:
         """按绝对路径及文件版本缓存完整 YAML，跨客户端复用且限制内存条目数量。"""
         content = skill_file.read_bytes()
-        if DeerFlowSkillClient._metadata_signature(skill_file) != signature:
+        if _SkillOperations._metadata_signature(skill_file) != signature:
             raise _SkillMetadataChangedError("读取技能信息期间文件发生变化")
         try:
-            return DeerFlowSkillClient._validate_markdown(skill_file.parent.name, content.decode("utf-8")), None
+            return _SkillOperations._validate_markdown(skill_file.parent.name, content.decode("utf-8")), None
         except UnicodeDecodeError:
             return None, "SKILL.md 必须使用有效的 UTF-8 编码"
         except ValueError as error:
@@ -400,7 +456,7 @@ class DeerFlowSkillClient:
     def list_skills(self, user_id: str) -> list[dict[str, str]]:
         """仅扫描当前用户的 custom 目录，复用详情缓存，包含禁用项并跳过无效文档。"""
         storage = self._storage(user_id)
-        root = storage.get_user_custom_root()
+        root = self._root(storage)
         skills_by_name: dict[str, dict[str, str]] = {}
         for directory in self._iter_custom_skill_directories(root):
             try:
@@ -543,3 +599,72 @@ class DeerFlowSkillClient:
         target = self._relative_path(directory, path)
         self._require_file(target)
         return target.read_bytes()
+
+
+class _PublicSkillClient:
+    """不绑定用户的全局 public 技能管理入口。"""
+
+    def __init__(self, app_config: AppConfig) -> None:
+        self._operations = _SkillOperations(app_config, category=SkillCategory.PUBLIC)
+
+    def create_skill(self, name: str, description: str, **extra_fields: str) -> str:
+        return self._operations.create_skill(None, name, description, **extra_fields)
+
+    def copy_skill(self, skill_name: str, target_user_id: str) -> str:
+        """复制到目标用户的 custom；同名目标存在时报错，不覆盖或合并。"""
+        return self._operations.copy_skill(None, target_user_id, skill_name)
+
+    def delete_skill(self, skill_name: str) -> None:
+        self._operations.delete_skill(None, skill_name)
+
+    def get_skill_info(self, skill_name: str) -> dict[str, Any]:
+        return self._operations.get_skill_info(None, skill_name)
+
+    def list_skills(self) -> list[dict[str, str]]:
+        return self._operations.list_skills(None)
+
+    def get_resource_tree(self, skill_name: str) -> list[dict[str, Any]]:
+        return self._operations.get_resource_tree(None, skill_name)
+
+    def create_file(self, skill_name: str, path: str) -> None:
+        self._operations.create_file(None, skill_name, path)
+
+    def create_folder(self, skill_name: str, path: str) -> None:
+        self._operations.create_folder(None, skill_name, path)
+
+    def delete_file(self, skill_name: str, path: str) -> None:
+        self._operations.delete_file(None, skill_name, path)
+
+    def delete_folder(self, skill_name: str, path: str) -> None:
+        self._operations.delete_folder(None, skill_name, path)
+
+    def move_file(self, skill_name: str, path: str, new_path: str) -> None:
+        self._operations.move_file(None, skill_name, path, new_path)
+
+    def move_folder(self, skill_name: str, path: str, new_path: str) -> None:
+        self._operations.move_folder(None, skill_name, path, new_path)
+
+    def upload_file(self, skill_name: str, path: str, file_bytes: bytes) -> None:
+        self._operations.upload_file(None, skill_name, path, file_bytes)
+
+    def download_file(self, skill_name: str, path: str) -> bytes:
+        return self._operations.download_file(None, skill_name, path)
+
+
+class DeerFlowSkillClient(_SkillOperations):
+    """独立管理用户 custom 技能，以及不绑定用户的 public 技能。
+
+    custom 接口保持 user_id 参数；public 接口通过 client.public 访问。
+    create_skill 和 copy_skill 返回实际技能目录的绝对路径，不包含 SKILL.md。
+    文件路径相对于技能根目录；upload_file 仅更新已有的 UTF-8 文本文件。
+    根目录 SKILL.md 只能通过 upload_file 更新，不能单独创建、删除或移动。
+    """
+
+    @_chinese_errors
+    def __init__(self, config_path: str | None = None) -> None:
+        super().__init__(load_client_config(config_path))
+        self._public = _PublicSkillClient(self._app_config)
+
+    @property
+    def public(self) -> _PublicSkillClient:
+        return self._public

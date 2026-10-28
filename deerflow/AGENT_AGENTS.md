@@ -117,6 +117,9 @@ thread_id = uuid4().hex
 with pool.session(user_id="user_001") as client:
     with client.stream("请帮助我分析这个问题。", thread_id=thread_id) as events:
         for event in events:
+            # 当需要退出时，直接在这里 break 即可，池会自动触发close。
+            # if xxx:
+            #     break
             print(event.model_dump(mode="json"))
 ```
 
