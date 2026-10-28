@@ -131,7 +131,7 @@ async def image_search_tool(
     results = await asyncio.to_thread(search_with_config)
 
     if not results:
-        return json.dumps({"error": "No images found", "query": query}, ensure_ascii=False)
+        return "Error: No images found"
 
     normalized_results = []
     for row in results:
@@ -152,7 +152,7 @@ async def image_search_tool(
         )
 
     if not normalized_results:
-        return json.dumps({"error": "No safe image URLs found", "query": query}, ensure_ascii=False)
+        return "Error: No safe image URLs found"
 
     output = {
         "query": query,

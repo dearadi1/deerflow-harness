@@ -1,1008 +1,757 @@
-# 当前配置工具输入输出实测
+# Tool 输入与输出参考
 
-测试日期：2026-10-27（Asia/Shanghai）。原始全量实测代码基线：`0a5a6d4`；`web_search` 输出格式已按当前工作区修改更新，补充验证范围见该节。
+以 `DeerFlowClient.stream()` 的主 Agent 为入口，覆盖先前清单中的 **1–12、15–17，共 15 个工具**。按当前仓库实现整理；示例用于说明结构，不代表本次真实联网调用结果。
 
-原始全量实测使用根目录 `config.yaml` 中的真实模型 `doubao-seed-2-1-turbo-260628`，由 `deerflow.models.patched_deepseek:PatchedChatDeepSeek` 调用，`thinking_enabled=true`。该轮实测参数来自模型生成的 tool_calls，使用 `DeerFlowClient.stream()` 和现有中间件执行；输出优先取下一次模型调用中的 ToolMessage.content，而非模型最后总结。没有使用 mock 返回。
+## 阅读约定
 
-显式配置工具 10 个，框架在当前嵌入式客户端默认模式下自动加入 5 个，共 15 个。沙盒为 `LocalSandboxProvider`，`allow_host_bash=true`。运行数据放在独立临时 DEER_FLOW_HOME 中，使用专门测试用户和独立线程；测试文件由宿主预置。没有验证 Docker 沙盒。
+- `call` 只包含模型填写的参数，不包含注入的 `runtime`、`tool_call_id`。
+- `result` 默认指 `ToolMessage.content`。JSON 示例表示这个**字符串解析后的内容**，不是说 Python 工具直接返回了字典或列表。
+- `present_files`、`view_image`、`task`、`write_todos` 返回 `Command` 更新图状态；下文分别说明文本、状态及附加数据。`ask_clarification` 由中间件拦截。
+- `<path>`、`<detail>`、`<N>` 等是动态值占位符；错误详情由文件系统、沙箱、服务端或依赖库决定，无法枚举每一条底层异常文案。
+- 文件工具建议使用 `/mnt/user-data/workspace/`、`/mnt/user-data/uploads/`、`/mnt/user-data/outputs/` 下的绝对虚拟路径；技能及自定义挂载目录另受权限约束。不能把任意宿主机路径当作可访问路径。
+- 每节列出工具自身的正常、空结果及异常分支；另见文末“中间件对输出的影响”。同一种业务失败不一定都有 `Error:` 前缀，也不应只依靠该前缀判断成功。
 
-“输入”仅指模型可见、需要生成的参数，不包含 runtime、tool_call_id 等框架注入字段。输入代码块中的 `//` 是文档注释，实际传输 JSON 不包含注释。参数表列出模型未显式传入的可选参数及默认值。纯文本输出以 JSON 字符串表示以保留换行；JSON 字符串结果会明确标注并展开展示。
+## 1. web_search
 
-当前中间件可能转义远程内容中的控制标签，并将长工具输出保存到文件后改成摘要与文件引用（tool_output.enabled=true，externalize_min_chars=12000）。因此不能承诺每次模型都会收到工具函数的完整原始 JSON。read_file 被此层豁免，但仍有自身 50000 字符限制。artifact、状态元数据与客户端流事件不是这里的普通工具正文。
+根据关键词检索网络资源。
 
-## web_search
+源码：[deerflow/community/metaso/tools.py](../deerflow/community/metaso/tools.py)，`web_search_tool`、`_search_results`、`_error_result`。
 
-根据关键词检索网页、文档、学术资料、图片、视频或播客。当前实现为 Metaso。
-
-输入
+**call**
 
 ```json
-{
-  "query": "Python official documentation", // 查询语句或检索关键词
-  "scope": "webpage" // 检索类型：webpage / document / scholar / image / video / podcast
-}
+{"query": "人工智能", "scope": "webpage"}
 ```
 
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明及可选值 |
 |---|---|---|
-| `query` | 必填 | 查询语句或检索关键词 |
-| `scope` | 可选；"webpage" | 检索类型：webpage / document / scholar / image / video / podcast |
+| `query` | string，必填 | 问题或关键词；工具自身不额外限制长度或拒绝空字符串，最终由服务端处理。 |
+| `scope` | string，默认 `"webpage"` | 支持下表的 6 个值，区分大小写；虽然 schema 是 string，执行时仍检查支持范围。 |
 
-输出
-
-情况 1：成功返回仅含 `title`、`url`、`snippet` 的结果数组。
-
-实际为 JSON 字符串，不增加外层包装。以下示例沿用原始实测内容，按当前三个字段的格式整理，仅展示首条结果；长文本已标注节选。
-
-```json
-[
-  {
-    "title": "How to Learn Python for Free: 20 Best Online Resources of 2025",
-    "url": "https://mimo.org/blog/how-to-learn-python-for-free-online",
-    "snippet": "6. The official Python tutorial\n- Best for: Self-learners who want comprehensive, technical documentation\nThe official Python documentation offers a thorough, text-based tutorial c…（文档节选）"
-  }
-]
-```
-
-情况 2：异常返回以 `Error: ` 开头的字符串。以下为已实测的无效 scope 示例。
-
-输入
-
-```json
-{
-  "query": "test",
-  "scope": "invalid"
-}
-```
-
-输出
-
-```json
-"Error: Unsupported Metaso search scope"
-```
-
-仅 query 必填，scope 默认 webpage。当前配置 max_results=10，三个 include/concise 开关均为 false。每项仅包含 title、url、snippet 三个字符串字段；url 依次取上游响应中的 url、link、imageUrl，缺失或空值归一化为空字符串。link、score、position、日期、作者、图片尺寸、时长等原始元数据不进入输出。空结果为 JSON 字符串 `[]`。
-
-原始全量实测通过真实模型调用了六种 scope。格式更新后，使用 `.env` 和 `config.yaml` 中的真实配置，直接通过 `web_search_tool.ainvoke()` 逐项调用六种 scope；query 均为 `artificial intelligence`，仅在验证进程中将 max_results 设为 1。下表为更新后的真实 API 验证结果；本次未重跑模型与中间件链路。
-
-| scope | 更新后验证条数 | 输出字段 |
-|---|---:|---|
-| `webpage` | 1 | `title`, `url`, `snippet` |
-| `document` | 1 | `title`, `url`, `snippet` |
-| `scholar` | 1 | `title`, `url`, `snippet` |
-| `image` | 1 | `title`, `url`, `snippet` |
-| `video` | 1 | `title`, `url`, `snippet` |
-| `podcast` | 1 | `title`, `url`, `snippet` |
-
-12 项离线测试通过，覆盖六种结果结构、字段过滤及 HTTP、网络、格式、配置等错误分支；更新后也验证了无效 scope 返回固定的 `Error: ` 前缀。
-
-`scope=image` 的首条结果示例：
-
-以下沿用原始实测内容，按当前格式展开 JSON 字符串中的首条结果。
-
-```json
-[
-  {
-    "title": "ai大脑图片素材-正版创意图片500513236-摄图网",
-    "url": "https://imgs.699pic.com/images/500/513/236.jpg!detail.v1",
-    "snippet": ""
-  }
-]
-```
-
-`scope=video` 的首条结果示例：
-
-以下沿用原始实测内容，按当前格式展开 JSON 字符串中的首条结果。
-
-```json
-[
-  {
-    "title": "人工智能的定义与发展",
-    "url": "http://www.bilibili.com/video/av41695308?t=0",
-    "snippet": "人工智能（AI）是计算机科学的一个分支，致力于让机器展现人类智能。它起源于1956年达特茅斯大学的命名，经历了从学术实验室到技术爆发的演进过程。当前AI主要分为两大类：基于规则的传统机器人（需明确编程指令）和机器学习（通过数据分析自我提升）。AI正深刻影响各行各业，帮助人类更高效地完成任务，而非取代人类工作。"
-  }
-]
-```
-
-`scope=podcast` 的首条结果示例：
-
-以下沿用原始实测内容，按当前格式展开 JSON 字符串中的首条结果。
-
-```json
-[
-  {
-    "title": "人工智能",
-    "url": "https://www.xiaoyuzhoufm.com/episode/67405d7f11045e78e5197b1b",
-    "snippet": ""
-  }
-]
-```
-
-其他返回形态（源码补充，以下并非本次真实失败记录；xxx 为占位值）：
-
-```json
-"Error: Metaso request failed (HTTP 429)"
-```
-
-```json
-"Error: Metaso request timed out"
-```
-
-```json
-"Error: Metaso returned an unexpected response format"
-```
-
-
-## web_fetch
-
-获取指定公开网页的正文。当前实现为 Metaso Reader。
-
-输入
-
-```json
-{
-  "url": "https://example.com" // 完整网页 URL，必须带协议；使用用户提供或搜索结果中的地址
-}
-```
-
-| 参数 | 必填 / 默认值 | 含义 |
+| scope | 资源类型 | 上游响应读取的字段 |
 |---|---|---|
-| `url` | 必填 | 完整网页 URL，必须带协议；使用用户提供或搜索结果中的地址 |
+| `webpage` | 网页 | `webpages` |
+| `document` | 文档 | `documents` |
+| `scholar` | 学术资源 | `scholars` |
+| `image` | 图片 | `images` |
+| `video` | 视频 | `videos` |
+| `podcast` | 播客 | `podcasts` |
 
-输出
-
-情况 1：本次真实调用，模型实际收到的结果。
-
-以下节选正文首段，其余多语言正文略；未改写该段文本。
-
-```json
-"This domain is for use in documentation examples without needing permission. This is not a service; avoid relying on it for testing and monitoring purposes."
-```
-
-成功结果是正文字符串，可能包含 Markdown 或 HTML；不是固定的 {title, content} 对象。受登录限制的私有页面不在此工具能力范围内。
-
-其他返回形态（源码补充，以下并非本次真实失败记录；xxx 为占位值）：
+**result：所有 scope 最终统一成相同结构**
 
 ```json
-"Error: Metaso request failed (HTTP 429)"
+[
+  {"title": "示例标题", "url": "https://example.com/item", "snippet": "示例摘要"}
+]
 ```
+
+上游不同 scope 的原始字段可能不同，但当前封装**只保留三个字段**，没有透传作者、日期、图片尺寸等额外字段：
+
+- `title`：上游 `title`，缺失或假值变为 `""`，其他值转成字符串。
+- `url`：按 `url → link → imageUrl → ""` 依次选取第一个真值，再转成字符串。因此图片 scope 的链接也叫 `url`，不叫 `image_url`。
+- `snippet`：上游 `snippet`，缺失或假值变为 `""`；不会用其他摘要字段补齐。
+
+| 情况 | 实际输出 |
+|---|---|
+| 有结果 | 上述 JSON 数组字符串；即使字段全缺失，对应条目也是三个空字符串。 |
+| 容器为 `[]` 或 `null` | `[]` |
+| 数组中混有非对象 | 丢弃非对象，保留对象并归一化；若非空数组里一个对象也没有，则报格式错误。 |
+| 不支持的 scope | `Error: Unsupported Metaso search scope` |
+| 未配置密钥 | `Error: METASO_API_KEY is not configured` |
+| 配置的结果数非法 | `Error: max_results must be a positive integer` |
+| 配置的布尔选项非法 | `Error: <include_summary/include_raw_content/concise_snippet> must be a boolean` |
+| 响应不是对象、带真值 `error` / `errCode`、缺少对应容器、容器类型错误 | `Error: Metaso returned an unexpected response format` |
+| HTTP 非成功状态 | `Error: Metaso request failed (HTTP <状态码>)` |
+| 网络超时 | `Error: Metaso request timed out` |
+| JSON 解码失败、连接错误等其他异常 | `Error: Metaso request failed (<异常类名>)` |
+
+注意：`max_results`、`include_summary`、`include_raw_content`、`concise_snippet`、`timeout` 属于配置项，不是本工具的 call 参数；即使请求了上游额外内容，当前归一化也不会额外增加输出字段。
+
+## 2. web_fetch
+
+获取网页正文。
+
+源码：[deerflow/community/metaso/tools.py](../deerflow/community/metaso/tools.py)，`web_fetch_tool`。
+
+**call**
 
 ```json
-"Error: Metaso request timed out"
+{"url": "https://example.com/article"}
 ```
 
-```json
-"Error: Metaso returned an unexpected response format"
-```
-
-
-## image_search
-
-根据关键词检索图片，返回原图、缩略图和来源页面地址。当前实现为 DuckDuckGo。
-
-输入
-
-```json
-{
-  "query": "red apple", // 查询语句或检索关键词
-  "max_results": 2 // 最多返回的结果数量；注意部分工具会被配置中的数量覆盖
-}
-```
-
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明 |
 |---|---|---|
-| `query` | 必填 | 查询语句或检索关键词 |
-| `max_results` | 可选；5 | 最多返回的结果数量；注意部分工具会被配置中的数量覆盖 |
-| `size` | 可选；null | 图片尺寸：Small / Medium / Large / Wallpaper |
-| `color` | 可选；null | 颜色筛选，例如 color、Monochrome、Red、Blue；见完整选项说明 |
-| `type_image` | 可选；null | 图片类型：photo / clipart / gif / transparent / line |
-| `layout` | 可选；null | 布局：Square / Tall / Wide |
-| `license_image` | 可选；null | 许可：any / Public / Share / ShareCommercially / Modify / ModifyCommercially |
+| `url` | string，必填 | 带协议的完整 URL；使用用户提供或搜索结果中的链接，不自行添加 `www`。不能依靠本工具读取需要登录的私有页面。 |
 
-输出
+**result**
 
-情况 1：本次真实调用，模型实际收到的结果。
+```text
+网页正文原文，可包含 Markdown、换行和标题。
+```
 
-实际为 JSON 字符串，下方展开其内容。
+| 情况 | 实际输出 |
+|---|---|
+| 成功 | `response.text`，无固定 JSON 包装；服务返回空正文时就是空字符串。 |
+| 成功状态但 Content-Type 包含 `application/json` | `Error: Metaso returned an unexpected response format`，即使正文看起来可用也拒绝。 |
+| 未配置密钥 | `Error: METASO_API_KEY is not configured` |
+| HTTP 错误 | `Error: Metaso request failed (HTTP <状态码>)` |
+| 超时 | `Error: Metaso request timed out` |
+| 其他异常 | `Error: Metaso request failed (<异常类名>)` |
+
+非法 URL 不一定在本地校验失败；其输出取决于上游返回或请求异常。成功响应里的非 JSON 错误文字也可能直接作为正文返回。
+
+## 3. image_search
+
+通过 DuckDuckGo 搜索参考图片；与 `web_search(scope="image")` 的输出结构不同。
+
+源码：[deerflow/community/image_search/tools.py](../deerflow/community/image_search/tools.py)，`image_search_tool`；结果数归一化见 [search_max_results.py](../deerflow/community/search_max_results.py)。
+
+**call**
+
+```json
+{"query": "森林", "max_results": 5, "size": "Large", "color": null, "type_image": "photo", "layout": "Wide", "license_image": null}
+```
+
+| 参数 | 类型／默认值 | 说明及可选值 |
+|---|---|---|
+| `query` | string，必填 | 图片关键词。 |
+| `max_results` | integer，默认 `5` | 期望数量；配置中的同名值优先覆盖 call。归一化后非正数／非法配置回退 5，工具未设置统一上限；不保证实际返回这么多。 |
+| `size` | string/null，默认 null | `Small`、`Medium`、`Large`、`Wallpaper`。 |
+| `color` | string/null，默认 null | `color`、`Monochrome`、`Red`、`Orange`、`Yellow`、`Green`、`Blue`、`Purple`、`Pink`、`Brown`、`Black`、`Gray`、`Teal`、`White`。`color` 表示彩色。 |
+| `type_image` | string/null，默认 null | `photo`、`clipart`、`gif`、`transparent`、`line`。 |
+| `layout` | string/null，默认 null | `Square`、`Tall`、`Wide`。 |
+| `license_image` | string/null，默认 null | `any`、`Public`、`Share`、`ShareCommercially`、`Modify`、`ModifyCommercially`；是检索筛选条件，不能代替核实原图授权。 |
+
+这些筛选值由工具说明约定，schema 并非枚举，工具也没有逐一校验；非空值转交服务端。`region`、`safesearch` 不暴露为 call 参数，内部默认 `wt-wt`、`moderate`。
+
+**result：正常**
 
 ```json
 {
-  "query": "red apple",
-  "total_results": 5,
+  "query": "森林",
+  "total_results": 1,
   "results": [
-    {
-      "title": "Fresh Red Delicious Apple | Fig App",
-      "image_url": "https://i5.walmartimages.com/seo/Fresh-Red-Delicious-Apple-Each_7320e63a-de46-4a16-9b8c-526e15219a12_3.e557c1ad9973e1f76f512b34950243a3.jpeg",
-      "thumbnail_url": "https://ts4.mm.bing.net/th?id=OIP.owUjUdRhtPxKPXev6aIAuwHaHa&pid=15.1",
-      "source_url": "https://foodisgood.com/product/fresh-red-delicious-apple/"
-    },
-    {
-      "title": "Fresh red apple fruit isolated on the white background with clipping ...",
-      "image_url": "https://as1.ftcdn.net/v2/jpg/02/10/59/70/1000_F_210597040_wxyvT8wGl322pfG6xO4LGW4FCWTgkOyX.jpg",
-      "thumbnail_url": "https://ts2.mm.bing.net/th?id=OIP.dfXQyVXEmomPKY8sbq9k4AHaG7&pid=15.1",
-      "source_url": "https://stock.adobe.com/images/fresh-red-apple-fruit-isolated-on-the-white-background-with-clipping-path-one-of-the-best-isolated-apples-that-you-have-seen/210597040"
-    },
-    {
-      "title": "Red Apple Fruit Wallpapers - Wallpaper Cave",
-      "image_url": "https://wallpapercave.com/wp/wp2723086.jpg",
-      "thumbnail_url": "https://ts4.mm.bing.net/th?id=OIP.hQittHjUXb6SZLIEtlsl2QHaHa&pid=15.1",
-      "source_url": "https://wallpapercave.com/red-apple-fruit-wallpaper"
-    },
-    {
-      "title": "Red Apple Fruit",
-      "image_url": "https://www.applesfromny.com/wp-content/uploads/2020/06/Red-DeliciousNEW.png",
-      "thumbnail_url": "https://ts3.mm.bing.net/th?id=OIP.3yVF0tT4qKy05GH7wq_BDwHaF1&pid=15.1",
-      "source_url": "https://fity.club/lists/suggestions/red-apple-fruit/"
-    },
-    {
-      "title": "Red Apple Anchorage Hours at Carlos Snyder blog",
-      "image_url": "https://png.pngtree.com/png-clipart/20230930/original/pngtree-small-dark-red-apple-png-image_13024127.png",
-      "thumbnail_url": "https://ts2.mm.bing.net/th?id=OIP.cAX4nzjxEQt6S2Iymxbh-gHaHa&pid=15.1",
-      "source_url": "https://storage.googleapis.com/daezepfdutguoe/red-apple-anchorage-hours.html"
-    }
+    {"title": "森林照片", "image_url": "https://example.com/a.jpg", "thumbnail_url": "https://example.com/thumb.jpg", "source_url": "https://example.com/page"}
   ],
   "usage_hint": "Use the 'image_url' values as reference images in image generation. Download them first if needed."
 }
 ```
 
-当前 config.yaml 的 max_results=5 覆盖模型传入的 max_results，本次即使模型请求 2 条也按配置检索。color 的可选值为 color、Monochrome、Red、Orange、Yellow、Green、Blue、Purple、Pink、Brown、Black、Gray、Teal、White。工具返回错误对象时不以 Error: 开头。
+`total_results` 是安全过滤后的条数。标题缺失或非字符串变为 `""`；URL 经安全检查，不安全或缺失时为 `""`。`image_url` 和 `thumbnail_url` 至少一个有效才保留该条；`source_url` 可以为空，未透传上游额外字段。
 
-其他返回形态（源码补充，以下并非本次真实失败记录；xxx 为占位值）：
+**result：空结果／异常**
 
-```json
-{
-  "error": "No images found",
-  "query": "xxx"
-}
+```text
+Error: No images found
 ```
 
-```json
-{
-  "error": "No safe image URLs found",
-  "query": "xxx"
-}
+```text
+Error: No safe image URLs found
 ```
 
-上述错误对象同样通过 JSON 字符串返回；底层依赖缺失或搜索异常也可能被归并为 No images found，不能仅凭该正文区分“确实无图片”和“服务暂不可用”。
+- 第一种既可能是确实无结果，也可能是缺少 `ddgs` 依赖或检索调用失败；这些情况统一返回 `Error: No images found`，不再返回含 error/query 的 JSON 对象。
+- 第二种表示原始结果非空，但所有条目都不是对象或没有安全图片／缩略图 URL。
+- 配置加载、初始化等没有被内部检索异常处理捕获的异常，会走文末以 `Error:` 开头的通用异常包装。成功结果仍使用上述 JSON 结构。
 
+## 4. ls
 
-## ls
+列出目录，工具说明为最多两层的树形文本，具体样式由沙箱实现决定。
 
-列出目录及其下最多两层内容。当前宿主机实现返回逐行绝对路径。
+源码：[deerflow/sandbox/tools.py](../deerflow/sandbox/tools.py)，`ls_tool`。
 
-输入
+**call**
 
 ```json
-{
-  "path": "/mnt/user-data/workspace" // 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径
-}
+{"path": "/mnt/user-data/workspace", "description": "查看工作目录"}
 ```
 
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明 |
 |---|---|---|
-| `path` | 必填 | 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径 |
-| `description` | 可选；"" | 调用目的说明，通常展示在界面上 |
+| `path` | string，必填 | 要列出的目录绝对路径。 |
+| `description` | string，默认 `""` | 展示用简短说明，不参与目录检索。 |
 
-输出
+**result**
 
-情况 1：本次真实调用，模型实际收到的结果。
-
-```json
-"/mnt/user-data/workspace/nested/\n/mnt/user-data/workspace/nested/notes.md\n/mnt/user-data/workspace/red.png\n/mnt/user-data/workspace/sample.txt"
+```text
+/mnt/user-data/workspace/a.txt
+/mnt/user-data/workspace/reports/
 ```
 
-输出不是带 size/type 等属性的文件对象数组。路径显示的是线程虚拟路径，当前 ls_output_max_chars=20000；超限可能截断。
+上述仅为示意，返回的是多行字符串，不是固定 JSON 数组。
 
-其他返回形态（源码补充，以下并非本次真实失败记录；xxx 为占位值）：
+| 情况 | 实际输出 |
+|---|---|
+| 正常目录 | 沙箱返回的目录项以换行拼接；本地宿主路径会映射为虚拟路径。 |
+| 空目录／过滤禁用技能后无可见项 | `(empty)` |
+| 内容过长 | 保留开头并追加 `... [truncated: showing first <保留数> of <总数> chars. Use a more specific path to see fewer results] ...`；极小预算可能只剩截取文本。 |
+| 目录不存在 | `Error: Directory not found: <path>` |
+| 权限不足 | `Error: Permission denied: <path>` |
+| 禁用技能目录 | `Error: Skill '<name>' is disabled. Access to its files is blocked. Enable the skill in settings before using it.` |
+| 沙箱异常 | `Error: <沙箱异常说明>` |
+| 其他异常，包括未被独立捕获的路径类型错误 | `Error: Unexpected error listing directory: <异常类名>: <detail>` |
+
+当前配置 `ls_output_max_chars=20000`，配置为 0 可关闭该层截断。
+
+## 5. read_file
+
+读取 UTF-8 文本，可按行读取。
+
+源码：[deerflow/sandbox/tools.py](../deerflow/sandbox/tools.py)，`read_file_tool`、`_truncate_read_file_output`；固定提示见 [read_file_contract.py](../deerflow/sandbox/read_file_contract.py)。
+
+**call**
 
 ```json
-"Error: Directory not found: /mnt/user-data/workspace/missing"
+{"path": "/mnt/user-data/workspace/a.txt", "description": "读取文本", "start_line": 1, "end_line": 20}
 ```
 
-
-## read_file
-
-读取 UTF-8 文本文件，可按行号读取指定范围。
-
-输入
-
-```json
-{
-  "path": "/mnt/user-data/workspace/sample.txt", // 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径
-  "start_line": 2, // 起始行号，从 1 开始，包含该行
-  "end_line": 3 // 结束行号，包含该行
-}
-```
-
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明 |
 |---|---|---|
-| `path` | 必填 | 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径 |
-| `description` | 可选；"" | 调用目的说明，通常展示在界面上 |
-| `start_line` | 可选；null | 起始行号，从 1 开始，包含该行 |
-| `end_line` | 可选；null | 结束行号，包含该行 |
+| `path` | string，必填 | 文件绝对路径。 |
+| `description` | string，默认 `""` | 展示说明。 |
+| `start_line` | integer/null，默认 null | 从 1 开始，包含该行；省略从第一行开始。非 null 时必须 ≥1。 |
+| `end_line` | integer/null，默认 null | 包含该行；省略读到末尾。必须 ≥1 且不小于有效起始行。超过末尾时按实际内容读取。 |
 
-输出
+**result**
 
-情况 1：本次真实调用，模型实际收到的结果。
+| 情况 | 实际输出 |
+|---|---|
+| 正常 | 文件全文或指定行的原文字符串，不自动增加行号；按行读取的换行形式由读取实现处理。 |
+| 空文件／读到的空行无内容 | `(empty)` |
+| `start_line > 1` 且超过文件长度 | `(start_line exceeds file length)` |
+| 起始行小于 1 | `(start_line must be >= 1)` |
+| 结束行小于 1 | `(end_line must be >= 1)` |
+| 起始行大于结束行 | `(invalid line range: start_line must be <= end_line)` |
+| 文件不存在 | `Error: File not found: <path>` |
+| 权限不足 | `Error: Permission denied reading file: <path>` |
+| 路径是目录 | `Error: Path is a directory, not a file: <path>` |
+| UTF-8 解码失败 | `Error: cannot read '<path>' as text — it appears to be a binary file (e.g. .xlsx, .pdf, or an image). read_file only supports UTF-8 text. Use bash with a suitable library instead (pandas/openpyxl for spreadsheets), or view_image for images.` |
+| 禁用技能 | 与 `ls` 相同的禁用技能提示。 |
+| 沙箱异常 | `Error: <沙箱异常说明>` |
+| 其他异常 | `Error: Unexpected error reading file: <异常类名>: <detail>` |
 
-```json
-"beta=2\nalpha=3"
+当前配置 `read_file_output_max_chars=50000`。超限保留开头，并追加以 `... [truncated:` 开头的提示：
+
+- 在行边界截断：给出已展示的行数、字符数和继续读取的 `start_line`。
+- 在超长行内部截断：注明被截断行及行内剩余信息，不能认为这行已完整读完。
+- 预算极小时：只给缩小读取范围的提示，该提示自身也可能被截短。
+
+截断提示的实际格式举例（数字是占位示例）：
+
+```text
+... [truncated: showing first 20 of 100 lines (500 of 3000 chars). Continue with start_line=21, or use start_line/end_line to read a specific range] ...
 ```
 
-情况 2：补充实测 `read_file_missing`。
+若切在行内，会出现 `cut inside line <行号>`，并根据该行能否单独读完，提示重新读取该行、单独指定 start_line/end_line，或改用 `bash` 的 `cut -c`。指定读取范围时，提示里的行号仍是原文件行号。
 
-输入
+因此，`(empty)`、行范围错误和截断后的部分文本都不能一概当成“完整文件已读成功”。
 
-```json
-{
-  "path": "/mnt/user-data/workspace/not_exists.txt",
-  "description": "测试读取不存在的文件，验证错误输出"
-}
-```
+## 6. glob
 
-输出
+按文件名模式搜索路径。
 
-```json
-"Error: File not found: /mnt/user-data/workspace/not_exists.txt"
-```
+源码：[deerflow/sandbox/tools.py](../deerflow/sandbox/tools.py)，`glob_tool`、`_format_glob_results`；本地匹配见 [search.py](../deerflow/sandbox/search.py)。
 
-行号只控制切片，返回正文不会自动添加行号。未指定行范围时读取全文。当前 read_file_output_max_chars=50000；达到上限会附截断/继续读取提示。空文件、越界和无效行号有各自提示，不能都按空字符串处理。
-
-
-## glob
-
-在指定目录下按 glob 模式查找文件或目录。
-
-输入
+**call**
 
 ```json
-{
-  "path": "/mnt/user-data/workspace", // 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径
-  "pattern": "**/*.md", // glob 模式或 grep 搜索表达式
-  "include_dirs": false, // 是否包含匹配的目录
-  "max_results": 10 // 最多返回的结果数量；注意部分工具会被配置中的数量覆盖
-}
+{"pattern": "**/*.py", "path": "/mnt/user-data/workspace", "description": "查找 Python 文件", "include_dirs": false, "max_results": 200}
 ```
 
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明 |
 |---|---|---|
-| `pattern` | 必填 | glob 模式或 grep 搜索表达式 |
-| `path` | 必填 | 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径 |
-| `description` | 可选；"" | 调用目的说明，通常展示在界面上 |
-| `include_dirs` | 可选；false | 是否包含匹配的目录 |
-| `max_results` | 可选；200 | 最多返回的结果数量；注意部分工具会被配置中的数量覆盖 |
+| `pattern` | string，必填 | 相对搜索根的 glob，支持 `*`、`?`、字符集合、`**`。本地实现中无 `/` 的模式按各层文件名匹配，带 `/` 的模式相对根目录匹配，`**` 可匹配零层或多层。 |
+| `path` | string，必填 | 搜索根目录绝对路径，必须是目录。 |
+| `description` | string，默认 `""` | 展示说明。 |
+| `include_dirs` | boolean，默认 false | true 时也返回匹配目录。 |
+| `max_results` | integer，默认 `200` | ≤0 回退默认值；工具上限 1000。有效数量还取配置限制与请求限制的较小值；当前配置 200。 |
 
-输出
+**result：正常**
 
-情况 1：本次真实调用，模型实际收到的结果。
-
-```json
-"Found 1 paths under /mnt/user-data/workspace\n1. /mnt/user-data/workspace/nested/notes.md"
+```text
+Found 2 paths under /mnt/user-data/workspace
+1. /mnt/user-data/workspace/a.py
+2. /mnt/user-data/workspace/src/b.py
 ```
 
-情况 2：补充实测 `glob_empty`。
+| 情况 | 实际输出 |
+|---|---|
+| 无匹配 | `No files matched under <path>` |
+| 达到上限且有可见结果 | 首行增加 `(showing first <N>)`，末行增加 `Results truncated. Narrow the path or pattern to see fewer matches.` |
+| 搜索达到上限，但权限／禁用技能过滤后无可见结果 | `Search under <path> stopped at its result limit with no files matched in the part it covered; results are incomplete. Narrow the path or pattern.` |
+| 根目录不存在 | `Error: Directory not found: <path>` |
+| 路径不是目录 | `Error: Path is not a directory: <path>` |
+| 权限不足 | `Error: Permission denied: <path>` |
+| 禁用技能／沙箱异常 | 与 `ls` 相同的禁用技能提示／`Error: <沙箱异常说明>`。 |
+| 其他异常 | `Error: Unexpected error searching paths: <异常类名>: <detail>` |
 
-输入
+达到数量上限即可能标记截断，不代表一定存在更多结果。搜索会忽略实现中规定的目录／文件，并过滤禁用技能，不等于对整棵文件系统无遗漏扫描。
 
-```json
-{
-  "pattern": "**/*.absent",
-  "path": "/mnt/user-data/workspace"
-}
-```
+## 7. grep
 
-输出
+搜索文件中的匹配行。
 
-```json
-"No files matched under /mnt/user-data/workspace"
-```
+源码：[deerflow/sandbox/tools.py](../deerflow/sandbox/tools.py)，`grep_tool`、`_format_grep_results`。
 
-输出是带数量与编号的文本。max_results 默认 200；实际取参数值与工具配置值的较小者（并执行合法范围约束）。超过上限有截断提示。
-
-
-## grep
-
-在指定文件或目录中查找匹配的文本行。
-
-输入
+**call**
 
 ```json
-{
-  "pattern": "alpha", // glob 模式或 grep 搜索表达式
-  "path": "/mnt/user-data/workspace", // 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径
-  "glob": "**/*.txt", // 过滤待搜索文件的 glob 模式
-  "literal": true, // 是否将 pattern 作为普通字符串而非正则表达式
-  "case_sensitive": true, // 是否区分大小写
-  "max_results": 10 // 最多返回的结果数量；注意部分工具会被配置中的数量覆盖
-}
+{"pattern": "TODO", "path": "/mnt/user-data/workspace", "description": "查找待办", "glob": "**/*.py", "literal": true, "case_sensitive": false, "max_results": 100}
 ```
 
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明 |
 |---|---|---|
-| `pattern` | 必填 | glob 模式或 grep 搜索表达式 |
-| `path` | 必填 | 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径 |
-| `description` | 可选；"" | 调用目的说明，通常展示在界面上 |
-| `glob` | 可选；null | 过滤待搜索文件的 glob 模式 |
-| `literal` | 可选；false | 是否将 pattern 作为普通字符串而非正则表达式 |
-| `case_sensitive` | 可选；false | 是否区分大小写 |
-| `max_results` | 可选；100 | 最多返回的结果数量；注意部分工具会被配置中的数量覆盖 |
+| `pattern` | string，必填 | 默认正则表达式；`literal=true` 时按普通字符串处理。 |
+| `path` | string，必填 | 文件或搜索根目录的绝对路径。 |
+| `description` | string，默认 `""` | 展示说明。 |
+| `glob` | string/null，默认 null | 候选文件名过滤，如 `**/*.py`；不是内容正则。 |
+| `literal` | boolean，默认 false | true 时正则元字符无特殊含义。 |
+| `case_sensitive` | boolean，默认 false | 默认不区分大小写，true 时区分。 |
+| `max_results` | integer，默认 `100` | 限制匹配行数，不是文件数；≤0 回退默认值，工具上限 500，有效值还受配置限制；当前配置 100。 |
 
-输出
+**result：正常**
 
-情况 1：本次真实调用，模型实际收到的结果。
-
-```json
-"Found 2 matches under /mnt/user-data/workspace\n/mnt/user-data/workspace/sample.txt:1: alpha=1\n/mnt/user-data/workspace/sample.txt:3: alpha=3"
+```text
+Found 1 matches under /mnt/user-data/workspace
+/mnt/user-data/workspace/a.py:12: # TODO: 补充校验
 ```
 
-情况 2：补充实测 `grep_empty`。
+行号从 1 开始。每行命中一次就输出一条，不是把行中每一个匹配片段分别计数。
 
-输入
+| 情况 | 实际输出 |
+|---|---|
+| 无匹配 | `No matches found under <path>` |
+| 有结果但截断 | 首行增加 `(showing first <N>)`，末行 `Results truncated. Narrow the path or add a glob filter.` |
+| 截断后无可见匹配 | `Search under <path> stopped at its result limit with no matches in the part it covered; results are incomplete. Narrow the path or add a glob filter.` |
+| 正则非法 | `Error: Invalid regex pattern: <detail>` |
+| 路径不存在 | `Error: Directory not found: <path>`；即使传入的是文件，当前该分支也使用这句文案。 |
+| 路径类型错误 | `Error: Path is not a directory: <path>` |
+| 权限不足 | `Error: Permission denied: <path>` |
+| 禁用技能／沙箱异常 | 与 `ls` 相同的禁用技能提示／`Error: <沙箱异常说明>`。 |
+| 其他异常 | `Error: Unexpected error searching file contents: <异常类名>: <detail>` |
 
-```json
-{
-  "pattern": "NO_SUCH_TOKEN",
-  "path": "/mnt/user-data/workspace/sample.txt"
-}
-```
+本地搜索会跳过忽略项、二进制文件、大于 1000000 字节的文件、遍历时的符号链接及读取异常文件；超过 2000 字符的行也会跳过。命中行展示最多 200 字符，较长时保留前 197 字符并加 `...`。因此“无匹配”不保证每个文件都被全文检查，“找到的行”也不保证是完整行文本。
 
-输出
+## 8. write_file
 
-```json
-"No matches found under /mnt/user-data/workspace/sample.txt"
-```
+创建、覆盖或追加文本文件。
 
-输出是带数量和 path:line: content 的文本。max_results 默认 100；实际取参数值与工具配置值的较小者（并执行合法范围约束）。无匹配与路径不存在是不同结果。
+源码：[deerflow/sandbox/tools.py](../deerflow/sandbox/tools.py)，`write_file_tool`、`_format_write_file_error`；读后写保护见 [read_before_write_middleware.py](../deerflow/agents/middlewares/read_before_write_middleware.py)。
 
-
-## write_file
-
-新建、覆盖或追加文本文件。
-
-输入
+**call**
 
 ```json
-{
-  "path": "/mnt/user-data/workspace/created.txt", // 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径
-  "content": "hello tool\n", // 写入的文本内容
-  "append": false // true 追加，false 覆盖或新建
-}
+{"path": "/mnt/user-data/outputs/report.md", "content": "# 报告\n", "description": "写入报告", "append": false}
 ```
 
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明 |
 |---|---|---|
-| `path` | 必填 | 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径 |
-| `content` | 必填 | 写入的文本内容 |
-| `description` | 可选；"" | 调用目的说明，通常展示在界面上 |
-| `append` | 可选；false | true 追加，false 覆盖或新建 |
+| `path` | string，必填 | 目标文件绝对路径。 |
+| `content` | string，必填 | 要写入的文字；空字符串也是有效内容，覆盖时会清空文件。 |
+| `description` | string，默认 `""` | 展示说明。 |
+| `append` | boolean，默认 false | false 覆盖；true 追加。已存在文件在两种模式下都受读后写保护。 |
 
-输出
+**result**
 
-情况 1：本次真实调用，模型实际收到的结果。
+| 情况 | 实际输出 |
+|---|---|
+| 创建／覆盖／追加成功 | `OK`，没有文件路径或字节数 JSON。 |
+| 非追加调用超过大小限制 | 以 `Error: write_file content (<实际字节数> bytes) exceeds the <上限>-byte single-call limit.` 开头，后接下方固定拆分建议。 |
+| 写入目录 | `Error: Path is a directory, not a file: <path>` |
+| 权限不足 | `Error: Permission denied writing to file: <path>` |
+| 沙箱／OS／其他写入异常 | `Error: Failed to write file '<path>': <异常类名>: <detail>` |
+| 已存在文件未读取当前版本 | 中间件拒绝，见文末读后写保护；工具本体尚未执行。 |
 
-```json
-"OK"
+非追加内容默认上限为 **80×1024 字节（UTF-8）**；`DEERFLOW_WRITE_FILE_MAX_BYTES` 可覆盖，≤0 关闭限制；追加不受这个工具层限制。错误详情也可能被中间截断，并带 `... [write_file error truncated: <N> chars skipped] ...` 标记。内容是否完整还受模型输出限制影响，不能把 80 KiB 当成每次都能生成的保证。
+
+超限错误后接的完整建议：
+
+```text
+Split the content into smaller pieces: either (a) write the first section now, then use `str_replace` for further edits, or (b) call write_file again with append=True carrying the next section. See SIZE POLICY in the tool docstring or issue #3189 for the rationale.
 ```
 
-成功返回字符串 OK。当前 read_before_write.enabled=true：覆盖或追加已有文件前，必须先 read_file 读取当前版本；写入后旧读取凭据失效，需要重新读取。新建文件无需预读。非追加单次写入默认受 80 KiB UTF-8 内容上限约束。
+## 9. str_replace
 
-其他返回形态（源码补充，以下并非本次真实失败记录；xxx 为占位值）：
+替换已有文件中的文本。
 
-```json
-"Error: Permission denied writing to file: xxx"
-```
+源码：[deerflow/sandbox/tools.py](../deerflow/sandbox/tools.py)，`str_replace_tool`、`_match_line_endings`。
 
-
-## str_replace
-
-替换文本文件中的指定字符串。
-
-输入
+**call**
 
 ```json
-{
-  "path": "/mnt/user-data/workspace/sample.txt", // 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径
-  "old_str": "beta=2", // 要替换的原字符串
-  "new_str": "beta=20", // 替换后的字符串
-  "replace_all": false, // 是否替换所有匹配；false 时当前实现只替换首个匹配
-  "description": "将 beta=2 替换为 beta=20" // 调用目的说明，通常展示在界面上
-}
+{"path": "/mnt/user-data/workspace/a.txt", "old_str": "旧内容", "new_str": "新内容", "description": "更新内容", "replace_all": false}
 ```
 
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明 |
 |---|---|---|
-| `path` | 必填 | 绝对路径；本次使用 /mnt/user-data 下的线程虚拟路径 |
-| `old_str` | 必填 | 要替换的原字符串 |
-| `new_str` | 必填 | 替换后的字符串 |
-| `description` | 可选；"" | 调用目的说明，通常展示在界面上 |
-| `replace_all` | 可选；false | 是否替换所有匹配；false 时当前实现只替换首个匹配 |
+| `path` | string，必填 | 目标文件绝对路径。 |
+| `old_str` | string，必填 | 精确匹配文本，不是正则。空字符串当前实现为不修改文件并返回 `OK`。 |
+| `new_str` | string，必填 | 替换文本，`""` 表示删除匹配内容。 |
+| `description` | string，默认 `""` | 展示说明。 |
+| `replace_all` | boolean，默认 false | false 仅替换第一次；true 替换所有匹配。 |
 
-输出
+**result**
 
-情况 1：本次真实调用，模型实际收到的结果。
+| 情况 | 实际输出 |
+|---|---|
+| 替换成功 | `OK` |
+| `old_str=""` | 在成功读取文件后返回 `OK`，不写入；之前仍可能被读后写保护拒绝。 |
+| 文件为空或找不到 `old_str` | `Error: String to replace not found in file: <path>` |
+| 文件不存在 | `Error: File not found: <path>` |
+| 权限不足 | `Error: Permission denied accessing file: <path>` |
+| 沙箱异常 | `Error: <沙箱异常说明>` |
+| 其他异常，如目录／解码错误 | `Error: Unexpected error replacing string: <异常类名>: <detail>` |
+| 没读过文件当前版本 | 文末读后写保护错误。 |
 
-```json
-"OK"
-```
+**实现与说明有一处差异**：docstring 要求默认模式下 `old_str` 恰好出现一次，但工具本体没有检查多次匹配，实际只替换第一次，不会专门返回“匹配不唯一”错误。CRLF 文件会在适用时调整新旧字符串的换行，避免因模型给出 LF 而无法匹配。
 
-情况 2：补充实测 `str_replace_missing`。
+## 10. bash
 
-输入
+执行命令，返回文本；输出细节由沙箱实现决定。
 
-```json
-{
-  "path": "/mnt/user-data/workspace/sample.txt",
-  "old_str": "NOT_FOUND",
-  "new_str": "x"
-}
-```
+源码：[deerflow/sandbox/tools.py](../deerflow/sandbox/tools.py)，`bash_tool`；当前本地实现见 [local_sandbox.py](../deerflow/sandbox/local/local_sandbox.py)，`execute_command`。
 
-输出
-
-```json
-"Error: String to replace not found in file: /mnt/user-data/workspace/sample.txt"
-```
-
-成功返回字符串 OK。修改前必须先 read_file 读取当前版本。注意工具描述宣称 replace_all=false 时原串必须唯一，但当前函数实现直接替换首个匹配；不要把“重复匹配必报错”写成已验证保证。
-
-
-## bash
-
-在当前配置的宿主机环境执行 shell 命令，返回命令输出。
-
-输入
+**call**
 
 ```json
-{
-  "command": "printf 'tool_io_ok\\n'", // 要执行的 shell 命令
-  "description": "执行指定的 printf 命令用于工具输入输出实测" // 调用目的说明，通常展示在界面上
-}
+{"command": "pwd", "description": "查看当前目录"}
 ```
 
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明 |
 |---|---|---|
-| `command` | 必填 | 要执行的 shell 命令 |
-| `description` | 可选；"" | 调用目的说明，通常展示在界面上 |
+| `command` | string，必填 | Shell 命令。默认工作目录是线程 workspace，文件操作优先用允许的绝对虚拟路径；本地执行会校验并转换路径。 |
+| `description` | string，默认 `""` | 展示说明。 |
 
-输出
+没有模型可填的 `timeout`、`cwd` 或 `env` 参数，超时及环境由配置和运行时控制。长期服务应后台运行并重定向日志。
 
-情况 1：本次真实调用，模型实际收到的结果。
+**result：当前 LocalSandboxProvider**
 
-```json
-"tool_io_ok\n"
+| 情况 | 实际输出 |
+|---|---|
+| 成功且有 stdout | stdout 原文；不会固定附带 `Exit Code: 0`。 |
+| 成功且无 stdout/stderr | `(no output)`；这是当前本地 provider 的明确占位文本。 |
+| 只有 stderr | stderr 原文；即使命令退出码为 0，也可能有警告文本。 |
+| 同时有 stdout/stderr | `<stdout>\nStd Error:\n<stderr>` |
+| 非零退出 | 上述输出后追加 `\nExit Code: <退出码>`；不是固定 `Error:` 前缀。 |
+| 执行超时 | 保留已捕获输出并追加超时提示及 `Exit Code: 124`；超时提示由沙箱生成。 |
+| 本地 Bash 未获配置允许 | `Error: Host bash execution is disabled for LocalSandboxProvider because it is not a secure sandbox boundary. Switch to AioSandboxProvider for isolated bash access, or set sandbox.allow_host_bash: true only in a fully trusted local environment.` |
+| 路径权限／沙箱异常 | `Error: <detail>` |
+| 其他异常 | `Error: Unexpected error executing command: <异常类名>: <detail>` |
+
+当前配置输出上限 20000 字符，超出后保留头尾并插入截断标记，保留尾部退出码证据；0 关闭该层截断，1–31 的配置采用至少 32 字符的有效预算。注入凭据会脱敏，本地路径会映射为虚拟路径。远程沙箱的命令输出格式可能不同，不能假定所有 provider 都与本地实现完全一致。
+
+本地超时的完整提示示例（60 为实际超时秒数）：
+
+```text
+Command timed out after 60 seconds and was terminated. To run a long-lived process such as a web server, start it in the background and redirect its output, e.g. `your-command > /mnt/user-data/workspace/server.log 2>&1 &`.
+Exit Code: 124
 ```
 
-情况 2：补充实测 `bash_error`。
+工具层头尾截断标记为 `... [middle truncated: <N> chars skipped] ...`；沙箱自身的捕获预算也可能先截断输出。
 
-输入
+## 11. present_files
 
-```json
-{
-  "command": "printf 'test_stderr\\n' >&2; exit 7",
-  "description": "测试非零退出码与 stderr 输出"
-}
-```
+把产出文件路径登记到当前线程，让客户端展示或下载。
 
-输出
+源码：[deerflow/tools/builtins/present_file_tool.py](../deerflow/tools/builtins/present_file_tool.py)，`present_file_tool`。
+
+**call**
 
 ```json
-"test_stderr\n\nExit Code: 7"
+{"filepaths": ["/mnt/user-data/outputs/report.md"]}
 ```
 
-当前 LocalSandboxProvider 与 allow_host_bash=true，命令在宿主机执行；默认工作目录映射到当前线程 workspace。bash_command_timeout=600 秒，bash_output_max_chars=20000。输出是字符串，不是 {stdout, stderr, exit_code} 对象；非零退出详情以本次实际输出为准。
-
-
-本次退出码 7 的返回文本不以 `Error: ` 开头，工具状态元数据仍标记为 success；判断命令是否成功时应读取正文中的退出信息。正常无输出时返回 `(no output)`；超时分支会附退出码 124（后两项为源码补充，本次未触发）。
-
-## present_files
-
-将当前线程 outputs 目录中的文件登记为向用户展示的产物。框架自动加入。
-
-输入
-
-```json
-{
-  "filepaths": ["/mnt/user-data/outputs/report.txt"] // 需要展示的文件路径数组，限定 /mnt/user-data/outputs 下
-}
-```
-
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明 |
 |---|---|---|
-| `filepaths` | 必填 | 需要展示的文件路径数组，限定 /mnt/user-data/outputs 下 |
+| `filepaths` | string[]，必填 | outputs 内文件的绝对虚拟路径，也接受当前线程 outputs 对应的宿主绝对路径并归一化；可传多个，`[]` 也是有效列表。 |
 
-输出
+**result：正常**
 
-情况 1：本次真实调用，模型实际收到的结果。
-
-```json
-"Successfully presented files"
+```text
+Successfully presented files
 ```
 
-模型只提供 filepaths；runtime 和 tool_call_id 由框架注入。工具内部返回 Command，同时更新 artifacts 与消息，但模型收到的是 ToolMessage.content 文本。该工具主要登记展示路径，不应将成功回执理解为文件内容或文件有效性的完整校验。
-
-其他返回形态（源码补充，以下并非本次真实失败记录；xxx 为占位值）：
+同时 `Command.update.artifacts` 更新为归一化路径列表：
 
 ```json
-"Error: Only files in /mnt/user-data/outputs can be presented: xxx"
+["/mnt/user-data/outputs/report.md"]
 ```
 
+| 情况 | 实际输出与行为 |
+|---|---|
+| 空列表 | 同样返回成功文本，提交空 artifacts 更新。 |
+| 多个路径中任意一个非法 | 整次返回错误，不登记其中其他路径。 |
+| 路径不在当前 outputs 内 | `Error: Only files in /mnt/user-data/outputs can be presented: <path>` |
+| 缺少 runtime state | `Error: Thread runtime state is not available` |
+| 缺少线程 ID | `Error: Thread ID is not available in runtime context or runtime config` |
+| 缺少 outputs 状态路径 | `Error: Thread outputs path is not available in runtime state` |
+| 其他 ValueError | `Error: <detail>` |
+| 其他未捕获异常 | 文末通用异常包装。 |
 
-## ask_clarification
+工具本体只校验路径归属，**不校验文件是否存在、是否是普通文件，也不读取文件内容**；成功登记不等于客户端下载必定成功。artifacts 由状态 reducer 合并去重，不是覆盖整个历史列表。
 
-向用户提出澄清问题、选项或表单，并结束当前轮次等待用户回复。框架自动加入。
+## 12. ask_clarification
 
-输入
+向用户提出澄清问题；标准中间件会记录问题并结束当前图执行，等待后续用户输入。
+
+源码：[clarification_tool.py](../deerflow/tools/builtins/clarification_tool.py)、[clarification_middleware.py](../deerflow/agents/middlewares/clarification_middleware.py)。
+
+**call**
 
 ```json
-{
-  "question": "报告需要使用中文还是英文？", // 向用户提出的问题
-  "clarification_type": "approach_choice", // missing_info / ambiguous_requirement / approach_choice / risk_confirmation / suggestion
-  "options": ["中文", "英文"] // 单选候选项；复杂或多选交互使用 fields
-}
+{"question": "需要哪种格式？", "clarification_type": "approach_choice", "context": null, "options": ["PDF", "Word"], "fields": null}
 ```
 
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明及可选值 |
 |---|---|---|
-| `question` | 必填 | 向用户提出的问题 |
-| `clarification_type` | 必填 | missing_info / ambiguous_requirement / approach_choice / risk_confirmation / suggestion |
-| `context` | 可选；null | 补充说明为什么需要澄清 |
-| `options` | 可选；null | 单选候选项；复杂或多选交互使用 fields |
-| `fields` | 可选；null | 表单字段数组；提供时优先于 options，详见下文 |
+| `question` | string，必填 | 要展示的问题。 |
+| `clarification_type` | enum string，必填 | `missing_info` 缺信息、`ambiguous_requirement` 需求有歧义、`approach_choice` 方案选择、`risk_confirmation` 风险确认、`suggestion` 建议。 |
+| `context` | string/null，默认 null | 解释提问背景；非空时显示在问题前。 |
+| `options` | string[]/null，默认 null | 单选列表；去标签、去空白及去重后使用，可搭配自由输入。 |
+| `fields` | object[]/null，默认 null | 表单字段；有效且非空时优先于 options。 |
 
-输出
+`fields` 中每个对象：
 
-此工具由 ClarificationMiddleware 拦截，正常流程不会把函数占位返回值 "Clarification request processed by middleware" 当作模型结果。它是 return_direct 工具，本轮通常不再发起后续模型请求；用户答复通过之后的用户消息进入下一轮。
-
-本轮没有工具执行后的再次模型调用，因此不存在“模型在本轮接收普通返回值”的样本。实际落入消息历史并送往客户端的澄清内容如下：
-
-客户端事件节选，省略状态推导和回执元数据：
-
-```json
-{
-  "type": "tool_result",
-  "agent_id": "main",
-  "data": {
-    "id": "clarification:call_gny0wy0ntisfyr1c98g3369i",
-    "content": "🔀 报告需要使用中文还是英文？\n\n  1. 中文\n  2. 英文",
-    "tool_call_id": "call_gny0wy0ntisfyr1c98g3369i",
-    "name": "ask_clarification",
-    "status": "success",
-    "artifact": {
-      "human_input": {
-        "version": 1,
-        "kind": "human_input_request",
-        "source": "ask_clarification",
-        "request_id": "clarification:call_gny0wy0ntisfyr1c98g3369i",
-        "clarification_type": "approach_choice",
-        "question": "报告需要使用中文还是英文？",
-        "input_mode": "choice_with_other",
-        "tool_call_id": "call_gny0wy0ntisfyr1c98g3369i",
-        "options": [
-          {
-            "id": "option-1",
-            "label": "中文",
-            "value": "中文"
-          },
-          {
-            "id": "option-2",
-            "label": "英文",
-            "value": "英文"
-          }
-        ]
-      }
-    }
-  },
-  "thread_id": "tool-io-ask-clarification",
-  "seq": 65
-}
-```
-
-`fields` 的模型输入形态（源码补充；本次实测使用 options 单选）：
-
-```json
-[
-  {
-    "name": "language",
-    "label": "报告语言",
-    "type": "select",
-    "required": true,
-    "options": [
-      "中文",
-      "英文"
-    ],
-    "placeholder": "请选择"
-  }
-]
-```
-
-每个字段的 name 必填且唯一；type 支持 text、textarea、number、select、multi_select、checkbox、date。label 默认等于 name，type 默认 text，required 默认 false；select/multi_select 需要 options。上限为 16 个字段、每字段 24 个选项，name/label/option/placeholder 各不超过 200 字符；超限会退化为普通文本提问。checkbox 表示布尔值，required=true 表示必须勾选。
-
-
-## review_skill_package
-
-静态检查技能包，不安装、激活或执行被检查的技能。框架自动加入。
-
-输入
-
-```json
-{
-  "target": "inline://SKILL.md", // 技能目标，例如 inline://SKILL.md、skill://… 或允许目录内的本地路径
-  "profile": "deerflow", // 校验规范：deerflow / agentskills
-  "include_content": "facts-only", // 附带内容范围：none / facts-only / semantic-review
-  "scope": ["all"], // 审查维度数组，省略或为空时使用 ["all"]
-  "inline_content": "---\nname: io-test\ndescription: 测试用文本整理技能\n---\n# 文本整理\n将用户提供的文本整理为三条要点。" // 内联 SKILL.md 内容；target 为 inline:// 时必填
-}
-```
-
-| 参数 | 必填 / 默认值 | 含义 |
+| 字段 | 类型／默认值 | 说明 |
 |---|---|---|
-| `target` | 必填 | 技能目标，例如 inline://SKILL.md、skill://… 或允许目录内的本地路径 |
-| `profile` | 可选；"deerflow" | 校验规范：deerflow / agentskills |
-| `include_content` | 可选；"semantic-review" | 附带内容范围：none / facts-only / semantic-review |
-| `scope` | 可选；null | 审查维度数组，省略或为空时使用 ["all"] |
-| `inline_content` | 可选；null | 内联 SKILL.md 内容；target 为 inline:// 时必填 |
+| `name` | string，必填 | 唯一非空标识，不使用 `constructor`、`toString` 等原型保留名。 |
+| `label` | string，默认 name | 展示名称。 |
+| `type` | enum string，默认 `text` | `text`、`textarea`、`number`、`select`、`multi_select`、`checkbox`、`date`。 |
+| `required` | boolean，默认 false | 是否必填；checkbox 设 true 表示必须勾选同意。 |
+| `options` | string[] | select / multi_select 要提供有效非空选项；其他类型忽略。 |
+| `placeholder` | string，可省略 | 输入提示。 |
 
-输出
+最多 16 个字段、每字段 24 个选项；name/label/option/placeholder 每项最多 200 字符；归一化 fields JSON 最多 16384 UTF-8 字节。
 
-情况 1：本次真实调用，模型实际收到的结果。
+**result：正常单选**
 
-实际为 JSON 字符串，下方展开其内容。
+```text
+🔀 需要哪种格式？
+
+  1. PDF
+  2. Word
+```
+
+不同类型依次对应 `❓`、`🤔`、`🔀`、`⚠️`、`💡` 图标。有 context 时先展示图标和背景，再展示问题；表单模式展示编号字段及选项，不展示顶层单选列表，末尾追加 `Please reply with a value for each field.`。
+
+除文本外，`ToolMessage.artifact.human_input` 携带结构化请求，例如：
 
 ```json
 {
-  "artifacts": [],
-  "facts": {
-    "analyzer_errors": [],
-    "completeness": {
-      "not_assessed": [],
-      "package_enumerated": true,
-      "text_content_complete": true,
-      "truncated": false
-    },
-    "evals": {
-      "case_count": 0,
-      "manifests": [],
-      "negative_trigger_cases": 0,
-      "positive_trigger_cases": 0,
-      "schema": null,
-      "valid": null
-    },
-    "findings": [],
-    "profile": "deerflow",
-    "reader_errors": [],
-    "resources": {
-      "edges": [],
-      "nodes": [
-        {
-          "kind": "text",
-          "path": "SKILL.md"
-        }
-      ],
-      "orphans": []
-    },
-    "schema_version": "deerflow.skill-review.facts.v1",
-    "subject": {
-      "category": null,
-      "declared_name": "io-test",
-      "display_ref": "inline://SKILL.md",
-      "package_digest": "sha256:ae068e0fa21025793e07b76448d1f07d56a3ceb5a90e3488e416c39bfd3a74e3",
-      "source": "inline"
-    },
-    "summary": {
-      "blockers": 0,
-      "errors": 0,
-      "infos": 0,
-      "warnings": 0
-    }
-  },
-  "static_report": {
-    "assurance": "static_only",
-    "dimensions": [
-      {
-        "id": "structure",
-        "status": "pass",
-        "summary": "0 blocker(s), 0 error(s), 0 warning(s)"
-      },
-      {
-        "id": "evidence_quality",
-        "status": "concern",
-        "summary": "0 eval case(s) detected"
-      }
-    ],
-    "evidence": {
-      "baseline": null,
-      "facts_complete": true,
-      "limitations": [],
-      "retained_artifacts": [],
-      "runtime_runs": []
-    },
-    "issues": [],
-    "readiness": "publish_candidate",
-    "recommended_actions": [],
-    "review": {
-      "completed_at": "2026-10-27T03:14:38Z",
-      "facts_schema_version": "deerflow.skill-review.facts.v1",
-      "profile": "deerflow",
-      "reviewer_model": "deterministic-review-core",
-      "scope": [
-        "all"
-      ]
-    },
-    "schema_version": "deerflow.skill-review.report.v1",
-    "subject": {
-      "display_ref": "inline://SKILL.md",
-      "package_digest": "sha256:ae068e0fa21025793e07b76448d1f07d56a3ceb5a90e3488e416c39bfd3a74e3"
-    }
-  },
-  "untrusted_review_data": true
+  "version": 1,
+  "kind": "human_input_request",
+  "source": "ask_clarification",
+  "request_id": "clarification:<tool_call_id>",
+  "tool_call_id": "<tool_call_id>",
+  "clarification_type": "approach_choice",
+  "question": "需要哪种格式？",
+  "context": null,
+  "input_mode": "choice_with_other",
+  "options": [
+    {"id": "option-1", "label": "PDF", "value": "PDF"},
+    {"id": "option-2", "label": "Word", "value": "Word"}
+  ]
 }
 ```
 
-模型看到的是审查摘要，不是 Python Command 对象，也不是完整 artifact。完整 facts、artifacts、static_report、markdown 等数据可在原生 ToolMessage.artifact 中保留；是否进入模型上下文要以 content 为准。include_content 控制审查内容范围，目标文件属于不可信数据。
+| 情况 | 实际输出与行为 |
+|---|---|
+| 无有效 options / fields | `version=1`、`input_mode=free_text`，不带 options / fields。 |
+| 有有效 options | 上述 `choice_with_other` 结构。context 只有 call 显式提供时才带。 |
+| 有有效 fields | `version=2`、`input_mode=form`，携带归一化 fields；字段内选项变成 `{id,label,value}` 对象列表，不是原始字符串列表。 |
+| 表单条目非法、字段名重复／保留、超数量／长度／总大小 | 整张表单失效，回退有效的顶层 options 或纯文本问题；不固定返回 `Error:`。 |
+| 字段 type 未知／select 没有有效选项 | 该字段降级为 `text`。这是中间件防御行为，不是建议的输入值。 |
+| 同轮还有其他工具调用 | 正常交互模式下丢弃其他调用，防止用户回答前产生操作。 |
+| 运行策略禁止澄清 | 返回以 `Clarification is disabled in this context — the human is not present to answer synchronously.` 开头的 ToolMessage，继续说明可逆工作采用合理假设、缺授权的高风险工作停止；不创建询问卡片，也不跳到 END。 |
+| 绕开中间件直接调用占位函数 | `Clarification request processed by middleware`；不是标准 stream 路径的实际结果。 |
 
-其他返回形态（源码补充，以下并非本次真实失败记录；xxx 为占位值）：
+标准路径使用 `Command(goto=END)` 结束当前轮，不是普通“工具返回后再调用一次模型”的流程，也不是 LangGraph 的 `interrupt()` 暂停对象。
+
+## 15. view_image
+
+读取图片，并在后续模型请求中注入图片内容。
+
+源码：[view_image_tool.py](../deerflow/tools/builtins/view_image_tool.py)、[view_image_middleware.py](../deerflow/agents/middlewares/view_image_middleware.py)。
+
+**call**
 
 ```json
-"Error: failed to review skill package: ValueError: inline_content is required for inline:// targets"
+{"image_path": "/mnt/user-data/uploads/photo.png"}
 ```
 
-本次 content 顶层字段为 untrusted_review_data、facts、artifacts、static_report；完整 artifact 额外带有 markdown。static_report.assurance=static_only 表示仅做静态检查，不代表执行过技能。
-
-
-## list_uploaded_files
-
-发现当前线程之前上传的文件，可过滤和分页。本轮新上传的文件不包含在结果中；嵌入式客户端默认加入。
-
-输入
-
-```json
-{
-  "include_outline": true, // false 不附大纲；true 为可解析文件附大纲；也可以传指定文件名数组
-  "max_results": 5, // 每页数量，最多 100 条
-  "extensions": ["txt"] // 扩展名过滤数组，可带点或不带点，忽略大小写，与 query 取交集
-}
-```
-
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明及可选值 |
 |---|---|---|
-| `include_outline` | 可选；false | false 不附大纲；true 为可解析文件附大纲；也可以传指定文件名数组 |
-| `max_results` | 可选；20 | 每页数量，最多 100 条 |
-| `query` | 可选；null | 文件名的大小写不敏感子串 |
-| `extensions` | 可选；null | 扩展名过滤数组，可带点或不带点，忽略大小写，与 query 取交集 |
-| `cursor` | 可选；null | 上一页 next_cursor；续页时保持 query 和 extensions 不变 |
+| `image_path` | string，必填 | 只接受 workspace/uploads/outputs 下的绝对虚拟路径；扩展名支持 `.jpg`、`.jpeg`、`.png`、`.webp`、`.gif`，扩展名转小写后检查。每次一张，不接受 URL、base64 或任意宿主路径。 |
 
-输出
+**result：正常**
 
-情况 1：本次真实调用，模型实际收到的结果。
-
-实际为 JSON 字符串，下方展开其内容。
-
-```json
-{
-  "files": [
-    {
-      "filename": "history.txt",
-      "size": 25,
-      "path": "/mnt/user-data/uploads/history.txt",
-      "extension": ".txt"
-    }
-  ],
-  "total_count": 1,
-  "message": "Found 1 historical file(s)."
-}
+```text
+Successfully read image
 ```
 
-工具函数返回 dict，进入模型上下文后是 JSON 字符串。files 中的 size 为字节数，extension 带点；outline 与 outline_preview 仅在可提取时出现。存在下一页时返回 truncated=true、omitted_summary、next_cursor，最后一页不包含 next_cursor。无运行上下文、无目录、空结果等通常返回 files=[] 和 message；游标错误使用结构化错误对象。
+同时更新 `viewed_images[image_path]`，包括 `mime_type`、`size`、`actual_path`、`sha256`；按运行情况还可能有 `source_sandbox_id`、`blob_ref`。这些是内部状态，不是模型填写的参数或统一返回 JSON。
 
-其他返回形态（源码补充，以下并非本次真实失败记录；xxx 为占位值）：
-
-```json
-{
-  "files": [],
-  "message": "No historical uploaded files in this thread."
-}
-```
-
-
-游标错误示例（源码补充；error 还可能为 invalid_cursor）：
+`ViewImageMiddleware` 在后续模型输入中追加图片上下文 HumanMessage，包含说明文本和如下内容块，而不是把图片字节直接塞进成功 ToolMessage：
 
 ```json
-{
-  "files": [],
-  "error": "stale_cursor",
-  "restart_required": true,
-  "message": "Upload listing continuation is invalid or has changed. Restart without cursor using the desired filters; discard earlier pages before combining results."
-}
+{"type": "image_url", "image_url": {"url": "data:image/png;base64,<图片数据>"}}
 ```
 
-## view_image
+**result：异常及后续差异**
 
-读取当前线程图片，并让模型在后续请求中接收图片内容。当前模型 supports_vision=true，框架自动加入。
+| 情况 | ToolMessage.content |
+|---|---|
+| 路径不在允许目录 | `Error: Only image paths under /mnt/user-data/workspace, /mnt/user-data/uploads, /mnt/user-data/outputs are allowed` |
+| 路径越界／运行状态或权限问题 | `Error: <detail>` |
+| 不支持的扩展名 | `Error: Unsupported image format: <suffix>. Supported formats: .jpg, .jpeg, .png, .webp, .gif` |
+| 文件不存在 | `Error: Image file not found: <image_path>` |
+| 路径不是文件 | `Error: Path is not a file: <image_path>` |
+| 文件大于 20 MiB | `Error: Image file is too large: <实际字节数> bytes. Maximum supported size is 20971520 bytes`；远程下载层也可能提前以读取错误拒绝。 |
+| 元数据读取失败 | `Error reading image metadata: <异常类名>: <detail>` |
+| 文件读取／下载失败 | `Error reading image file: <异常类名>: <detail>` |
+| 读取期间长度变化 | `Error: Image file changed during read` |
+| 文件头不是支持的图片格式 | `Error: File contents do not match a supported image format` |
+| 文件头和扩展名不一致 | `Error: Image contents are <实际 MIME>, but file extension indicates <扩展名对应 MIME>` |
+| 启用共享存储，但图片持久化失败 | `Error: Failed to persist image in shared blob storage` |
 
-输入
+后续模型注入还受图片数量／字节预算和文件是否仍可用影响：可以出现 `Omitted viewed images: <N>. Call view_image again to inspect a specific image.`，或 `(file unavailable or changed: <path>)`，因此成功读取后也不能保证每次后续请求都携带所有历史图片。文件头校验不是完整图像解码验证；损坏图片仍可能在模型或下游处理时失败。
+
+## 16. task
+
+把任务委派给子智能体，等待其终态后返回结果。
+
+源码：[task_tool.py](../deerflow/tools/builtins/task_tool.py)，`task_tool`、`_task_result_command`；输出格式及枚举见 [status_contract.py](../deerflow/subagents/status_contract.py)。
+
+**call**
 
 ```json
-{
-  "image_path": "/mnt/user-data/workspace/red.png" // 图片绝对虚拟路径，限定 /mnt/user-data/workspace、uploads、outputs
-}
+{"prompt": "检查代码并汇报问题", "subagent_type": "general-purpose", "acceptance_criteria": null, "description": "检查代码", "context_mode": "isolated"}
 ```
 
-| 参数 | 必填 / 默认值 | 含义 |
+| 参数 | 类型／默认值 | 说明及可选值 |
 |---|---|---|
-| `image_path` | 必填 | 图片绝对虚拟路径，限定 /mnt/user-data/workspace、uploads、outputs |
+| `prompt` | string，必填 | 完整、明确的委派任务。 |
+| `subagent_type` | string，必填 | 内置 `general-purpose`、`bash`；也可为已注册的自定义类型。实际可用列表受配置、允许列表及 Bash 策略限制，不是任意字符串都有效。 |
+| `acceptance_criteria` | string[]/null，默认 null | 可选验收条件列表；见下方。 |
+| `description` | string，默认 `""` | 日志／展示用简短描述，工具建议 3–5 个词；不是独立的任务内容。 |
+| `context_mode` | enum string，默认 `"isolated"` | `isolated` 只带委派输入；`snapshot` 额外带派发时父会话保留历史及摘要。之后的父会话不持续同步。 |
 
-输出
+验收条件的可识别形式：`file:<path> exists`、`file:<path> non-empty`、`file_written:<path>`、`tests_passed:<command>`、`file:<path> json-valid`、`file:<path> csv-columns:["id","name"]`。任意其他文字也可输入，但可能只能标为 UNVERIFIED。JSON 校验预算 50000 字节且只校验语法；CSV 只校验首条表头，允许额外列，表头读取预算 50000 字节，不校验数据行。
 
-情况 1：本次真实调用，模型实际收到的结果。
+**result：正常与各终态**
+
+| `subagent_status` | ToolMessage.content |
+|---|---|
+| `completed` | `Task Succeeded. Result: <子智能体报告>` |
+| `completed` 且触发预算／循环限制，但有可用输出 | `Task Succeeded (capped: <原因>). Result: <报告或部分结果>` |
+| `failed`，有错误详情 | `Task failed. Error: <detail>` |
+| `failed`，无详情 | `Task failed.` |
+| `failed` 且触发限制 | `Task failed (capped: <原因>). Error: <detail>`；无详情时为 `Task failed (capped: <原因>).` |
+| `cancelled` | `Task cancelled by user.`；有自定义详情时为 `Task cancelled by user. Error: <detail>` |
+| `timed_out` | `Task timed out.`；有详情时为 `Task timed out. Error: <detail>` |
+| `polling_timed_out` | 直接返回轮询错误详情，例如 `Task polling timed out after <分钟数> minutes. This may indicate the background task is stuck. Status: <状态>`；无详情时为 `Task polling timed out.` |
+
+限制原因的文本是 `token budget`、`turn budget`、`repeated tool-call loop`，对应结构化 stop reason `token_capped`、`turn_capped`、`loop_capped`。
+
+| 异常触发条件 | 对应输出 |
+|---|---|
+| 未知 context_mode | failed，详情 `Unknown context_mode '<value>'. Use isolated or snapshot.` |
+| 未知／不允许的 subagent_type | failed，详情 `Unknown subagent type '<value>'. Available: <可用类型>` |
+| Bash 子智能体被策略禁止 | failed，详情为本地 Bash 子智能体禁用说明。 |
+| 后台任务记录丢失 | failed，详情 `Task <工具调用ID> disappeared from background tasks`。 |
+| 子智能体执行失败／取消／超时 | 上述对应终态格式，具体详情由执行器提供。 |
+| 创建、派发、轮询等抛出未捕获异常 | 通用异常中间件改写为 failed 格式并补充恢复建议；不是普通 `Error: Tool ...` 文本。 |
+| 父调用被取消 | 传播取消并清理／请求取消子任务；不保证还能产出一条正常 ToolMessage。 |
+
+有验收结果时，报告后追加文本清单，逐条为 `[holds]`、`[does not hold]` 或 `[UNVERIFIED]`；验收检查自身异常时可能没有清单，不能把缺失当通过。
+
+`Command.update.messages` 中还带有 `ToolMessage.additional_kwargs`：
+
+| 字段 | 出现条件及内容 |
+|---|---|
+| `subagent_status` | 必有，以上 5 种终态。 |
+| `subagent_stop_reason` | 触发限制时出现，以上 3 种枚举。 |
+| `subagent_error` | 非完成态且存在非空错误；有界文本。 |
+| `subagent_result_brief`、`subagent_result_sha256` | completed 且报告非空时出现；摘要最多 2000 字符，SHA-256 对应完整报告。 |
+| `subagent_model_name` | 已知实际模型时出现。 |
+| `subagent_token_usage` | 有用量时出现，含 input_tokens / output_tokens / total_tokens。 |
+| `subagent_tool_receipts` | 有执行凭据时出现。 |
+| `subagent_receipt_verdict` | completed 且有有效引用检查结果时出现。 |
+| `subagent_acceptance_verdict` | completed 且有有效验收结果时出现；与文本清单对应。 |
+
+`artifact` 按情况携带引用来源、知识检索来源，或为空；不是固定报告 JSON。执行过程中还可能产生子任务进度事件，不能把它们当最终工具返回。`completed` 只代表执行完成，验收仍可能失败或未验证。
+
+## 17. write_todos
+
+创建或更新当前计划，**每次替换完整列表**。
+
+项目入口：[todo_middleware.py](../deerflow/agents/middlewares/todo_middleware.py)，`TodoMiddleware` 继承 LangChain `TodoListMiddleware`。工具参数与基础返回参照 [LangChain 官方实现](https://github.com/langchain-ai/langchain/blob/master/libs/langchain_v1/langchain/agents/middleware/todo.py)；项目要求 `langchain>=1.3`，该链接不是本地已安装版本的锁定快照。
+
+**call**
 
 ```json
-"Successfully read image"
+{"todos": [{"content": "检查代码", "status": "in_progress"}, {"content": "汇报结果", "status": "pending"}]}
 ```
 
-情况 2：补充实测 `view_image_missing`。
-
-输入
-
-```json
-{
-  "image_path": "/mnt/user-data/workspace/missing.png"
-}
-```
-
-输出
-
-```json
-"Error: Image file not found: /mnt/user-data/workspace/missing.png"
-```
-
-模型不生成 runtime 或 tool_call_id。工具内部更新 viewed_images；模型先收到成功回执，随后 ViewImageMiddleware 注入包含 text/image_url 的 HumanMessage。模型真正能看见图片依赖后者，而不是仅凭成功回执。支持 jpg、jpeg、png、webp、gif，并校验文件头、大小及扩展名。
-
-成功后的后续模型请求还实际收到以下 HumanMessage 内容块（Base64 已省略）：
-
-```json
-[
-  {
-    "type": "text",
-    "text": "Here are the images you've viewed:"
-  },
-  {
-    "type": "text",
-    "text": "\n- **/mnt/user-data/workspace/red.png** (image/png)"
-  },
-  {
-    "type": "image_url",
-    "image_url": {
-      "url": "data:image/png;base64,<图片字节的 Base64，文档省略>"
-    }
-  }
-]
-```
-
-本次模型据此识别为红色图片。
-
-
-## 测试范围与记录
-
-| 工具 | 来源 | 实测结论 |
+| 参数 | 类型／默认值 | 说明及可选值 |
 |---|---|---|
-| `web_search` | config.yaml | 原始模型链路已验证；格式更新后另通过六种 scope 的真实工具调用和 12 项离线测试 |
-| `web_fetch` | config.yaml | 已验证模型生成参数、执行及模型接收结果 |
-| `image_search` | config.yaml | 已验证模型生成参数、执行及模型接收结果 |
-| `ls` | config.yaml | 已验证模型生成参数、执行及模型接收结果 |
-| `read_file` | config.yaml | 已验证模型生成参数、执行及模型接收结果 |
-| `glob` | config.yaml | 已验证模型生成参数、执行及模型接收结果 |
-| `grep` | config.yaml | 已验证模型生成参数、执行及模型接收结果 |
-| `write_file` | config.yaml | 已验证模型生成参数、执行及模型接收结果 |
-| `str_replace` | config.yaml | 已验证模型生成参数、执行及模型接收结果 |
-| `bash` | config.yaml | 已验证模型生成参数、执行及模型接收结果 |
-| `present_files` | 自动加入 | 已验证模型生成参数、执行及模型接收结果 |
-| `ask_clarification` | 自动加入 | 已验证澄清交互并结束本轮 |
-| `review_skill_package` | 自动加入 | 已验证模型生成参数、执行及模型接收结果 |
-| `list_uploaded_files` | 自动加入 | 已验证模型生成参数、执行及模型接收结果 |
-| `view_image` | 自动加入 | 已验证模型生成参数、执行及模型接收结果 |
+| `todos` | object[]，必填 | 完整的新列表；`[]` 清空列表，不是增量追加。 |
+| `todos[].content` | string，必填 | 任务描述。 |
+| `todos[].status` | enum string，必填 | `pending` 未开始、`in_progress` 执行中、`completed` 已完成。 |
 
-原始全量实测覆盖 15 个工具，另补测 5 种搜索 scope 以及 7 个错误/空结果场景，共 27 个场景；`web_search` 格式更新后的补充验证单独记录在该节。没有工具因暂不可用而跳过。每个普通工具均保留了模型生成的调用和后续模型请求中的结果；ask_clarification 按其结束本轮的语义验证客户端事件。
+**result**
 
-以下不属于当前默认运行模式的启用工具：`task` 需要 subagent_enabled=true，`write_todos` 需要计划模式；`skill_manage`、任务连续性、调度、MCP 后台任务和批量子任务工具依赖对应开关或宿主能力。当前这些条件没有开启，因此未为实测而额外启用。`knowledge_base.enabled=false`；tool_groups 中出现 browser/knowledge 也不等于实际注册了工具。本次没有初始化额外 MCP 服务。
+```text
+Updated todo list to [{'content': '检查代码', 'status': 'in_progress'}, {'content': '汇报结果', 'status': 'pending'}]
+```
 
-复核入口：`deerflow/tools/tools.py`（装配）、`deerflow/community/metaso/tools.py`、`deerflow/community/image_search/tools.py`、`deerflow/sandbox/tools.py`、`deerflow/tools/builtins/`，以及 `deerflow/agents/middlewares/` 下的澄清、图片和工具输出中间件。
+这是包含 Python 列表表示的字符串，不是 JSON；同时 `Command.update.todos` 存储结构化列表。
+
+| 情况 | 实际输出与行为 |
+|---|---|
+| 空列表 | `Updated todo list to []`，状态列表清空。 |
+| 同一模型轮并行调用多次 | 中间件为每次调用返回下方错误文本，不正常更新计划。 |
+| 缺字段、状态非法、参数类型不符 | schema 校验错误，走依赖库 ToolNode 或通用异常处理；错误细节依赖安装版本。 |
+| 工具被授权策略移除 | 不能正常调用；项目 TodoMiddleware 同时关闭计划提示及未完成提醒。 |
+| 列表仍有未完成项，但模型直接结束 | 项目中间件可注入提醒并再次调用模型，提醒次数受限；这不是 `write_todos` 自身的另一种返回。 |
+
+并行重复调用的错误文本：
+
+```text
+Error: The `write_todos` tool should never be called multiple times in parallel. Please call it only once per model invocation to update the todo list.
+```
+
+## 中间件对输出的影响
+
+上面是各工具的输出分支。通过 `stream()` 运行时还应区分以下情况：
+
+| 情况 | 对模型／调用方的影响 |
+|---|---|
+| 输入缺字段、类型错误、枚举值错误 | 可能在工具本体执行前被 schema 拒绝。ToolNode 版本决定其校验错误格式；若异常到达 ToolErrorHandlingMiddleware，则使用下方通用包装，不能保证命中工具内部错误文案。 |
+| 权限、技能工具策略、保护规则拒绝 | 可在执行前返回策略错误 ToolMessage，或工具根本不暴露；这不代表底层 API／文件操作已尝试。 |
+| 已存在文件未读当前版本便写入 | `Error: <tool_name> blocked — <path> already exists (<行数说明>) and you have not read its current version. Any write invalidates earlier reads, so re-read before every modification. <读取建议>`。适用于 write_file（含 append）及 str_replace；每次成功修改后要重新读取。 |
+| 工具抛出未捕获异常 | 一般为 `Error: Tool '<tool_name>' failed with <异常类名>: <detail>. Continue with available context, or choose an alternative tool.`；detail 先处理并限长，消息 status 为 error。task 使用其专有 failed 格式。 |
+| 图控制流异常／取消 | 部分会继续传播，不转换为正常错误结果，所以不是每次调用都会有完整 result。 |
+| 超大结果 | ToolOutputBudgetMiddleware 可把全文写入文件，替换为结构摘要和文件引用；无法持久化时使用有界截断。此时即使工具原来返回 JSON，模型看到的也可能是摘要文本。 |
+| 脱敏／内容清理／路径映射 | 可能替换凭据、控制字符、不可信标记、宿主路径；不能保证最终内容与底层原始输出逐字一致。 |
+| 工具凭据／来源／进度元数据 | 可以额外出现在 ToolMessage 的 additional_kwargs / artifact 或流事件里，不应当作每个工具本体都有的业务返回字段。 |
+
+外置大结果的文本开头形如：
+
+```text
+[Full <tool_name> output saved to <虚拟文件路径> (<字符数> chars, ~<估算数> tokens).]
+[Preview kind: <类型>. This is a structured synopsis, not a raw head/tail truncation.]
+```
+
+后接结构摘要、示例和读取建议；完整内容需按引用路径读取。写入类历史结果还可能在后续模型请求中被省略，不能把“当前模型上下文里看不到”当成“工具没有执行”。
+
+无法持久化全文时，回退截断标记通常为：
+
+```text
+[... <N> chars omitted from <tool_name> output. Persistent storage unavailable. Consider narrowing the query or using more specific parameters.]
+```
+
+预算过小时可能只保留截短文本而放不下这条标记；Bash 退出码会尽可能保留。
+
+相关实现：[异常处理](../deerflow/agents/middlewares/tool_error_handling_middleware.py)、[读后写保护](../deerflow/agents/middlewares/read_before_write_middleware.py)、[输出预算](../deerflow/agents/middlewares/tool_output_budget_middleware.py)、[摘要格式](../deerflow/agents/middlewares/tool_output_synopsis.py)。
+
+本文按源码覆盖正常／异常返回分支，未在本次重跑真实模型、外部 API 或所有沙箱 provider；外部异常详情及依赖库校验文案以运行环境为准。
