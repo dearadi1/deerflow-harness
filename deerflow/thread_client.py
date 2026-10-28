@@ -103,7 +103,7 @@ def _convert_document(source: Path, output: Path) -> Path | None:
 class DeerFlowThreadClient:
     """按显式 user_id 隔离线程，不依赖或修改当前用户上下文。
 
-    config_path 未传或为 None 时使用包所在项目根目录的 config.yaml。
+    config_path 未传或为 None 时读取 DEERFLOW_CONFIG_PATH，两者均未提供时报错。
     user_id 使用 DeerFlow 的存储用户 ID。线程 ID 在共享 checkpointer 中必须
     全局唯一，本管理器创建时使用 UUID。上传、下载和删除仅接受单个文件名。
     文件列表仅返回 uploads 直属文件的文件名，不递归列出子目录，

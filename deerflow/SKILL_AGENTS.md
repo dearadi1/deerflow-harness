@@ -4,6 +4,8 @@
 
 ## 初始化与通用输入
 
+先设置 `DEERFLOW_CONFIG_PATH`，例如 `export DEERFLOW_CONFIG_PATH=/absolute/path/config.yaml`：
+
 ```python
 from deerflow import DeerFlowSkillClient
 
@@ -18,7 +20,7 @@ client = DeerFlowSkillClient(config_path="/absolute/path/config.yaml")
 
 | 输入 | 类型 | 说明 |
 | --- | --- | --- |
-| `config_path` | `str \| None` | 可选，默认 `None`，使用 DeerFlow 当前配置；显式传入时重新加载指定配置 |
+| `config_path` | `str \| None` | 显式路径优先；省略或为 `None` 时读取 `DEERFLOW_CONFIG_PATH`，两者均未提供或环境变量为空时抛出 `ValueError`。相对路径按调用方工作目录解析，不再自动查找根目录配置。 |
 | `user_id` | `str` | 必填，非空用户标识 |
 | `name` / `skill_name` | `str` | 技能名称，移除首尾空白后为 1～64 个小写字母、数字或连字符 `-`；不能以连字符开头或结尾，不能包含连续连字符 |
 | `path` / `new_path` | `str` | 相对于该技能目录的路径，例如 `scripts/main.py`；使用 `/` 分隔，不能是空路径、技能根目录、绝对路径，不能包含 `..`、反斜杠或 NUL 字符 |

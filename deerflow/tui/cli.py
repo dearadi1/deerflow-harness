@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="deerflow",
         description="DeerFlow terminal workbench — a TUI over the embedded DeerFlow harness.",
-        epilog="Extension management: deerflow extensions --help",
+        epilog="Project initialization: deerflow init --help | Extension management: deerflow extensions --help",
         add_help=True,
     )
     parser.add_argument("message", nargs="*", help="initial prompt for the TUI, or the message for --print, --json or --cli")
@@ -210,6 +210,8 @@ def plan_launch(
 _HEADLESS_HELP = """\
 deerflow — DeerFlow terminal workbench
 
+  deerflow init                create .env, config.yaml and .deer-flow from templates
+  deerflow init --target DIR   initialize a specific directory
   deerflow                      launch the terminal UI (TTY required)
   deerflow --tui                force the terminal UI
   deerflow --tui-transparent    use the terminal's default background

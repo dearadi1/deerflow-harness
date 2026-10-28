@@ -80,7 +80,7 @@ def _chinese_errors(method: Callable[_Parameters, _Result]) -> Callable[_Paramet
 class DeerFlowSkillClient:
     """管理指定用户拥有的技能，不需要初始化 Agent。
 
-    config_path 未传或为 None 时使用包所在项目根目录的 config.yaml。
+    config_path 未传或为 None 时读取 DEERFLOW_CONFIG_PATH，两者均未提供时报错。
     create_skill 和 copy_skill 返回实际存储目录的绝对路径，不包含 SKILL.md；列表中的
     skill_path 使用容器路径，host_path 使用实际目录的绝对路径。
     所有文件参数均相对于技能根目录，父目录

@@ -65,7 +65,7 @@ dependencies = [
 ]
 
 [project.scripts]
-deerflow = "deerflow.tui.cli:main"
+deerflow = "deerflow.cli:main"
 
 [project.optional-dependencies]
 # 终端工作台（TUI）。设为可选依赖以保持核心 Harness 安装精简；
@@ -113,6 +113,20 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["deerflow"]
+
+# 明确列出模板，避免把本地密钥、数据库或用户运行数据带入安装包。
+[tool.hatch.build.targets.wheel.force-include]
+".env.example" = "deerflow/_templates/.env.example"
+"config.example.yaml" = "deerflow/_templates/config.example.yaml"
+".deer-flow/agents/voris/config.yaml" = "deerflow/_templates/.deer-flow/agents/voris/config.yaml"
+".deer-flow/agents/voris/SOUL.md" = "deerflow/_templates/.deer-flow/agents/voris/SOUL.md"
+
+# 源码发行包保留原始位置，保证从 sdist 构建的 wheel 同样包含模板。
+[tool.hatch.build.targets.sdist.force-include]
+".env.example" = ".env.example"
+"config.example.yaml" = "config.example.yaml"
+".deer-flow/agents/voris/config.yaml" = ".deer-flow/agents/voris/config.yaml"
+".deer-flow/agents/voris/SOUL.md" = ".deer-flow/agents/voris/SOUL.md"
 
 [tool.uv.sources]
 deerflow-extension-api = { path = "extension-api" }

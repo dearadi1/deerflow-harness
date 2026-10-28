@@ -128,8 +128,8 @@ class DeerFlowClientPool:
     """固定容量的同步池，按等待者入队顺序分配空闲实例。
 
     除 config_path 外的 client_kwargs 原样传给 DeerFlowClient，配置仅在建池时
-    加载一次。config_path 未传或为 None 时使用包所在项目根目录的 config.yaml，
-    不受调用方工作目录影响；显式相对路径仍相对于调用方工作目录。
+    加载一次。config_path 未传或为 None 时读取 DEERFLOW_CONFIG_PATH，
+    两者均未提供时抛出 ValueError；相对路径按调用方工作目录解析。
     client_factory 与 client_kwargs 互斥，工厂必须每次返回独立客户端。
     自定义工厂自行负责配置加载。
     acquire_timeout=None 表示无限等待，0 表示立即尝试；max_waiters=None
