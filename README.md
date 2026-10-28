@@ -34,6 +34,31 @@ git switch -c feat/my_customization
 
 Python 包要求 Python 3.12 或更新版本。依赖由 `pyproject.toml` 管理，其中 `deerflow-extension-api` 是独立依赖；本仓库不复制该包。实际运行还需要按上游文档配置模型、沙箱、技能及运行目录。本次提取验证不代表完整运行环境已安装或业务功能已验证。
 
+## 安装后的目录初始化
+
+在通过 uv 安装了 `deerflow-harness` 的项目中运行：
+
+```bash
+uv run deerflow init
+uv run deerflow init --target /path/to/project
+uv run deerflow init --target /path/to/project --force
+```
+
+未指定 `--target` 时使用命令执行时的当前目录；目标目录不存在时自动创建。
+命令将随包分发的 `.env.example` 和 `config.example.yaml` 分别复制为 `.env`、
+`config.yaml`，并递归创建 `.deer-flow` 模板目录。当前包含
+`agents/voris/config.yaml` 和 `agents/voris/SOUL.md`。本地密钥、数据库及用户运行数据不参与打包。
+
+默认保留已有同名文件，并补齐缺失文件；`--force` 覆盖模板对应的同名文件，保留其他文件。
+文件与目录类型冲突或模板目标包含符号链接时会报错，不继续复制。
+输出会列出目标绝对路径及每个文件的创建、跳过或覆盖状态。
+初始化不加载模型或 TUI，也不启动 DeerFlow。
+
+生成后需要编辑 `.env` 和 `config.yaml`，配置模型及相关服务。
+管理客户端默认仍从包所在目录查找配置，使用生成的配置时需显式传入
+`config_path="/path/to/project/config.yaml"`；本命令不修改配置加载规则或环境变量。
+若 uv 依赖来源固定了 Git revision，需要先更新到包含此功能的 revision 并同步依赖。
+
 ## 同步上游
 
 ### 交给 Agent 自动完成
