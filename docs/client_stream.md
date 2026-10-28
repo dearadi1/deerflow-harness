@@ -1,4 +1,4 @@
-客户端 `client.stream()` 返回 `deerflow_protocol` 中的事件模型。以下 JSON 表示模型序列化后的协议结构：
+客户端 `client.stream()` 返回 `deerflow.protocol` 中的事件模型。以下 JSON 表示模型序列化后的协议结构：
 
 上下文事件
 
@@ -34,7 +34,7 @@
 
 跳过原因包括 `no_compactable_messages`、`retry_cooldown`、`input_budget_exceeded`、`chunk_limit_exceeded`。未到阈值时保持安静；没有可压缩消息时允许只有结束事件。开始与结束按 `(agent_id, data.id)` 关联。数量为选中分区的统计，失败和跳过不会据此删除历史。`input_tokens` 是估算，不参与费用累计。
 
-`context_used.data` 为 `{"id": "context_001", "contexts": [...]}`。每项是 `ContextItem(source, content, content_sha256)`，分别对应本次实际组装的记忆、项目背景、文档索引、持久上下文。它在模型调用返回后确认发送，相同来源的内容本轮不重复发布，变化后再发；不包含后台记忆新增/更新事件。主/子智能体通过 `agent_id` 区分，普通子任务使用现有轮询转发，后台批任务不在此流中。完整语义见 [协议说明](../deerflow_protocol/README.md)。
+`context_used.data` 为 `{"id": "context_001", "contexts": [...]}`。每项是 `ContextItem(source, content, content_sha256)`，分别对应本次实际组装的记忆、项目背景、文档索引、持久上下文。它在模型调用返回后确认发送，相同来源的内容本轮不重复发布，变化后再发；不包含后台记忆新增/更新事件。主/子智能体通过 `agent_id` 区分，普通子任务使用现有轮询转发，后台批任务不在此流中。完整语义见 [协议说明](../deerflow/protocol/README.md)。
 
 思考块
 ```json
@@ -229,7 +229,7 @@ token使用统计块
 
 ## 当前实现约定
 
-- `DeerFlowClient.stream()` 直接返回独立协议包 `deerflow_protocol` 的具体事件模型；消费方通过 `event.type`、`event.data` 读取。事件封装、载荷、工具条目及用量明细均已建模。使用 `event.model_dump(mode="json", exclude_unset=True)` 或 `event.model_dump_json(exclude_unset=True)` 序列化时保留本页 JSON 结构。`messages`、`values`、`custom` 均开启。旧的 `values` / `messages-tuple` / `custom` 包装不再对外输出。
+- `DeerFlowClient.stream()` 直接返回协议子包 `deerflow.protocol` 的具体事件模型；消费方通过 `event.type`、`event.data` 读取。事件封装、载荷、工具条目及用量明细均已建模。使用 `event.model_dump(mode="json", exclude_unset=True)` 或 `event.model_dump_json(exclude_unset=True)` 序列化时保留本页 JSON 结构。`messages`、`values`、`custom` 均开启。旧的 `values` / `messages-tuple` / `custom` 包装不再对外输出。
 - `seq` 在输出事件实际生成时递增，从 1 开始，主智能体与子智能体共用本轮的同一计数器。LangGraph 这些来源没有统一的原生 `seq`，因此这是客户端本轮的真实发布序号，不是模型执行序号，也不代表并行调用的因果顺序；不会用 `langgraph_step` 代替。
 - 主智能体 `agent_id="main"`；当前 `task_*` 来源中，子智能体 `agent_id` 直接使用父智能体发起 `task` 的 `tool_call_id`。因此父工具请求、子智能体输出、子智能体结束及父工具结果可以用同一个 ID 关联。相同子智能体类型的多次执行仍拥有不同 ID。
 - 思考、回答、用量使用原始 AI 消息 ID；首片缺少消息 ID 时，按调用上下文建立稳定替代 ID，后续原生 ID 与快照继续绑定该身份；工具分片和工具汇总中的 `id` 同样使用 AI 消息 ID，与 `token_usage.data.id` 绑定；原工具调用 ID 统一放到 `tool_call_id`，与工具结果的 `tool_call_id` 对应。工具 `index` 仅在一条 AI 消息内有效，新消息可从 0 开始。归并状态按 agent、消息 ID、index 隔离，不按工具名称匹配。
@@ -257,10 +257,10 @@ token使用统计块
 
 ### 独立模型入口
 
-所有公共协议模型统一从 `deerflow_protocol` 导入，与 Harness 内部模型和运行时解耦：
+所有公共协议模型统一从 `deerflow.protocol` 导入，与 Harness 内部模型和运行时解耦：
 
 ```python
-from deerflow_protocol import ToolCallsEvent, TokenUsageEvent, parse_stream_event
+from deerflow.protocol import ToolCallsEvent, TokenUsageEvent, parse_stream_event
 
 # 下游接收 JSON 后按 type 自动恢复为具体模型。
 event = parse_stream_event(received_json)
@@ -271,7 +271,7 @@ elif isinstance(event, TokenUsageEvent):
     print(event.data.id, event.data.usage_metadata.total_tokens)
 ```
 
-公共基类为 `StreamEvent`，带 `type` 判别字段的联合类型为 `ClientStreamEvent`，完整类型与使用说明见 [协议包说明](../deerflow_protocol/README.md)。该包仅依赖 Pydantic 和标准库，不导入 `deerflow`。非 Python 下游可使用 [JSON Schema](../deerflow_protocol/stream_event.schema.json)。工具原始内容、artifact 和供应商扩展元数据内部结构继续保留原值。
+公共基类为 `StreamEvent`，带 `type` 判别字段的联合类型为 `ClientStreamEvent`，完整类型与使用说明见 [协议包说明](../deerflow/protocol/README.md)。该子包仅依赖 Pydantic 和标准库，导入时不会加载 Harness 客户端运行时。非 Python 下游可使用 [JSON Schema](../deerflow/protocol/stream_event.schema.json)。工具原始内容、artifact 和供应商扩展元数据内部结构继续保留原值。
 
 
 ### 费用计算
@@ -289,7 +289,7 @@ total_cost           = input_normal_cost + input_cache_hit_cost + output_cost
 
 `cache_read` 属于 `input_tokens`，先扣除后分别计费；思考 Token 已包含在 `output_tokens`，不另外加一次。所有金额和单价以 Decimal 计算，JSON 中输出精确十进制字符串，不舍入到分，也不经过 float 累加。
 
-每条 `token_usage.data` 增加 `model_name` 和 `cost`，`data.id` 仍绑定同一 AI 消息。`cost` 的公共模型为 `deerflow_protocol.TokenCost`，其单价快照模型为 `ModelPrice`。配置名称与服务商模型名称可对应；同名服务商模型存在多个价格档案且无法确定实际配置时，不猜测单价。主智能体沿用当前有效配置，子智能体从 task 生命周期及消息来源绑定自己的模型。价格在本轮开始时从客户端配置建立快照，不受消费端修改返回对象影响。
+每条 `token_usage.data` 增加 `model_name` 和 `cost`，`data.id` 仍绑定同一 AI 消息。`cost` 的公共模型为 `deerflow.protocol.TokenCost`，其单价快照模型为 `ModelPrice`。配置名称与服务商模型名称可对应；同名服务商模型存在多个价格档案且无法确定实际配置时，不猜测单价。主智能体沿用当前有效配置，子智能体从 task 生命周期及消息来源绑定自己的模型。价格在本轮开始时从客户端配置建立快照，不受消费端修改返回对象影响。
 
 `end.data.cost` 使用相同费用模型汇总。子智能体按各自模型的逐消息费用求和；主智能体结束块再加总主、子智能体，不能拿总 Token 乘以主模型单价。已回写到父消息的子用量会在客户端快照解析时扣除，图的原始状态保持不变。
 

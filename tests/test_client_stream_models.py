@@ -4,11 +4,11 @@ import json
 import subprocess
 import sys
 import unittest
-from pathlib import Path
+from importlib.resources import files
 
 from pydantic import ValidationError
 
-from deerflow_protocol import (
+from deerflow.protocol import (
     AnswerContentEvent,
     ContentData,
     ContextCompactionStartEvent,
@@ -123,8 +123,17 @@ class StreamModelTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     parse_stream_event(payload)
 
-    def test_importing_protocol_does_not_load_harness_or_langchain(self):
-        code = "import sys; import deerflow_protocol; assert not any(n == 'deerflow' or n.startswith(('deerflow.', 'langchain', 'langgraph')) for n in sys.modules)"
+    def test_importing_protocol_does_not_load_runtime_or_langchain(self):
+        code = """
+import sys
+import deerflow.protocol
+unexpected = [
+    name for name in sys.modules
+    if (name.startswith('deerflow.') and name != 'deerflow.protocol' and not name.startswith('deerflow.protocol.'))
+    or name.startswith(('langchain', 'langgraph', 'deerflow_extension_api'))
+]
+assert not unexpected, unexpected
+"""
         result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -159,8 +168,8 @@ class StreamModelTests(unittest.TestCase):
         from jsonschema import validate
 
         schema = stream_event_json_schema()
-        path = Path(__file__).resolve().parents[1] / "deerflow_protocol" / "stream_event.schema.json"
-        self.assertEqual(json.loads(path.read_text()), schema)
+        resource = files("deerflow.protocol").joinpath("stream_event.schema.json")
+        self.assertEqual(json.loads(resource.read_text(encoding="utf-8")), schema)
         self.assertEqual(set(schema["discriminator"]["mapping"]), {kind for kind, _, _ in self.cases()})
         for kind, data, _ in self.cases():
             validate(self.envelope(kind, data), schema)

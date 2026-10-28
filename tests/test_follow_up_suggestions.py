@@ -21,7 +21,7 @@ from deerflow.client_stream_pricing import ClientStreamPricing
 from deerflow.config.app_config import AppConfig
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.suggestions_config import SuggestionsConfig
-from deerflow_protocol import SuggestionsData, parse_stream_event
+from deerflow.protocol import SuggestionsData, parse_stream_event
 
 
 def usage(inputs=10, outputs=5):

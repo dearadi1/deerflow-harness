@@ -1,4 +1,4 @@
-"""独立于 Harness 的客户端流协议公共入口。"""
+"""客户端流协议公共入口，导入时只依赖 Pydantic 和标准库。"""
 
 from .models import (
     STREAM_EVENT_ADAPTER,

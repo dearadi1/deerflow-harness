@@ -11,7 +11,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage, messages_from_dict
 
-from deerflow_protocol import ClientStreamEvent, ContextUsedData, SuggestionsData, TokenCost, parse_stream_event
+from deerflow.protocol import ClientStreamEvent, ContextUsedData, SuggestionsData, TokenCost, parse_stream_event
 
 from deerflow.client_stream_pricing import ClientStreamPricing, exclude_attributed_child_usage, sum_costs, unpriced_cost
 

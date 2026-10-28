@@ -20,7 +20,7 @@ from deerflow.models import create_chat_model
 from deerflow.utils.custom_events import aemit_custom_event, emit_custom_event
 from deerflow.utils.llm_text import extract_response_text, strip_think_blocks
 from deerflow.utils.messages import get_original_user_content_text
-from deerflow_protocol import SuggestionsData
+from deerflow.protocol import SuggestionsData
 
 if TYPE_CHECKING:
     from deerflow.config.app_config import AppConfig

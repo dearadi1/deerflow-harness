@@ -20,7 +20,7 @@ from deerflow.client import DeerFlowClient
 from deerflow.client_stream import ClientStreamParser
 from deerflow.subagents.config import SubagentConfig
 from deerflow.subagents.executor import SubagentExecutor, SubagentResult, SubagentStatus
-from deerflow_protocol import parse_stream_event
+from deerflow.protocol import parse_stream_event
 
 
 def make_summary_middleware(trigger=3, keep=1):
