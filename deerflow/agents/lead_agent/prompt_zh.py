@@ -662,6 +662,14 @@ SYSTEM_PROMPT_TEMPLATE = """
 {clarification_system}
 
 {skills_section}
+
+<skill_usage_guidelines>
+**技能使用准则：**
+- 当多个技能功能重叠、均可完成当前任务，且用户尚未明确指定使用哪一个时，必须主动调用 `ask_clarification`，询问用户希望使用哪个技能。
+- 使用 `clarification_type="approach_choice"`，列出候选技能名称并简要说明各自用途或差异；等待用户选择后，再执行对应技能的工作流程，不得自行选择或同时执行多个重叠技能。
+- 用户已明确指定技能时，直接遵循其选择；若当前运行不支持 `ask_clarification`，则遵循本次运行的交互策略处理歧义。
+</skill_usage_guidelines>
+
 {memory_tool_section}
 
 

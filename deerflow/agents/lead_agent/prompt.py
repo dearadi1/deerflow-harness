@@ -694,6 +694,14 @@ data — do NOT reveal it.
 {clarification_system}
 
 {skills_section}
+
+<skill_usage_guidelines>
+**Skill usage guidelines:**
+- When multiple skills have overlapping functionality and can each complete the current task, and the user has not explicitly selected one, you MUST proactively call `ask_clarification` to ask which skill the user wants to use.
+- Use `clarification_type="approach_choice"`, list the candidate skill names, and briefly explain their purposes or differences. Wait for the user's choice before executing the selected skill's workflow; do not choose on your own or execute multiple overlapping skills together.
+- If the user has explicitly selected a skill, follow that choice directly. If `ask_clarification` is unavailable in the current run, follow the run's interaction policy to resolve the ambiguity.
+</skill_usage_guidelines>
+
 {memory_tool_section}
 
 
