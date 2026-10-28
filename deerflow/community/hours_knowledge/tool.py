@@ -7,7 +7,7 @@ from typing import Any
 from langchain.tools import tool
 from pydantic import BaseModel
 
-from deerflow.callable import knowledge_search
+from .callable import knowledge_search
 from deerflow.tools.sync import make_sync_tool_wrapper
 from deerflow.tools.types import Runtime
 

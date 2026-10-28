@@ -3,25 +3,11 @@
 from collections.abc import Callable
 
 
-_upload_file: Callable | None = None
 _knowledge_search: Callable | None = None
-
-
-def configure_upload_file(upload_file: Callable) -> None:
-    global _upload_file
-    _upload_file = upload_file
-
-
-def upload_file(**kwargs):
-    if _upload_file is None:
-        raise ValueError("未注册upload_file，请先调用configure_upload_file")
-    return _upload_file(**kwargs)
-
 
 def configure_knowledge_search(knowledge_search: Callable) -> None:
     global _knowledge_search
     _knowledge_search = knowledge_search
-
 
 def knowledge_search(**kwargs):
     if _knowledge_search is None:
