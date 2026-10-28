@@ -90,7 +90,7 @@ with DeerFlowClientPool(
 
 | 参数 | 缺省值 | 用途 |
 | --- | --- | --- |
-| `config_path` | `None` | 应用配置文件路径，池内统一加载一次 |
+| `config_path` | `None` | 显式路径优先，否则读取 `DEERFLOW_CONFIG_PATH`；池内统一加载一次 |
 | `checkpointer` | `None` | 自定义 checkpoint 存储；未指定时沿用框架默认配置 |
 | `model_name` | `None` | 默认模型名称 |
 | `thinking_enabled` | `True` | 是否启用思考 |
@@ -102,6 +102,8 @@ with DeerFlowClientPool(
 | `environment` | `None` | 追踪信息使用的运行环境标签 |
 
 池初始化时不接收 `user_id`；用户在借用时指定。同一进程内应使用一致的应用配置，`config_path` 不是每个实例的私有配置隔离机制。
+
+`config_path` 未传或为 `None` 时必须设置 `DEERFLOW_CONFIG_PATH`，例如 `export DEERFLOW_CONFIG_PATH=/absolute/path/config.yaml`。两者均未提供或环境变量为空时抛出 `ValueError`，不再自动查找根目录 `config.yaml`。相对路径按调用方工作目录解析。自定义 `client_factory` 仍自行负责配置加载。
 
 ## 3. 流式调用
 

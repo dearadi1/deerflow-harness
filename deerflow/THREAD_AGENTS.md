@@ -4,6 +4,8 @@
 
 ## 初始化
 
+先设置 `DEERFLOW_CONFIG_PATH`，例如 `export DEERFLOW_CONFIG_PATH=/absolute/path/config.yaml`：
+
 ```python
 from deerflow.thread_client import DeerFlowThreadClient
 
@@ -15,7 +17,7 @@ manager = DeerFlowThreadClient(
 
 | 输入 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `config_path` | `str \| None` | `None` | 省略或为 `None` 时加载包所在项目根目录的 `config.yaml`；显式相对路径按调用方工作目录解析。同一进程的管理接口应使用同一个配置文件。 |
+| `config_path` | `str \| None` | `None` | 显式路径优先；省略或为 `None` 时读取 `DEERFLOW_CONFIG_PATH`，两者均未提供或环境变量为空时抛出 `ValueError`。相对路径按调用方工作目录解析，不再自动查找根目录配置。同一进程的管理接口应使用同一个配置文件。 |
 | `checkpointer` | `BaseCheckpointSaver \| None` | `None` | 同步 checkpoint 存储实例；省略时按现有配置获取默认实例。若 `DeerFlowClient` 使用自定义实例，此处必须传入同一个实例。 |
 
 输出：`DeerFlowThreadClient` 实例。
