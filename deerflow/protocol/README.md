@@ -1,11 +1,11 @@
 # DeerFlow 客户端流协议
 
-公共入口统一为 `deerflow_protocol`。该目录只依赖 Pydantic 2，不导入 `deerflow`、LangChain、LangGraph、配置、模型服务或沙箱。可将整个目录单独复用到下游项目；安装 Harness 时也会一并提供该包。
+公共入口统一为 `deerflow.protocol`，随 Harness 一起安装，原顶层包 `deerflow_protocol` 已迁入此处。协议模块只依赖 Pydantic 2 和标准库；`deerflow` 顶层采用按需导出，导入协议不会加载客户端、LangChain、LangGraph、配置、模型服务或沙箱。下游代码请将 `from deerflow_protocol import ...` 更新为 `from deerflow.protocol import ...`。
 
 十二类事件都有具体模型：`ReasoningContentEvent`、`AnswerContentEvent`、`TitleEvent`、`SuggestionsEvent`、`ToolChunkEvent`、`ToolCallsEvent`、`ToolResultEvent`、`TokenUsageEvent`、`ContextCompactionStartEvent`、`ContextCompactionEndEvent`、`ContextUsedEvent`、`EndEvent`。公共基类是 `StreamEvent`，判别联合类型是 `ClientStreamEvent`。
 
 ```python
-from deerflow_protocol import ToolCallsEvent, TokenUsageEvent, parse_stream_event
+from deerflow.protocol import ToolCallsEvent, TokenUsageEvent, parse_stream_event
 
 # 接收 JSON 字符串、bytes 或字典，按 type 恢复具体事件与嵌套数据模型。
 event = parse_stream_event(received_json)

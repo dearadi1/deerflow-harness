@@ -11,7 +11,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from pydantic import ValidationError
 
-from deerflow_protocol import ModelPrice, TokenCost, parse_stream_event
+from deerflow.protocol import ModelPrice, TokenCost, parse_stream_event
 from deerflow.agents.assembly_descriptor import _model_parameters
 from deerflow.client import DeerFlowClient
 from deerflow.client_stream import ClientStreamParser

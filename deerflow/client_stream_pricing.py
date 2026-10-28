@@ -8,7 +8,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
 
-from deerflow_protocol import ModelPrice, TokenCost
+from deerflow.protocol import ModelPrice, TokenCost
 
 from deerflow.config.model_config import ModelConfig
 

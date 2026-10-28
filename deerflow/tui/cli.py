@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from deerflow_protocol import ClientStreamEvent, MessageMetadata
+from deerflow.protocol import ClientStreamEvent, MessageMetadata
 
 _UNSET = object()
 

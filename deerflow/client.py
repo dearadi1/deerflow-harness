@@ -32,7 +32,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
-from deerflow_protocol import ClientStreamEvent
+from deerflow.protocol import ClientStreamEvent
 
 from deerflow.agents.lead_agent.agent import _authorize_model_name, build_middlewares
 from deerflow.agents.lead_agent.prompt_zh import apply_prompt_template, get_enabled_skills_for_config, has_bash_tool
@@ -875,7 +875,7 @@ class DeerFlowClient:
         _turn_replay: ClientTurnReplay | None = None,
         **kwargs,
     ) -> Generator[ClientStreamEvent, None, None]:
-        """按 deerflow_protocol 输出事件模型，消息增量与快照按 ID 对齐。
+        """按 deerflow.protocol 输出事件模型，消息增量与快照按 ID 对齐。
 
         同时订阅 messages、values 和 custom，分别保留模型分片、完整消息及
         子智能体步骤。解析器按轮隔离状态，以免并行工具及历史消息互相污染。

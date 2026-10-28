@@ -6,7 +6,7 @@ import json
 from collections.abc import Iterator
 from typing import Any, Protocol
 
-from deerflow_protocol import ClientStreamEvent
+from deerflow.protocol import ClientStreamEvent
 
 from .view_state import (
     Action,

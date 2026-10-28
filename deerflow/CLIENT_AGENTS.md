@@ -1,6 +1,6 @@
 # DeerFlowClient.stream 输入与输出
 
-本文依据 [deerflow/client.py](client.py) 中 `stream()`、`_stream_turn()` 及其实际调用的辅助函数，说明同步 Python 客户端的调用约定。输出字段以 [deerflow_protocol/models.py](../deerflow_protocol/models.py) 为准。
+本文依据 [deerflow/client.py](client.py) 中 `stream()`、`_stream_turn()` 及其实际调用的辅助函数，说明同步 Python 客户端的调用约定。输出字段以 [deerflow/protocol/models.py](protocol/models.py) 为准。
 
 ## 1. 方法签名与执行方式
 
@@ -16,7 +16,7 @@ def stream(
     ...
 ```
 
-返回同步生成器，逐项产出 `deerflow_protocol.ClientStreamEvent` 联合类型中的具体事件模型。调用 `stream()` 只创建生成器；参数检查、线程占用、模型调用等发生在迭代时。使用普通 `for` 消费，方法本身不生成 HTTP 响应或 SSE 文本。
+返回同步生成器，逐项产出 `deerflow.protocol.ClientStreamEvent` 联合类型中的具体事件模型。调用 `stream()` 只创建生成器；参数检查、线程占用、模型调用等发生在迭代时。使用普通 `for` 消费，方法本身不生成 HTTP 响应或 SSE 文本。
 
 内部调用链：
 
@@ -128,10 +128,10 @@ events = client.stream(
 
 ## 5. 输出协议
 
-直接使用独立协议包：
+直接使用协议子包：
 
 ```python
-from deerflow_protocol import ClientStreamEvent, parse_stream_event
+from deerflow.protocol import ClientStreamEvent, parse_stream_event
 ```
 
 | 公共字段 | 含义 |
@@ -146,10 +146,10 @@ from deerflow_protocol import ClientStreamEvent, parse_stream_event
 
 字段结构、关联规则、用量与费用说明直接引用：
 
-- [输出协议说明](../deerflow_protocol/AGENTS.md)
-- [Python 使用与序列化说明](../deerflow_protocol/README.md)
-- [Pydantic 模型定义](../deerflow_protocol/models.py)
-- [JSON Schema](../deerflow_protocol/stream_event.schema.json)
+- [输出协议说明](protocol/AGENTS.md)
+- [Python 使用与序列化说明](protocol/README.md)
+- [Pydantic 模型定义](protocol/models.py)
+- [JSON Schema](protocol/stream_event.schema.json)
 
 消费时需要注意：
 
@@ -167,7 +167,7 @@ from deerflow_protocol import ClientStreamEvent, parse_stream_event
 from contextlib import closing
 
 from deerflow.client import DeerFlowClient
-from deerflow_protocol import AnswerContentEvent, EndEvent
+from deerflow.protocol import AnswerContentEvent, EndEvent
 
 
 def consume_turn(client: DeerFlowClient, message: str, **kwargs) -> dict[str, str]:

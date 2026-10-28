@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
-from deerflow_protocol import StreamEvent, parse_stream_event
+from deerflow.protocol import StreamEvent, parse_stream_event
 
 from deerflow.client import _AIMessageAccumulator
 from deerflow.client_stream import ClientStreamParser

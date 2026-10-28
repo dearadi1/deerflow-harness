@@ -113,3 +113,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["deerflow"]
+
+[tool.uv.sources]
+deerflow-extension-api = { path = "extension-api" }

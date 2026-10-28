@@ -18,7 +18,7 @@ from deerflow.client_stream_pricing import ClientStreamPricing
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.title_config import TitleConfig
 from deerflow.extensions.notify import observe_system_model_call_sync
-from deerflow_protocol import parse_stream_event
+from deerflow.protocol import parse_stream_event
 
 
 def usage(inputs=10, outputs=2):

@@ -16,7 +16,7 @@ from typing import Any
 
 from langgraph.graph import END
 
-from deerflow_protocol import ClientStreamEvent
+from deerflow.protocol import ClientStreamEvent
 
 from deerflow.agents.middlewares.message_utils import is_genuine_user_message
 from deerflow.runtime.checkpoint_state import CheckpointStateAccessor, build_state_mutation_graph, graph_state_schema
