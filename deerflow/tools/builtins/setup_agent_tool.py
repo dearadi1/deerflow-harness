@@ -53,15 +53,15 @@ def _publish_text(target: Path, text: str) -> None:
 
 @tool(parse_docstring=True)
 def setup_agent(
-    soul: str,
-    description: str,
     runtime: Runtime,
+    description: str,
+    soul: str,
     skills: list[str] | None = None,
 ) -> Command:
     """Setup the custom DeerFlow agent.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        description: One-line description of the agent's capabilities. This is required; provide it first.
         soul: Full SOUL.md content defining the agent's personality and behavior.
         skills: Optional list of skill names this agent should use. None means use all enabled skills, empty list means no skills.
     """

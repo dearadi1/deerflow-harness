@@ -680,12 +680,12 @@ def _task_result_command(
 @tool("task", parse_docstring=True)
 async def task_tool(
     runtime: Runtime,
+    description: str,
     prompt: str,
     subagent_type: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
     *,
     acceptance_criteria: list[str] | None = None,
-    description: str = "",
     context_mode: Literal["isolated", "snapshot"] = "isolated",
 ) -> str | Command:
     """Delegate a bounded task to a specialized subagent in its own context.
@@ -771,7 +771,7 @@ async def task_tool(
       exhausted, deliver confirmed results with explicit gaps and uncertainty.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        description: Short label for the delegated task (3–5 words). This is required; provide it first.
         prompt: The task description for the subagent. Be specific and clear about what needs to be done.
         subagent_type: The type of subagent to use.
         acceptance_criteria: Optional list of completion requirements, handed to

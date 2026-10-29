@@ -5,7 +5,11 @@
     pool = DeerFlowClientPool(size=8, acquire_timeout=30, max_waiters=100)
     with pool.session(user_id="user_a") as client:
         models = client.list_models()
-        with client.stream("你好", thread_id="example_thread_001") as events:
+        with client.stream(
+            "你好",
+            thread_id="example_thread_001",
+            disabled_tools=["web_search"],
+        ) as events:
             for event in events:
                 print(event)
     pool.close()
@@ -349,6 +353,42 @@ class AgentClientSession:
         finally:
             self._in_call = False
             reset_current_user(token)
+
+    def stream(
+        self,
+        message: str,
+        *,
+        thread_id: str | None = None,
+        replay_last_turn: bool = False,
+        disabled_tools: list[str] | None = None,
+        **kwargs: Any,
+    ) -> Iterator[Any]:
+        """流式调用底层客户端，并在整个流期间保持 session 租约。"""
+        return self._invoke(
+            "stream",
+            (message,),
+            {
+                "thread_id": thread_id,
+                "replay_last_turn": replay_last_turn,
+                "disabled_tools": disabled_tools,
+                **kwargs,
+            },
+        )
+
+    def chat(
+        self,
+        message: str,
+        *,
+        thread_id: str | None = None,
+        disabled_tools: list[str] | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """调用底层客户端并支持按轮禁用工具。"""
+        return self._invoke(
+            "chat",
+            (message,),
+            {"thread_id": thread_id, "disabled_tools": disabled_tools, **kwargs},
+        )
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
