@@ -68,7 +68,7 @@ def knowledge_base_search_tool(
     """Searches the enterprise knowledge base for specific documents, procedures, and domain knowledge.
 
     Args:
-        description: A brief description of the purpose of this search, supplied as the first parameter.
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         query: A complete, independent search query formulated based on the user's intent from multi-turn conversations, with pronouns and contextual references replaced by explicit names or terms.
         top_k: Maximum number of matching passages to retrieve, ranging from 1 to 100. Defaults to 5.
     """

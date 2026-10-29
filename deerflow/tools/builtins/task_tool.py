@@ -771,6 +771,7 @@ async def task_tool(
       exhausted, deliver confirmed results with explicit gaps and uncertainty.
 
     Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         prompt: The task description for the subagent. Be specific and clear about what needs to be done.
         subagent_type: The type of subagent to use.
         acceptance_criteria: Optional list of completion requirements, handed to
@@ -786,7 +787,6 @@ async def task_tool(
             ["file:../outputs/report.md non-empty"]. Omit for open-ended
             exploration where no crisp acceptance condition exists.
             JSON example: ["file:../outputs/report.json json-valid"].
-        description: Optional short (3-5 word) description of the task for logging/display.
         context_mode: Defaults to isolated (only the delegated prompt). Choose
             snapshot when relevant requirements or failed approaches are spread
             across the parent conversation: it adds retained history and its

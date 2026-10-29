@@ -61,8 +61,8 @@ def setup_agent(
     """Setup the custom DeerFlow agent.
 
     Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         soul: Full SOUL.md content defining the agent's personality and behavior.
-        description: One-line description of what the agent does.
         skills: Optional list of skill names this agent should use. None means use all enabled skills, empty list means no skills.
     """
 
