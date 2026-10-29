@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from deerflow.config import get_app_config
 from deerflow.config.app_config import AppConfig
+from deerflow.config.tool_config import BuiltinToolsConfig
 from deerflow.constants import CONVERSATION_TOOL_USE
 from deerflow.mcp.tasks.runtime import is_mcp_task_runtime_available
 from deerflow.reflection import resolve_variable
@@ -141,7 +142,11 @@ def get_available_tools(
         List of available tools.
     """
     config = app_config or get_app_config()
+    builtin_config = getattr(config, "builtin_tools", BuiltinToolsConfig())
+    disabled_builtin_names = {name for name, enabled in builtin_config.model_dump().items() if not enabled}
     tool_configs = [tool for tool in config.tools if groups is None or tool.group in groups]
+    # 显式关闭优先于 YAML 重复声明，避免配置工具绕过内置开关。
+    tool_configs = [tool for tool in tool_configs if tool.name not in disabled_builtin_names]
     # These operations are assembled from the host grant below. Registering a
     # tool path in YAML cannot widen that grant or its interaction mode.
     tool_configs = [tool for tool in tool_configs if tool.use not in {"deerflow.tools.scheduled_tasks:schedule_task", "deerflow.tools.scheduled_tasks:stop_scheduled_task"}]
@@ -342,6 +347,8 @@ def get_available_tools(
     seen_names: set[str] = set()
     unique_tools: list[BaseTool] = []
     for t in all_tools:
+        if t.name in disabled_builtin_names:
+            continue
         if t.name not in seen_names:
             unique_tools.append(t)
             seen_names.add(t.name)
