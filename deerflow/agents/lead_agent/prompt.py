@@ -353,7 +353,10 @@ def invalidate_user_skill_cache(user_id: str) -> None:
     The prompt-section LRU cache is also cleared so stale skill
     signatures are not served on the next prompt construction.
     """
+    global _enabled_skills_refresh_version
     with _enabled_skills_lock:
+        # 阻止失效前启动的扫描重新填入旧快照，其他用户已缓存的条目仍保留。
+        _enabled_skills_refresh_version += 1
         keys_to_remove = [key for key in _enabled_skills_by_config_cache if key[1] == user_id]
         for key in keys_to_remove:
             _enabled_skills_by_config_cache.pop(key, None)

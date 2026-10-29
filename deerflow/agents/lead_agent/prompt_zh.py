@@ -335,7 +335,10 @@ def invalidate_user_skill_cache(user_id: str) -> None:
     不影响其他用户的缓存。同时清空提示词片段的 LRU 缓存，
     避免下次构建提示词时使用过期的技能签名。
     """
+    global _enabled_skills_refresh_version
     with _enabled_skills_lock:
+        # 阻止失效前启动的扫描重新填入旧快照，其他用户已缓存的条目仍保留。
+        _enabled_skills_refresh_version += 1
         keys_to_remove = [key for key in _enabled_skills_by_config_cache if key[1] == user_id]
         for key in keys_to_remove:
             _enabled_skills_by_config_cache.pop(key, None)
