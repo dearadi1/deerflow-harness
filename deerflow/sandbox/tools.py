@@ -2427,7 +2427,7 @@ def _lark_cli_env_from_runtime(runtime: Runtime, command: str, *, sandbox_paths:
 
 
 @tool("bash", parse_docstring=True)
-def bash_tool(runtime: Runtime, command: str, description: str = "") -> str:
+def bash_tool(runtime: Runtime, description: str, command: str) -> str:
     """Execute a bash command in the configured execution environment.
 
 
@@ -2446,7 +2446,7 @@ def bash_tool(runtime: Runtime, command: str, description: str = "") -> str:
       it is killed at the command timeout.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        description: Briefly explain why you are running this command. This is required; provide it first.
         command: The bash command to execute. Always use absolute paths for files and directories.
     """
     redaction_env = None
@@ -2555,11 +2555,11 @@ bash_tool.coroutine = _bash_tool_async
 
 
 @tool("ls", parse_docstring=True)
-def ls_tool(runtime: Runtime, path: str, description: str = "") -> str:
+def ls_tool(runtime: Runtime, description: str, path: str) -> str:
     """List the contents of a directory up to 2 levels deep in tree format.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        description: Briefly explain why you are listing this directory. This is required; provide it first.
         path: The **absolute** path to the directory to list.
     """
     try:
@@ -2625,16 +2625,16 @@ ls_tool.coroutine = _ls_tool_async
 @tool("glob", parse_docstring=True)
 def glob_tool(
     runtime: Runtime,
+    description: str,
     pattern: str,
     path: str,
-    description: str = "",
     include_dirs: bool = False,
     max_results: int = _DEFAULT_GLOB_MAX_RESULTS,
 ) -> str:
     """Find files or directories that match a glob pattern under a root directory.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        description: Briefly explain why you are searching these paths. This is required; provide it first.
         pattern: The glob pattern to match relative to the root path, for example `**/*.py`.
         path: The **absolute** root directory to search under.
         include_dirs: Whether matching directories should also be returned. Default is False.
@@ -2705,9 +2705,9 @@ glob_tool.coroutine = _glob_tool_async
 @tool("grep", parse_docstring=True)
 def grep_tool(
     runtime: Runtime,
+    description: str,
     pattern: str,
     path: str,
-    description: str = "",
     glob: str | None = None,
     literal: bool = False,
     case_sensitive: bool = False,
@@ -2716,7 +2716,7 @@ def grep_tool(
     """Search for matching lines inside a text file or files under a root directory.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        description: Briefly explain why you are searching these paths. This is required; provide it first.
         pattern: The string or regex pattern to search for.
         path: The **absolute** file or root directory to search.
         glob: Optional glob filter for candidate files, for example `**/*.py`.
@@ -2847,15 +2847,15 @@ def _ranged_read_hits_a_line(runtime: Runtime | None, path: str, line: int) -> b
 @tool("read_file", parse_docstring=True)
 def read_file_tool(
     runtime: Runtime,
+    description: str,
     path: str,
-    description: str = "",
     start_line: int | None = None,
     end_line: int | None = None,
 ) -> str:
     """Read the contents of a text file. Use this to examine source code, configuration files, logs, or any text-based file.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        description: Briefly explain why you are reading this file. This is required; provide it first.
         path: The **absolute** path to the file to read.
         start_line: Optional starting line number (1-indexed, inclusive). Omit to start at the first line.
         end_line: Optional ending line number (1-indexed, inclusive). Omit to read through the last line.
@@ -2948,9 +2948,9 @@ def _effective_write_file_max_bytes() -> int:
 @tool("write_file", parse_docstring=True)
 def write_file_tool(
     runtime: Runtime,
+    description: str,
     path: str,
     content: str,
-    description: str = "",
     append: bool = False,
 ) -> str:
     """Write text content to a file. By default this overwrites the target file; set append=True to add content to the end without replacing existing content.
@@ -2982,7 +2982,7 @@ def write_file_tool(
     (0 disables the guard entirely). Raising it risks streaming timeouts.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        description: Briefly explain why you are writing to this path. This is required; provide it first.
         path: The **absolute** path to the file to write to.
         content: The content to write to the file.
         append: Whether to append content to the end of the file instead of overwriting it. Defaults to False.
@@ -3068,10 +3068,10 @@ def _match_line_endings(content: str, old_str: str, new_str: str) -> tuple[str, 
 @tool("str_replace", parse_docstring=True)
 def str_replace_tool(
     runtime: Runtime,
+    description: str,
     path: str,
     old_str: str,
     new_str: str,
-    description: str = "",
     replace_all: bool = False,
 ) -> str:
     """Replace a substring in a file with another substring.
@@ -3081,7 +3081,7 @@ def str_replace_tool(
     version with read_file first; any write invalidates earlier reads.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        description: Briefly explain why you are editing this path. This is required; provide it first.
         path: The **absolute** path to the file to replace the substring in.
         old_str: The substring to replace.
         new_str: The new substring.

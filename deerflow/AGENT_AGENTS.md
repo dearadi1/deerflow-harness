@@ -123,7 +123,22 @@ with pool.session(user_id="user_001") as client:
             print(event.model_dump(mode="json"))
 ```
 
-事件模型沿用原 `DeerFlowClient.stream()`，池不修改事件内容。也可以直接 `for event in client.stream(...)`，session 退出时会兜底关闭流。
+事件模型沿用原 `DeerFlowClient.stream()`，池不修改事件内容。`AgentClientSession.stream()` 和 `chat()` 显式支持 `disabled_tools: list[str] | None`，按底层客户端规则将名称列表传给本轮主智能体：
+
+```python
+with pool.session(user_id="user_001") as client:
+    with client.stream(
+        "仅使用已有资料回答",
+        thread_id="thread_001",
+        disabled_tools=["web_search", "web_fetch"],
+    ) as events:
+        for event in events:
+            print(event)
+
+    answer = client.chat("继续总结", disabled_tools=["web_search"])
+```
+
+禁用名单只影响本次调用，不写入池配置；下一轮省略该参数会恢复原工具集合。工具匹配、校验和对子智能体的范围说明见[客户端调用约定](CLIENT_AGENTS.md)。也可以直接 `for event in client.stream(...)`，session 退出时会兜底关闭流。
 
 **创建生成器不代表执行完成。流没有消费完或关闭前，实例仍被占用，而且同一 session 不能调用其他客户端方法或创建第二个流。**
 

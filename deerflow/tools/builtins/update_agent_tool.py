@@ -77,8 +77,8 @@ OptionalStringList = Annotated[list[str] | None, BeforeValidator(_normalize_null
 @tool(parse_docstring=True)
 def update_agent(
     runtime: Runtime,
+    description: OptionalText,
     soul: OptionalText = None,
-    description: OptionalText = None,
     skills: OptionalStringList = None,
     tool_groups: OptionalStringList = None,
     model: OptionalText = None,
@@ -98,7 +98,7 @@ def update_agent(
     fields instead.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        description: New one-line description of the agent. This is required; provide it first; use null to leave it unchanged.
         soul: Optional full replacement SOUL.md content.
         skills: Optional skill whitelist. ``[]`` = no skills, omit = unchanged.
         tool_groups: Optional tool-group whitelist. ``[]`` = empty, omit = unchanged.
