@@ -93,7 +93,7 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertEqual(self.public.get_skill_info("example")["license"], "MIT")
         self.assertEqual(self.public.list_skills(), [{
             "name": "example", "description": "描述",
-            "skill_path": "/mnt/skills/public/example", "host_path": path,
+            "skill_path": "/mnt/skills/public/example", "host_path": path, "enabled": True,
         }])
         self.assertTrue((self.view / "example/SKILL.md").is_file())
         self.user_factory.assert_not_called()
@@ -117,8 +117,8 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertEqual(self.public.list_skill_states(), public_states)
         self.assertEqual(self.client.list_skill_states("alice"), [dict(public_states[0], user_enabled=True)])
         self.assertEqual(self.client.list_skill_states("bob"), [])
-        self.assertNotIn("enabled", self.public.list_skills()[0])
-        self.assertNotIn("enabled", self.client.list_skills("alice")[0])
+        self.assertIs(self.public.list_skills()[0]["enabled"], True)
+        self.assertIs(self.client.list_skills("alice")[0]["enabled"], True)
 
     def test_custom_toggle_is_user_scoped_and_invalidates_shared_caches(self):
         self.use_persisted_skill_states()
@@ -137,6 +137,8 @@ class SkillClientPublicTests(unittest.TestCase):
         state = self.client.set_skill_enabled("alice", "example", False)
         self.assertEqual(state, {"name": "example", "global_enabled": True, "user_enabled": False, "enabled": False})
         self.assertTrue(self.client.list_skill_states("bob")[0]["enabled"])
+        self.assertIs(self.client.list_skills("alice")[0]["enabled"], False)
+        self.assertIs(self.client.list_skills("bob")[0]["enabled"], True)
         self.assertEqual(json.loads(self.config_path.read_text()), {})
         self.assertFalse((get_skill_projection_paths(self.user_storage("alice")).custom / "example").exists())
         for module in modules:
@@ -167,7 +169,11 @@ class SkillClientPublicTests(unittest.TestCase):
             module.clear_skills_system_prompt_cache.assert_called_once_with()
         state = self.client.set_skill_enabled("alice", "example", True)
         self.assertEqual(state, {"name": "example", "global_enabled": False, "user_enabled": True, "enabled": False})
+        self.assertIs(self.public.list_skills()[0]["enabled"], False)
+        self.assertIs(self.client.list_skills("alice")[0]["enabled"], False)
         self.assertTrue(self.public.set_skill_enabled("example", True)["enabled"])
+        self.assertIs(self.public.list_skills()[0]["enabled"], True)
+        self.assertIs(self.client.list_skills("alice")[0]["enabled"], True)
         self.assertTrue((self.view / "example/SKILL.md").is_file())
 
     def test_skill_state_validation_and_external_changes(self):
@@ -186,6 +192,7 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertTrue(self.public.list_skill_states()[0]["enabled"])
         self.config_path.write_text('{"skills": {"example": {"enabled": false}}}')
         self.assertFalse(self.public.list_skill_states()[0]["enabled"])
+        self.assertIs(self.public.list_skills()[0]["enabled"], False)
 
     def test_custom_toggle_notification_failure_reports_committed_state(self):
         self.use_persisted_skill_states()
@@ -710,8 +717,9 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertEqual({skill.name for skill in skills}, {"a", "a" * 64})
         items = self.client.list_skills("alice")
         self.assertEqual([item["name"] for item in items], ["a", "a" * 64])
-        self.assertEqual(set(items[0]), {"name", "description", "skill_path", "host_path"})
-        self.assertTrue(all(isinstance(value, str) for item in items for value in item.values()))
+        self.assertEqual(set(items[0]), {"name", "description", "skill_path", "host_path", "enabled"})
+        self.assertTrue(all(isinstance(value, str) for item in items for key, value in item.items() if key != "enabled"))
+        self.assertTrue(all(item["enabled"] is True for item in items))
 
     def test_invalid_uploads_preserve_content_cache_and_marker(self):
         path = Path(self.client.create_skill("alice", "example", "保留描述"))
