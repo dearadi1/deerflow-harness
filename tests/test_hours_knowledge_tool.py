@@ -10,7 +10,7 @@ from pydantic import create_model
 
 from deerflow import callable as callbacks
 from deerflow.client import DeerFlowClient
-from deerflow.community.hours_knowledge.tool import knowledge_base_search_tool
+from deerflow.community.hours_knowledge.tools import knowledge_base_search_tool
 from deerflow.tools.types import Runtime
 
 

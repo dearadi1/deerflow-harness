@@ -805,6 +805,11 @@ tool_groups:
 # 配置 Agent 可用的工具
 
 tools:
+
+  - name: knowledge_base_search
+    group: knowledge
+    use: deerflow.community.hours_knowledge.tools:knowledge_base_search_tool
+
   # 读取显式引用的对话（仅限 Gateway API，需主动启用）。
   # 每次运行都必须提交 conversation_references；参见 backend/docs/API.md。
   # - name: read_conversation
@@ -1245,10 +1250,10 @@ tools:
 
   # 图片搜索工具（使用 DuckDuckGo）
   # 可在生成图片前用于查找参考图
-  - name: image_search
-    group: web
-    use: deerflow.community.image_search.tools:image_search_tool
-    max_results: 5
+  # - name: image_search
+  #   group: web
+  #   use: deerflow.community.image_search.tools:image_search_tool
+  #   max_results: 5
 
   # 图片搜索工具（使用 InfoQuest）
   # - name: image_search
@@ -1594,81 +1599,81 @@ uploads:
 # 选择本地沙箱（直接执行）、基于 Docker 的 AIO 沙箱或 BoxLite 微型虚拟机沙箱。
 # 选项 1：本地沙箱（默认）
 # 直接在宿主机上执行命令。
-sandbox:
-  use: deerflow.sandbox.local:LocalSandboxProvider
-  # 默认禁用宿主机 Bash 执行，因为 LocalSandboxProvider 不能为 Shell 访问提供安全隔离边界。
-  # 仅在完全可信的单用户本地工作流中启用。
-  allow_host_bash: false
-  # 可选：将其他宿主机目录挂载到沙箱中。
-  # 每个挂载都会将宿主机路径映射到 Agent 可访问的虚拟容器路径。
-  # 注意：使用 `make up`（docker-compose）和 LocalSandboxProvider 时，host_path 会在
-  # deer-flow-gateway 容器内检查；还必须在 docker/docker-compose.yaml 的 services.gateway.volumes
-  # 中挂载相同目录，此挂载才会生效（参见 issue #3244）。
-  # mounts:
-  #   - host_path: /home/user/my-project    # 绝对路径；Docker 模式请参见上方说明
-  #     container_path: /mnt/my-project     # 沙箱内的虚拟路径
-  #     read_only: true                     # 挂载是否为只读（默认：false）
+# sandbox:
+#   use: deerflow.sandbox.local:LocalSandboxProvider
+#   # 默认禁用宿主机 Bash 执行，因为 LocalSandboxProvider 不能为 Shell 访问提供安全隔离边界。
+#   # 仅在完全可信的单用户本地工作流中启用。
+#   allow_host_bash: false
+#   # 可选：将其他宿主机目录挂载到沙箱中。
+#   # 每个挂载都会将宿主机路径映射到 Agent 可访问的虚拟容器路径。
+#   # 注意：使用 `make up`（docker-compose）和 LocalSandboxProvider 时，host_path 会在
+#   # deer-flow-gateway 容器内检查；还必须在 docker/docker-compose.yaml 的 services.gateway.volumes
+#   # 中挂载相同目录，此挂载才会生效（参见 issue #3244）。
+#   # mounts:
+#   #   - host_path: /home/user/my-project    # 绝对路径；Docker 模式请参见上方说明
+#   #     container_path: /mnt/my-project     # 沙箱内的虚拟路径
+#   #     read_only: true                     # 挂载是否为只读（默认：false）
 
-  # 工具输出截断限制（字符数）。
-  # bash 使用中间截断（保留首尾），因为错误可能出现在输出的任何位置。
-  # read_file 和 ls 使用首部截断，因为它们的内容重点通常在前面。
-  # 如果预算允许，read_file 会在行边界处截断，并在标记中注明后续读取的 start_line，
-  # 使 Agent 能准确地分段读取长文件。
-  # 设为 0 可关闭截断。
-  bash_output_max_chars: 20000
-  read_file_output_max_chars: 50000
-  ls_output_max_chars: 20000
+#   # 工具输出截断限制（字符数）。
+#   # bash 使用中间截断（保留首尾），因为错误可能出现在输出的任何位置。
+#   # read_file 和 ls 使用首部截断，因为它们的内容重点通常在前面。
+#   # 如果预算允许，read_file 会在行边界处截断，并在标记中注明后续读取的 start_line，
+#   # 使 Agent 能准确地分段读取长文件。
+#   # 设为 0 可关闭截断。
+#   bash_output_max_chars: 20000
+#   read_file_output_max_chars: 50000
+#   ls_output_max_chars: 20000
 
-  # 服务提供方命令的截止时间（默认：600）。支持的语义版本线（1.9.3+，推荐 1.11.0）上的 AIO 镜像
-  # 会通过 `hard_timeout` 在服务器端强制执行；冻结的旧版 `all-in-one-sandbox:latest` 镜像则仅由
-  # 宿主机侧请求超时限制。`bash_command_timeout` 适用于提供单命令超时设置的服务提供方
-  #（LocalSandbox、AioSandbox、OpenSandbox、E2B、BoxLite 和 Tenki）。不支持单命令超时的服务提供方
-  # 保留各自的命令默认值。对于在服务器或进程侧强制执行此截止时间的服务提供方，阻塞的前台命令会在
-  # 达到配置的截止时间时被终止。长时间运行的进程应在后台启动并重定向输出；未重定向的后台输出会以
-  # 有界方式收集。
-  bash_command_timeout: 600
+#   # 服务提供方命令的截止时间（默认：600）。支持的语义版本线（1.9.3+，推荐 1.11.0）上的 AIO 镜像
+#   # 会通过 `hard_timeout` 在服务器端强制执行；冻结的旧版 `all-in-one-sandbox:latest` 镜像则仅由
+#   # 宿主机侧请求超时限制。`bash_command_timeout` 适用于提供单命令超时设置的服务提供方
+#   #（LocalSandbox、AioSandbox、OpenSandbox、E2B、BoxLite 和 Tenki）。不支持单命令超时的服务提供方
+#   # 保留各自的命令默认值。对于在服务器或进程侧强制执行此截止时间的服务提供方，阻塞的前台命令会在
+#   # 达到配置的截止时间时被终止。长时间运行的进程应在后台启动并重定向输出；未重定向的后台输出会以
+#   # 有界方式收集。
+#   bash_command_timeout: 600
 
 # 选项 2：基于容器的 AIO 沙箱
 # 在隔离容器（Docker 或 Apple Container）中执行命令。
 # macOS：如果 Apple Container 可用则优先使用，但模式更改后，只要此沙箱前缀下仍有托管 Docker 容器需要协调，就继续使用 Docker。
 # 其他平台：使用 Docker。
 # 取消注释以启用：
-# sandbox:
-#   use: deerflow.community.aio_sandbox:AioSandboxProvider
-#
-#   # 可选：使用的容器镜像（Docker 和 Apple Container 均支持）
-#   # 默认值：enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest
-#   # 镜像仓库中的 `:latest` 标签固定在旧的 1.9.3 之前的摘要版本上，缺少 required-secrets 技能需要的
-#   # /v1/bash/* 路由（参见 #3921/#3922），因此请指定明确版本；推荐 1.11.0（多架构，支持 x86_64 和 arm64）。
-#   # 自定义镜像应基于默认镜像扩展，或实现 agent-sandbox 使用的相同 AIO 沙箱 HTTP API。参见
-#   # backend/docs/CONFIGURATION.md。
-#   # image: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0
-#
-#   # 可选：沙箱容器的起始端口（默认：8080）
-#   # port: 8080
+sandbox:
+  use: deerflow.community.aio_sandbox:AioSandboxProvider
 
-#   # 可选：并发沙箱容器数量上限（默认：3）
-#   # 达到上限时，会驱逐最近最少使用的沙箱以腾出空间。此处请使用正整数；省略该字段可使用默认值。
-#   # replicas: 3
-#
-#   # 可选：容器名称前缀（默认：deer-flow-sandbox）
-#   # container_prefix: deer-flow-sandbox
-#
-#   # 可选：本地托管 Docker 沙箱的出站网络策略。
-#   # open 保持当前行为；isolated 拒绝所有出站流量。
-#   # allowlist 仅允许列表中的 HTTP/HTTPS 域名；也可通过“人工输入”卡片临时批准被拒绝的公共域名。
-#   # 受限模式需要 Docker Engine 28+，Apple Container 和 provisioner 模式不支持。
-#   # 私有、回环、链路本地、多播和云元数据地址始终会被拒绝。
-#   network:
-#     mode: allowlist                    # open | isolated | allowlist（默认：open）
-#     allow_domains:
-#       - pypi.org
-#       - files.pythonhosted.org
-#       - registry.npmjs.org
-#       - github.com
-#     approval: prompt                  # deny | prompt
-#     temporary_grant_ttl: 300          # 30-3600 秒
-#     proxy_image: ghcr.io/bytedance/deer-flow-sandbox-network-proxy:latest
+  # 可选：使用的容器镜像（Docker 和 Apple Container 均支持）
+  # 默认值：enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest
+  # 镜像仓库中的 `:latest` 标签固定在旧的 1.9.3 之前的摘要版本上，缺少 required-secrets 技能需要的
+  # /v1/bash/* 路由（参见 #3921/#3922），因此请指定明确版本；推荐 1.11.0（多架构，支持 x86_64 和 arm64）。
+  # 自定义镜像应基于默认镜像扩展，或实现 agent-sandbox 使用的相同 AIO 沙箱 HTTP API。参见
+  # backend/docs/CONFIGURATION.md。
+  image: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0
+
+  # 可选：沙箱容器的起始端口（默认：8080）
+  port: 8080
+
+  # 可选：并发沙箱容器数量上限（默认：3）
+  # 达到上限时，会驱逐最近最少使用的沙箱以腾出空间。此处请使用正整数；省略该字段可使用默认值。
+  replicas: 3
+
+  # 可选：容器名称前缀（默认：deer-flow-sandbox）
+  # container_prefix: deer-flow-sandbox
+
+  # 可选：本地托管 Docker 沙箱的出站网络策略。
+  # open 保持当前行为；isolated 拒绝所有出站流量。
+  # allowlist 仅允许列表中的 HTTP/HTTPS 域名；也可通过“人工输入”卡片临时批准被拒绝的公共域名。
+  # 受限模式需要 Docker Engine 28+，Apple Container 和 provisioner 模式不支持。
+  # 私有、回环、链路本地、多播和云元数据地址始终会被拒绝。
+  # network:
+  #   mode: allowlist                    # open | isolated | allowlist（默认：open）
+  #   allow_domains:
+  #     - pypi.org
+  #     - files.pythonhosted.org
+  #     - registry.npmjs.org
+  #     - github.com
+  #   approval: prompt                  # deny | prompt
+  #   temporary_grant_ttl: 300          # 30-3600 秒
+  #   proxy_image: ghcr.io/bytedance/deer-flow-sandbox-network-proxy:latest
 #
 #   # 可选：覆盖沙箱是否已通过共享挂载访问 Gateway 的对话工作区/上传/输出目录。
 #   # 省略此字段时根据后端自动检测（本地容器：true；远程/provisioner 后端：false）。
