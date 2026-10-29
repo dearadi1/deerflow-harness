@@ -29,7 +29,10 @@ manager = DeerFlowThreadClient(
 | `user_id` | `str` | DeerFlow 的存储用户 ID，非空，仅允许 ASCII 字母、数字、下划线和连字符。每次调用显式传入，不读取当前用户上下文。 |
 | `thread_id` | `str` | 通常使用 `create_thread()` 的返回值；允许 1～64 个 ASCII 字母、数字、下划线或连字符。 |
 | `file_name` | `str` | 单个文件名，例如 `report.pdf`；不能传入完整路径、目录分隔符或 `.`、`..`。需符合现有上传文件名校验，UTF-8 编码不超过 255 字节，不能使用上传暂存保留名称。 |
+| `area` | `Literal["uploads", "workspace", "outputs"]` | 下载、删除、列表的操作区，默认 `"outputs"`；其他值抛出 `ValueError`。上传不接受此参数。 |
 | `file_bytes` | `bytes` | 文件的二进制内容；不能传入字符串、文件对象或 `bytearray`。允许空字节串。 |
+
+`FileArea` 从 `deerflow.thread_client` 导入，是上述三个操作区的 `Literal` 类型别名。原先省略参数操作上传区的调用，需显式传入 `area="uploads"`。
 
 ## 方法输入与输出
 
@@ -63,6 +66,7 @@ def upload_file(self, user_id: str, thread_id: str, file_name: str, file_bytes: 
 
 - 输入：`user_id`、`thread_id`、`file_name`、`file_bytes`；线程目录必须已存在。
 - 输出：`None`，不返回文件信息或转码状态。
+- 仅允许上传到 `uploads`，不提供操作区参数。
 - 同名文件会被覆盖，旧的、归属验证通过的转码 Markdown 会被清理。
 - `.pdf`、`.ppt`、`.pptx`、`.xls`、`.xlsx`、`.doc`、`.docx` 按现有配置转换为 Markdown；转码文件重名时自动使用带编号的名称。
 - 转换器返回失败时保留原文件，记录 `文件已上传，但 Markdown 转换失败: <文件名>` 日志，方法仍返回 `None`。
@@ -70,35 +74,35 @@ def upload_file(self, user_id: str, thread_id: str, file_name: str, file_bytes: 
 ### 下载文件
 
 ```python
-def download_file(self, user_id: str, thread_id: str, file_name: str) -> bytes
+def download_file(self, user_id: str, thread_id: str, file_name: str, area: FileArea = "outputs") -> bytes
 ```
 
-- 输入：`user_id`、`thread_id`、`file_name`；仅接受单个文件名，例如 `report.pdf`，不接受任何路径。
+- 输入：`user_id`、`thread_id`、`file_name`、`area`；仅接受单个文件名，例如 `report.pdf`，不接受任何路径。
 - 输出：原始文件的二进制内容 `bytes`，空文件返回 `b""`。
-- 只读取当前用户、当前线程 `uploads` 目录的直属普通文件，不搜索子目录或其他线程。
+- 只读取当前用户、当前线程所选操作区目录的直属普通文件，不搜索子目录或其他线程。
 - 文件或线程不存在时抛出 `FileNotFoundError`；目录、符号链接等非普通文件抛出 `UnsafeUploadPathError`。
 
 ### 删除文件
 
 ```python
-def delete_file(self, user_id: str, thread_id: str, file_name: str) -> None
+def delete_file(self, user_id: str, thread_id: str, file_name: str, area: FileArea = "outputs") -> None
 ```
 
-- 输入：`user_id`、`thread_id`、`file_name`。
+- 输入：`user_id`、`thread_id`、`file_name`、`area`。
 - 输出：`None`。
-- 删除指定文件，并清理归属记录验证通过的转码 Markdown，包括带编号的转码文件。
+- 删除所选操作区的指定文件；仅 `uploads` 连带清理归属记录验证通过的转码 Markdown，包括带编号的转码文件。`workspace` 和 `outputs` 只删除指定文件。
 - 没有有效归属记录的 `.md` 不会因同名被连带删除。文件不存在时抛出 `FileNotFoundError`。
 
 ### 列出文件
 
 ```python
-def thread_files(self, user_id: str, thread_id: str) -> list[str]
+def thread_files(self, user_id: str, thread_id: str, area: FileArea = "outputs") -> list[str]
 ```
 
-- 输入：`user_id`、`thread_id`。
+- 输入：`user_id`、`thread_id`、`area`。
 - 输出：按文件名排序的列表，例如 `["report.pdf", "test.txt"]`，不包含任何目录前缀。
-- 只列出 `uploads` 直属文件，不递归列出子目录。例如 `uploads/report.pdf` 返回 `"report.pdf"`，`uploads/data/result.csv` 不列入结果。
-- 排除目录、符号链接、上传暂存文件及归属验证通过的转码 Markdown。用户独立上传或无法确认归属的 `.md` 仍会返回。
+- 只列出所选操作区直属文件，不递归列出子目录。例如 `uploads/report.pdf` 返回 `"report.pdf"`，`uploads/data/result.csv` 不列入结果。
+- 排除目录、符号链接及上传暂存保留名称的文件。仅 `uploads` 额外排除归属验证通过的转码 Markdown；用户独立上传或无法确认归属的 `.md` 仍会返回。
 - 没有文件或指定用户的线程目录不存在时返回 `[]`。
 
 ## 调用示例
@@ -111,11 +115,15 @@ user_id = "user_001"
 thread_id = manager.create_thread(user_id)
 
 manager.upload_file(user_id, thread_id, "hello.txt", b"hello")
-file_names = manager.thread_files(user_id, thread_id)
+file_names = manager.thread_files(user_id, thread_id, area="uploads")
 
 for file_name in file_names:
-    file_bytes = manager.download_file(user_id, thread_id, file_name)
-    manager.delete_file(user_id, thread_id, file_name)
+    file_bytes = manager.download_file(user_id, thread_id, file_name, area="uploads")
+    manager.delete_file(user_id, thread_id, file_name, area="uploads")
+
+# 默认列出 outputs；工作区文件需显式选择 workspace。
+output_names = manager.thread_files(user_id, thread_id)
+workspace_names = manager.thread_files(user_id, thread_id, area="workspace")
 
 manager.delete_thread(user_id, thread_id)
 ```
@@ -140,12 +148,12 @@ answer = client.chat("你好", user_id="user_001", thread_id=thread_id)
 
 | 异常 | 触发场景或报错示例 |
 | --- | --- |
-| `ValueError` | 用户 ID、线程 ID 或文件名不符合校验要求。例如 `user_id 必须是非空字符串`、`file_name 必须是单个文件名，不能包含目录`。底层校验也可能返回英文报错。 |
+| `ValueError` | 用户 ID、线程 ID、文件名或操作区不符合校验要求。例如 `user_id 必须是非空字符串`、`file_name 必须是单个文件名，不能包含目录`。底层校验也可能返回英文报错。 |
 | `TypeError` | `file_bytes` 不是 `bytes`：`file_bytes 必须是 bytes`。 |
 | `FileNotFoundError` | 上传、下载或删除文件时线程目录不存在：`用户线程不存在: <user_id>/<thread_id>`；下载文件不存在；删除的文件不存在或不是普通文件：`File not found: <file_name>`；配置文件缺失也可能触发。 |
 | `UnsafeUploadPathError` | 线程路径中的目录是符号链接，上传或下载目标是符号链接、目录等不安全目标，或下载目标在打开时被替换。此异常继承自 `ValueError`，从 `deerflow.uploads.manager` 导入。 |
 | `PathTraversalError` | 底层文件路径校验发现越界，例如符号链接指向上传目录外。此异常继承自 `ValueError`，从 `deerflow.uploads.manager` 导入。 |
-| `NotADirectoryError` | 应为线程目录或上传目录的路径实际是普通文件。 |
+| `NotADirectoryError` | 应为线程目录或操作区目录的路径实际是普通文件。 |
 | `PermissionError` | 删除线程时 checkpoint 的 `user_id` 明确属于其他用户：`checkpoint 属于其他用户，不能删除`；文件系统权限不足也可能触发。 |
 | `FileExistsError` | 创建线程的目标目录已存在，或底层文件发布遇到无法处理的名称冲突。 |
 | `ImportError` | 配置所需的 checkpoint 后端依赖未安装。 |
