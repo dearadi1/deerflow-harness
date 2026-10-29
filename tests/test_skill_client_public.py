@@ -98,6 +98,103 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertTrue((self.view / "example/SKILL.md").is_file())
         self.user_factory.assert_not_called()
 
+    def use_persisted_skill_states(self):
+        """状态测试使用真实文件，覆盖原始配置保留与缓存重载。"""
+        self.enterContext(patch.dict(os.environ, {"DEER_FLOW_EXTENSIONS_CONFIG_PATH": str(self.config_path)}))
+        self.enterContext(patch.object(
+            ExtensionsConfig, "from_file",
+            side_effect=lambda *args, **kwargs: ExtensionsConfig._from_path_with_signature(self.config_path)[0],
+        ))
+        from deerflow.config.extensions_config import reset_extensions_config
+
+        self.addCleanup(reset_extensions_config)
+
+    def test_skill_states_are_separate_and_default_enabled(self):
+        self.use_persisted_skill_states()
+        self.public.create_skill("example", "公共描述")
+        self.client.create_skill("alice", "example", "用户描述")
+        public_states = [{"name": "example", "global_enabled": True, "enabled": True}]
+        self.assertEqual(self.public.list_skill_states(), public_states)
+        self.assertEqual(self.client.list_skill_states("alice"), [dict(public_states[0], user_enabled=True)])
+        self.assertEqual(self.client.list_skill_states("bob"), [])
+        self.assertNotIn("enabled", self.public.list_skills()[0])
+        self.assertNotIn("enabled", self.client.list_skills("alice")[0])
+
+    def test_custom_toggle_is_user_scoped_and_invalidates_shared_caches(self):
+        self.use_persisted_skill_states()
+        self.client.create_skill("alice", "example", "用户描述")
+        self.client.create_skill("bob", "example", "其他用户")
+        modules = self.prompt_cache_modules()
+        for module in modules:
+            self.assertEqual(len(module.get_enabled_skills_for_config(self.config, "alice")), 1)
+            self.assertEqual(len(module.get_enabled_skills_for_config(self.config, "bob")), 1)
+        peer = load_prompt_cache("deerflow.agents.lead_agent.prompt_zh", self.user_storage)
+        peer._skills_cache_reset_tracker = SharedResetMarkerTracker(
+            SharedResetMarker("skills-cache-reset"),
+            resolve_config_path=lambda: self.config_path, poll_interval_seconds=0,
+        )
+        self.assertEqual(len(peer.get_enabled_skills_for_config(self.config, "alice")), 1)
+        state = self.client.set_skill_enabled("alice", "example", False)
+        self.assertEqual(state, {"name": "example", "global_enabled": True, "user_enabled": False, "enabled": False})
+        self.assertTrue(self.client.list_skill_states("bob")[0]["enabled"])
+        self.assertEqual(json.loads(self.config_path.read_text()), {})
+        self.assertFalse((get_skill_projection_paths(self.user_storage("alice")).custom / "example").exists())
+        for module in modules:
+            self.assertEqual(module.get_enabled_skills_for_config(self.config, "alice"), [])
+            self.assertEqual(len(module.get_enabled_skills_for_config(self.config, "bob")), 1)
+        self.assertEqual(peer.get_enabled_skills_for_config(self.config, "alice"), [])
+        self.assertTrue(self.client.set_skill_enabled("alice", "example", True)["enabled"])
+
+    def test_public_toggle_preserves_raw_config_and_global_disable_wins(self):
+        from deerflow.config.extensions_config import get_extensions_config
+
+        self.use_persisted_skill_states()
+        self.public.create_skill("example", "公共描述")
+        self.client.create_skill("alice", "example", "用户描述")
+        self.config_path.write_text(json.dumps({"mcp_servers": {}, "skills": {"other": {"enabled": False}}, "placeholder": "$SECRET"}))
+        modules = self.prompt_cache_modules()
+        for module in modules:
+            module.clear_skills_system_prompt_cache = Mock()
+            module.get_enabled_skills_for_config(self.config, "alice")
+        self.assertTrue(get_extensions_config().is_skill_enabled("example", "public"))
+        self.assertFalse(self.public.set_skill_enabled("example", False)["enabled"])
+        self.assertFalse(get_extensions_config().is_skill_enabled("example", "public"))
+        raw = json.loads(self.config_path.read_text())
+        self.assertEqual(raw["placeholder"], "$SECRET")
+        self.assertEqual(raw["skills"]["other"], {"enabled": False})
+        self.assertFalse((self.view / "example").exists())
+        for module in modules:
+            module.clear_skills_system_prompt_cache.assert_called_once_with()
+        state = self.client.set_skill_enabled("alice", "example", True)
+        self.assertEqual(state, {"name": "example", "global_enabled": False, "user_enabled": True, "enabled": False})
+        self.assertTrue(self.public.set_skill_enabled("example", True)["enabled"])
+        self.assertTrue((self.view / "example/SKILL.md").is_file())
+
+    def test_skill_state_validation_and_external_changes(self):
+        self.use_persisted_skill_states()
+        self.public.create_skill("example", "公共描述")
+        with self.assertRaises(ValueError):
+            self.client.list_skill_states("")
+        with self.assertRaises(ValueError):
+            self.client.set_skill_enabled("", "example", False)
+        with self.assertRaises(FileNotFoundError):
+            self.client.set_skill_enabled("alice", "example", False)
+        with self.assertRaises(FileNotFoundError):
+            self.public.set_skill_enabled("missing", False)
+        with self.assertRaises(TypeError):
+            self.public.set_skill_enabled("example", "false")
+        self.assertTrue(self.public.list_skill_states()[0]["enabled"])
+        self.config_path.write_text('{"skills": {"example": {"enabled": false}}}')
+        self.assertFalse(self.public.list_skill_states()[0]["enabled"])
+
+    def test_custom_toggle_notification_failure_reports_committed_state(self):
+        self.use_persisted_skill_states()
+        self.client.create_skill("alice", "example", "用户描述")
+        with patch.object(SharedResetMarker, "publish", side_effect=OSError("无法写入")):
+            with self.assertRaisesRegex(RuntimeError, "技能已修改"):
+                self.client.set_skill_enabled("alice", "example", False)
+        self.assertFalse(self.client.list_skill_states("alice")[0]["enabled"])
+
     def test_all_public_resource_operations(self):
         self.public.create_skill("example", "描述")
         self.public.create_folder("example", "scripts")

@@ -20,6 +20,16 @@ import yaml
 
 from deerflow.client_config import load_client_config
 from deerflow.config.app_config import AppConfig
+from deerflow.config.extensions_config import (
+    ExtensionsConfig,
+    atomic_write_extensions_config,
+    extensions_config_file_lock,
+    extensions_config_write_lock,
+    read_raw_extensions_config,
+    reload_extensions_config,
+    set_raw_skill_enabled,
+    validate_raw_extensions_config,
+)
 from deerflow.config.paths import get_paths
 from deerflow.skills.frontmatter import split_skill_markdown
 from deerflow.skills.parser import parse_allowed_tools, parse_required_secrets
@@ -466,6 +476,52 @@ class _SkillOperations:
             skills_by_name[metadata["name"]] = self._skill_info(root, directory, metadata)
         return [skills_by_name[name] for name in sorted(skills_by_name)]
 
+    def _skill_state(self, storage: SkillStorage, name: str, extensions: ExtensionsConfig) -> dict[str, Any]:
+        global_enabled = extensions.is_skill_enabled(name, self._category.value)
+        state = {"name": name, "global_enabled": global_enabled, "enabled": global_enabled}
+        if self._category == SkillCategory.CUSTOM:
+            user_enabled = storage.get_skill_enabled_state(name)
+            state.update(user_enabled=user_enabled, enabled=global_enabled and user_enabled)
+        return state
+
+    @_chinese_errors
+    def list_skill_states(self, user_id: str) -> list[dict[str, Any]]:
+        """独立查询用户自有 custom 的启用状态，不包含 legacy 或 integrations。"""
+        storage = self._storage(user_id)
+        extensions = ExtensionsConfig.from_file()
+        return [self._skill_state(storage, skill["name"], extensions) for skill in self.list_skills(user_id)]
+
+    @staticmethod
+    def _set_public_skill_enabled(storage: SkillStorage, name: str, enabled: bool) -> None:
+        config_path = ExtensionsConfig.resolve_config_path()
+        if config_path is None:
+            raise FileNotFoundError("未找到扩展配置，请设置 DEER_FLOW_EXTENSIONS_CONFIG_PATH 或创建 extensions_config.json")
+        removal_names = (name,) if not enabled else ()
+        with skill_projection_mutation(storage, "public", remove_names=removal_names):
+            with extensions_config_write_lock, extensions_config_file_lock(config_path):
+                # 合并原始配置，避免将环境变量引用解析成明文或覆盖并发更新。
+                raw_config = read_raw_extensions_config(config_path)
+                set_raw_skill_enabled(raw_config, name, enabled)
+                validate_raw_extensions_config(raw_config)
+                atomic_write_extensions_config(config_path, raw_config)
+                reload_extensions_config()
+
+    @_chinese_errors
+    def set_skill_enabled(self, user_id: str, skill_name: str, enabled: bool) -> dict[str, Any]:
+        """修改用户 custom 开关并返回有效状态；全局禁用仍具有约束力。"""
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled 必须是布尔值")
+        storage = self._storage(user_id)
+        if not any(skill["name"] == skill_name for skill in self.list_skills(user_id)):
+            raise FileNotFoundError(f"当前作用域中不存在技能: {skill_name}")
+        if self._category == SkillCategory.PUBLIC:
+            self._set_public_skill_enabled(storage, skill_name, enabled)
+            self._notify_skill_change()
+        else:
+            storage.set_skill_enabled_state(skill_name, enabled)
+            self._notify_skill_change(user_id=storage.user_id)
+        return self._skill_state(storage, skill_name, ExtensionsConfig.from_file())
+
     @_chinese_errors
     def get_resource_tree(self, user_id: str, skill_name: str) -> list[dict[str, Any]]:
         """返回指定用户技能的资源树，路径相对技能根目录且使用 / 分隔。
@@ -623,6 +679,14 @@ class _PublicSkillClient:
     def list_skills(self) -> list[dict[str, str]]:
         return self._operations.list_skills(None)
 
+    def list_skill_states(self) -> list[dict[str, Any]]:
+        """查询全局 public 状态，不受用户同名 custom 技能遮蔽。"""
+        return self._operations.list_skill_states(None)
+
+    def set_skill_enabled(self, skill_name: str, enabled: bool) -> dict[str, Any]:
+        """修改全局 public 开关，并通知所有用户的技能缓存失效。"""
+        return self._operations.set_skill_enabled(None, skill_name, enabled)
+
     def get_resource_tree(self, skill_name: str) -> list[dict[str, Any]]:
         return self._operations.get_resource_tree(None, skill_name)
 
@@ -658,6 +722,13 @@ class DeerFlowSkillClient(_SkillOperations):
     create_skill 和 copy_skill 返回实际技能目录的绝对路径，不包含 SKILL.md。
     文件路径相对于技能根目录；upload_file 仅更新已有的 UTF-8 文本文件。
     根目录 SKILL.md 只能通过 upload_file 更新，不能单独创建、删除或移动。
+    list_skill_states(user_id) 与 public.list_skill_states() 独立查询启用状态；
+    set_skill_enabled(user_id, skill_name, enabled) 修改用户开关，
+    public.set_skill_enabled(skill_name, enabled) 修改全局开关。
+    状态包含 global_enabled、最终 enabled；custom 另含 user_enabled，
+    最终状态为全局与用户开关的交集，不包含 Agent 白名单或授权过滤。
+    修改复用技能视图更新、本进程缓存失效及跨进程共享重置标记；
+    已构建的会话 Agent 快照仍需调用方按原有生命周期重建。
     """
 
     @_chinese_errors
