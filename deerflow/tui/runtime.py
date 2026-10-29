@@ -21,7 +21,7 @@ from .view_state import (
 
 
 class _ClientLike(Protocol):
-    def stream(self, message: str, *, thread_id: str | None = None, **kwargs: Any) -> Iterator[ClientStreamEvent]:
+    def stream(self, message: str, *, thread_id: str | None = None, disabled_tools: list[str] | None = None, **kwargs: Any) -> Iterator[ClientStreamEvent]:
         """Yield streaming events for *message* (see ``DeerFlowClient.stream``)."""
 
 
@@ -50,7 +50,7 @@ def _as_str(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-def stream_actions(client: _ClientLike, message: str, *, thread_id: str | None = None, **kwargs: Any) -> Iterator[Action]:
+def stream_actions(client: _ClientLike, message: str, *, thread_id: str | None = None, disabled_tools: list[str] | None = None, **kwargs: Any) -> Iterator[Action]:
     """Yield a bracketed action stream for one agent run.
 
     Always begins with ``RunStarted`` and ends with ``RunEnded`` (even on error,
@@ -58,7 +58,7 @@ def stream_actions(client: _ClientLike, message: str, *, thread_id: str | None =
     """
     yield RunStarted()
     try:
-        for event in client.stream(message, thread_id=thread_id, **kwargs):
+        for event in client.stream(message, thread_id=thread_id, disabled_tools=disabled_tools, **kwargs):
             yield from translate(event)
             if event.type == "end" and event.agent_id == "main":
                 return  # RunEnded already emitted by translate()

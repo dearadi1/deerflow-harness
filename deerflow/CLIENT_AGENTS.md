@@ -11,6 +11,7 @@ def stream(
     *,
     thread_id: str | None = None,
     replay_last_turn: bool = False,
+    disabled_tools: list[str] | None = None,
     **kwargs,
 ) -> Generator[ClientStreamEvent, None, None]:
     ...
@@ -35,9 +36,28 @@ stream
 | `thread_id` | `str \| None = None` | `None` 时生成 UUID 字符串；显式值必须为 1–64 个 ASCII 字母、数字、下划线或连字符，否则抛出 `ValueError`。空字符串不会触发自动生成。 |
 | `replay_last_turn` | `bool = False` | `False` 发起普通一轮；`True` 替换最近一轮输入并重新执行。非布尔值抛出 `TypeError`。 |
 
-`thread_id` 和 `replay_last_turn` 必须以关键字传入。自动生成的 `thread_id` 可从输出事件的同名字段取得。
+| `disabled_tools` | `list[str] \| None = None` | 本轮主智能体禁止绑定的工具名称，按工具实际 `name` 精确匹配（区分大小写）。`None` / `[]` 不额外禁用；重复名称自动去重，未知名称忽略。非列表或含非字符串元素抛出 `TypeError`，空白名称抛出 `ValueError`。 |
+
+`thread_id`、`replay_last_turn` 和 `disabled_tools` 必须以关键字传入。自动生成的 `thread_id` 可从输出事件的同名字段取得。
 
 复用 `thread_id` 是否能够恢复对话，取决于是否存在可用的 checkpointer。代码先使用构造客户端时传入的 `checkpointer`，为 `None` 时再调用全局 `get_checkpointer()`；两者均不可用时没有持久化的多轮状态。
+
+### 2.1 按轮禁用工具
+
+```python
+for event in client.stream(
+    "分析已有资料，无需联网",
+    thread_id="thread_001",
+    disabled_tools=["web_search", "web_fetch"],
+):
+    print(event)
+```
+
+填写工具实际暴露给模型的 `name`，不是 YAML 别名、工具组名或 Python 导入路径。禁用名单在授权和 MCP 延迟目录构建之前过滤，并覆盖稍后添加的框架工具、自动生成的 `tool_search` 以及中间件声明的工具；被禁用的 MCP 工具不会进入延迟发现目录。
+
+该参数只影响本次调用构建的主智能体工具集合，不修改全局配置、工具单例或调用方列表。名单变化会触发 Agent 重建；下一轮不传或传空列表恢复正常工具集合，仍受原有配置和授权约束。独立构建的子智能体工具集合不受此参数控制；如需禁止委派可同时加入 `task` 和 `batch_task`。
+
+`client.chat(..., disabled_tools=[...])`、客户端池的 session 代理和 TUI 的 `stream_actions(..., disabled_tools=[...])` 均透传同一参数。重生成时通过本次 `stream(..., replay_last_turn=True, disabled_tools=[...])` 指定，历史名单不会自动沿用。
 
 ## 3. kwargs 中实际读取的参数
 

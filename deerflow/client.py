@@ -36,7 +36,7 @@ from deerflow.protocol import ClientStreamEvent
 
 from deerflow.agents.lead_agent.agent import _authorize_model_name, build_middlewares
 from deerflow.agents.lead_agent.prompt_zh import apply_prompt_template, get_enabled_skills_for_config, has_bash_tool
-from deerflow.agents.middlewares.tool_declarations import layer_one_outcome, narrow_declared_tools, verify_declared_tool_view
+from deerflow.agents.middlewares.tool_declarations import apply_declared_tool_view, collect_declared_tools, layer_one_outcome, narrow_declared_tools, verify_declared_tool_view
 from deerflow.client_stream import ClientStreamParser
 from deerflow.client_stream_pricing import ClientStreamPricing
 from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
@@ -367,6 +367,7 @@ class DeerFlowClient:
             cfg.get("subagent_enabled"),
             cfg.get("max_concurrent_subagents"),
             cfg.get("max_total_subagents"),
+            frozenset(cfg.get("disabled_tools") or ()),
             self._agent_name,
             memory_enabled,
             frozenset(mcp_plugins) if mcp_plugins is not None else None,
@@ -475,6 +476,9 @@ class DeerFlowClient:
         # Apply authorization Layer 1 before deferred assembly.
         from deerflow.authz.tool_filter import apply_tool_authorization
 
+        disabled_tools = frozenset(cfg.get("disabled_tools") or ())
+        tools = [tool for tool in tools if tool.name not in disabled_tools]
+        late_tools = [tool for tool in late_tools if tool.name not in disabled_tools]
         configured_tool_ids = {id(tool) for tool in tools}
         authorized_tools, _authz_provider = apply_tool_authorization(
             [*tools, *late_tools],
@@ -486,6 +490,7 @@ class DeerFlowClient:
         late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
         final_tools, deferred_setup = assemble_deferred_tools(tools, enabled=self._app_config.tool_search.enabled)
         final_tools.extend(late_tools)
+        final_tools = [tool for tool in final_tools if tool.name not in disabled_tools]
         mcp_routing_middleware = build_mcp_routing_middleware(
             final_tools,
             deferred_setup,
@@ -514,6 +519,7 @@ class DeerFlowClient:
             app_config=self._app_config,
             authorization_provider=_authz_provider,
         )
+        middlewares, declared_authorized = self._exclude_disabled_middleware_tools(middlewares, declared_authorized, disabled_tools)
         bound_middlewares = normalize_middleware_state_schemas(
             middlewares,
             self._checkpoint_channel_mode,
@@ -558,6 +564,16 @@ class DeerFlowClient:
         self._agent_config_key = key
         self._effective_model_name = model_name
         logger.info("Agent created: agent_name=%s, model=%s, thinking=%s", self._agent_name, model_name, thinking_enabled)
+
+    @staticmethod
+    def _exclude_disabled_middleware_tools(middlewares, declared_authorized, disabled_tools):
+        if not disabled_tools:
+            return middlewares, declared_authorized
+        # 中间件也能声明工具，必须在构建副本上收窄，避免绕过本轮禁用名单。
+        declared_names = frozenset(tool.name for tool in collect_declared_tools(middlewares) if tool.name not in disabled_tools)
+        if declared_authorized is not None:
+            declared_names &= declared_authorized
+        return apply_declared_tool_view(middlewares, authorized_names=declared_names), declared_names
 
     @staticmethod
     def _get_tools(*, model_name: str | None, subagent_enabled: bool, mcp_plugins: list[str] | None = None):
@@ -809,6 +825,7 @@ class DeerFlowClient:
         *,
         thread_id: str | None = None,
         replay_last_turn: bool = False,
+        disabled_tools: list[str] | None = None,
         **kwargs,
     ) -> Generator[ClientStreamEvent, None, None]:
         """Stream a conversation turn with a DeerFlow request trace context.
@@ -822,6 +839,8 @@ class DeerFlowClient:
         additional_kwargs.files，由上传中间件校验已落盘文件并注入上下文。
         replay_last_turn=True 时用 message 替换最近一轮输入并重新生成；传原问题即重试，
         传新问题即修改生成。仅恢复线程状态，不撤销长期记忆、文件或外部工具副作用。
+        disabled_tools 按工具实际名称精确匹配，仅禁用本轮主智能体的工具。
+        None 或空列表不额外禁用工具；不修改全局工具配置。
         推荐追问统一由应用配置 suggestions.enabled 控制，默认生成 3 个。
         临时约定：knowledge_search_kwargs={"kb_ids": [...]} 经 runtime.context 透传给
         注册的知识库检索函数，也可包含 dense_weight、sparse_weight 等宿主参数。
@@ -839,7 +858,8 @@ class DeerFlowClient:
         # Per-step set/reset keeps LangGraph node execution and its log
         # records inside the binding while returning control to the caller
         # with the ContextVar restored.
-        inner = stream_client_turn(self, message, thread_id=thread_id, replay_last_turn=replay_last_turn, **kwargs)
+        disabled_tools = self._validate_disabled_tools(disabled_tools)
+        inner = stream_client_turn(self, message, thread_id=thread_id, replay_last_turn=replay_last_turn, disabled_tools=disabled_tools, **kwargs)
         _EXHAUSTED = object()
         try:
             while True:
@@ -873,6 +893,7 @@ class DeerFlowClient:
         *,
         thread_id: str | None = None,
         _turn_replay: ClientTurnReplay | None = None,
+        disabled_tools: list[str] | None = None,
         **kwargs,
     ) -> Generator[ClientStreamEvent, None, None]:
         """按 deerflow.protocol 输出事件模型，消息增量与快照按 ID 对齐。
@@ -884,6 +905,7 @@ class DeerFlowClient:
         thread_id = resolve_thread_id(thread_id)
 
         config = self._get_runnable_config(thread_id, **kwargs)
+        config["configurable"]["disabled_tools"] = list(disabled_tools or ())
         inject_checkpoint_mode(config, self._checkpoint_channel_mode)
         checkpoint_config = {
             "configurable": {
@@ -983,7 +1005,19 @@ class DeerFlowClient:
             if close := getattr(items, "close", None):
                 close()
 
-    def chat(self, message: str, *, thread_id: str | None = None, **kwargs) -> str:
+    @staticmethod
+    def _validate_disabled_tools(disabled_tools: list[str] | None) -> list[str]:
+        if disabled_tools is None:
+            return []
+        if not isinstance(disabled_tools, list):
+            raise TypeError("disabled_tools 必须为字符串列表或 None")
+        if any(not isinstance(name, str) for name in disabled_tools):
+            raise TypeError("disabled_tools 中的工具名称必须为字符串")
+        if any(not name.strip() for name in disabled_tools):
+            raise ValueError("disabled_tools 中的工具名称不能为空")
+        return list(dict.fromkeys(disabled_tools))
+
+    def chat(self, message: str, *, thread_id: str | None = None, disabled_tools: list[str] | None = None, **kwargs) -> str:
         """Send a message and return the final text response.
 
         按消息 ID 累积主智能体的 answer_content，返回最后一条有正文的消息。
@@ -992,6 +1026,7 @@ class DeerFlowClient:
         Args:
             message: User message text.
             thread_id: Thread ID for conversation context. Auto-generated if None.
+            disabled_tools: 本轮禁止使用的工具名称，语义与 stream() 相同。
             **kwargs: Override client defaults (same as stream()).
 
         Returns:
@@ -999,7 +1034,7 @@ class DeerFlowClient:
             if no AI text was produced.
         """
         answer = _AIMessageAccumulator()
-        for event in self.stream(message, thread_id=thread_id, **kwargs):
+        for event in self.stream(message, thread_id=thread_id, disabled_tools=disabled_tools, **kwargs):
             answer.observe(event)
         return answer.answer()
 
