@@ -1,20 +1,58 @@
+import ast
 import json
 import os
+import sys
 import tempfile
 import unittest
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
-from threading import Barrier
-from unittest.mock import Mock, patch
+from threading import Barrier, Event, Lock
+from types import ModuleType, SimpleNamespace
+from unittest.mock import ANY, Mock, patch
 
 from deerflow.config.extensions_config import ExtensionsConfig, SkillStateConfig
 from deerflow.config.paths import Paths
-from deerflow.config.shared_reset_marker import SharedResetMarker
+from deerflow.config.shared_reset_marker import (
+    SharedResetChange,
+    SharedResetMarker,
+    SharedResetMarkerTracker,
+)
 from deerflow.config.skills_config import SkillsConfig
 from deerflow.skill_client import DeerFlowSkillClient
 from deerflow.skills.projection import get_skill_projection_paths
 from deerflow.skills.storage import LocalSkillStorage, UserScopedSkillStorage
+
+
+def load_prompt_cache(module_name, user_factory):
+    """直接执行缓存函数，避免离线管理测试加载 Agent、模型及工具依赖。"""
+    source = Path(__file__).resolve().parents[1] / (module_name.replace(".", "/") + ".py")
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    names = {
+        "get_enabled_skills_for_config", "invalidate_user_skill_cache",
+        "_check_shared_skills_cache_reset", "_apply_shared_skills_cache_reset",
+    }
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    module = ModuleType(module_name)
+    module.__dict__.update(
+        AppConfig=object,
+        Skill=object,
+        SharedResetChange=SharedResetChange,
+        logger=Mock(),
+        _skills_cache_reset_tracker=Mock(poll=Mock(return_value=None)),
+        _invalidate_enabled_skills_cache=Mock(),
+        _get_enabled_skills=Mock(return_value=[]),
+        get_or_new_skill_storage=Mock(),
+        _enabled_skills_lock=Lock(),
+        _enabled_skills_by_config_cache=OrderedDict(),
+        _enabled_skills_refresh_version=0,
+        _ENABLED_SKILLS_BY_CONFIG_CACHE_MAXSIZE=256,
+        _get_cached_skills_prompt_section=Mock(),
+        get_or_new_user_skill_storage=user_factory,
+    )
+    # 只执行仓库内固定名称的函数，既不接受外部源码，也不复制被测实现。
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(source), "exec"), module.__dict__)  # noqa: S102
+    return module
 
 
 class SkillClientPublicTests(unittest.TestCase):
@@ -238,6 +276,87 @@ class SkillClientPublicTests(unittest.TestCase):
                 module.invalidate_user_skill_cache.assert_called_once_with("alice")
             self.assertEqual(json.loads(marker.path_for(self.config_path).read_text())["user_id"], "alice")
 
+    def prompt_cache_modules(self):
+        names = ("deerflow.agents.lead_agent.prompt", "deerflow.agents.lead_agent.prompt_zh")
+        modules = {name: load_prompt_cache(name, self.user_storage) for name in names}
+        self.enterContext(patch.dict("sys.modules", modules))
+        return list(modules.values())
+
+    def test_custom_mutations_refresh_warmed_caches_and_preserve_other_users(self):
+        modules = self.prompt_cache_modules()
+        for module in modules:
+            self.assertEqual(module.get_enabled_skills_for_config(self.config, "alice"), [])
+            module.get_enabled_skills_for_config(self.config, "bob")
+        other_entries = [module._enabled_skills_by_config_cache[(id(self.config), "bob")] for module in modules]
+        self.client.create_skill("alice", "example", "初始描述")
+        self.assert_cached_skill_descriptions(modules, ["初始描述"])
+        self.client.upload_file("alice", "example", "SKILL.md", self.markdown("新描述"))
+        self.assert_cached_skill_descriptions(modules, ["新描述"])
+        self.client.delete_skill("alice", "example")
+        self.assert_cached_skill_descriptions(modules, [])
+        for module, entry in zip(modules, other_entries):
+            self.assertIs(module._enabled_skills_by_config_cache[(id(self.config), "bob")], entry)
+        marker = SharedResetMarker("skills-cache-reset")
+        self.assertEqual(json.loads(marker.path_for(self.config_path).read_text())["user_id"], "alice")
+
+    def assert_cached_skill_descriptions(self, modules, descriptions):
+        for module in modules:
+            skills = module.get_enabled_skills_for_config(self.config, "alice")
+            self.assertEqual([skill.description for skill in skills], descriptions)
+
+    def test_custom_copy_refreshes_only_target_and_publishes_once(self):
+        self.client.create_skill("bob", "example", "来源描述")
+        modules = self.prompt_cache_modules()
+        for module in modules:
+            module.get_enabled_skills_for_config(self.config, "alice")
+            module.get_enabled_skills_for_config(self.config, "bob")
+        source_entries = [module._enabled_skills_by_config_cache[(id(self.config), "bob")] for module in modules]
+        with patch.object(SharedResetMarker, "publish", autospec=True, side_effect=SharedResetMarker.publish) as publish:
+            self.client.copy_skill("bob", "alice", "example")
+            publish.assert_called_once_with(ANY, self.config_path, user_id="alice")
+        self.assert_cached_skill_descriptions(modules, ["来源描述"])
+        for module, entry in zip(modules, source_entries):
+            self.assertIs(module._enabled_skills_by_config_cache[(id(self.config), "bob")], entry)
+
+    def test_public_copy_publishes_target_reset_once(self):
+        self.public.create_skill("example", "公共描述")
+        with patch.object(SharedResetMarker, "publish", autospec=True, side_effect=SharedResetMarker.publish) as publish:
+            self.public.copy_skill("example", "alice")
+            publish.assert_called_once_with(ANY, self.config_path, user_id="alice")
+
+    def test_custom_validation_failure_does_not_publish_reset(self):
+        self.client.create_skill("alice", "example", "描述")
+        with patch.object(SharedResetMarker, "publish") as publish:
+            with self.assertRaises(ValueError):
+                self.client.upload_file("alice", "example", "SKILL.md", b"invalid")
+            publish.assert_not_called()
+
+    def test_user_invalidation_prevents_inflight_stale_cache_writeback(self):
+        for module in self.prompt_cache_modules():
+            with self.subTest(module=module.__name__):
+                started, release = Event(), Event()
+                storage = Mock()
+                storage.load_skills.side_effect = lambda started=started, release=release, **options: self.block_skill_load(started, release)
+                module.get_or_new_user_skill_storage = Mock(return_value=storage)
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(module.get_enabled_skills_for_config, self.config, "alice")
+                    try:
+                        self.assertTrue(started.wait(timeout=5))
+                        module.invalidate_user_skill_cache("alice")
+                    finally:
+                        release.set()
+                    self.assertEqual(future.result(timeout=5), ["旧快照"])
+                storage.load_skills.return_value = ["新快照"]
+                storage.load_skills.side_effect = None
+                self.assertEqual(module.get_enabled_skills_for_config(self.config, "alice"), ["新快照"])
+
+    @staticmethod
+    def block_skill_load(started, release):
+        started.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("等待测试释放技能读取超时")
+        return ["旧快照"]
+
     def test_public_copy_failure_does_not_publish_partial_target(self):
         self.public.create_skill("example", "描述")
         with patch("deerflow.skill_client.shutil.copytree", side_effect=OSError("复制失败")):
@@ -433,6 +552,251 @@ class SkillClientPublicTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "技能已修改"):
                 self.public.create_skill("example", "描述")
         self.assertTrue((self.public_root / "example/SKILL.md").exists())
+
+    def test_custom_marker_failure_reports_applied_change_as_runtime_error(self):
+        with (
+            patch.object(SharedResetMarker, "publish", side_effect=PermissionError("denied")),
+            self.assertRaisesRegex(RuntimeError, "技能已修改"),
+        ):
+            self.client.create_skill("alice", "example", "描述")
+        self.assertTrue((self.user_storage("alice").get_user_custom_root() / "example/SKILL.md").exists())
+
+    def test_custom_parameter_validation_has_no_notification_or_filesystem_effect(self):
+        cases = (
+            (None, "example", "描述", ValueError),
+            (123, "example", "描述", ValueError),
+            ([], "example", "描述", ValueError),
+            ("", "example", "描述", ValueError),
+            (" ", "example", "描述", ValueError),
+            ("../bob", "example", "描述", ValueError),
+            ("alice", None, "描述", TypeError),
+            ("alice", 123, "描述", TypeError),
+            ("alice", "", "描述", ValueError),
+            ("alice", "../escape", "描述", ValueError),
+            ("alice", "a" * 65, "描述", ValueError),
+            ("alice", "example", None, ValueError),
+            ("alice", "example", 123, ValueError),
+            ("alice", "example", " \n", ValueError),
+        )
+        with patch.object(SharedResetMarker, "publish") as publish:
+            for user_id, name, description, error in cases:
+                with self.subTest(user_id=user_id, name=name, description=description), self.assertRaises(error):
+                    self.client.create_skill(user_id, name, description)
+            publish.assert_not_called()
+        self.assertFalse(self.paths.base_dir.exists())
+
+    def test_required_and_extra_arguments_follow_public_signatures(self):
+        cases = (
+            (self.client.create_skill, (), {}),
+            (self.client.create_skill, ("alice",), {}),
+            (self.client.create_skill, ("alice", "example"), {}),
+            (self.client.copy_skill, ("alice", "bob"), {}),
+            (self.client.upload_file, ("alice", "example", "SKILL.md"), {}),
+            (self.client.delete_skill, ("alice", "example", "extra"), {}),
+            (self.client.delete_skill, ("alice", "example"), {"unexpected": True}),
+            (self.client.create_skill, ("alice", "example", "描述"), {"custom_field": 123}),
+        )
+        with patch.object(SharedResetMarker, "publish") as publish:
+            for operation, arguments, options in cases:
+                with self.subTest(operation=operation.__name__, arguments=arguments), self.assertRaises(TypeError):
+                    operation(*arguments, **options)
+            publish.assert_not_called()
+
+    def test_name_boundaries_default_enabled_and_extensible_metadata(self):
+        for name in ("a", "a" * 64):
+            with self.subTest(name=name):
+                path = self.client.create_skill("alice", name, "中文描述", custom_field="兼容扩展")
+                self.assertIsInstance(path, str)
+                self.assertTrue(Path(path).is_absolute())
+                self.assertEqual(self.client.get_skill_info("alice", name)["custom_field"], "兼容扩展")
+        skills = self.user_storage("alice").load_skills(enabled_only=True)
+        self.assertEqual({skill.name for skill in skills}, {"a", "a" * 64})
+        items = self.client.list_skills("alice")
+        self.assertEqual([item["name"] for item in items], ["a", "a" * 64])
+        self.assertEqual(set(items[0]), {"name", "description", "skill_path", "host_path"})
+        self.assertTrue(all(isinstance(value, str) for item in items for value in item.values()))
+
+    def test_invalid_uploads_preserve_content_cache_and_marker(self):
+        path = Path(self.client.create_skill("alice", "example", "保留描述"))
+        original = (path / "SKILL.md").read_bytes()
+        modules = self.prompt_cache_modules()
+        self.assert_cached_skill_descriptions(modules, ["保留描述"])
+        cases = (
+            ("SKILL.md", None, TypeError),
+            ("SKILL.md", "text", TypeError),
+            ("SKILL.md", b"\xff", UnicodeDecodeError),
+            ("SKILL.md", b"text\x00", ValueError),
+            ("SKILL.md", self.markdown(name="other"), ValueError),
+            ("SKILL.md", b"---\nname: [\n---\n", ValueError),
+            (None, b"text", ValueError),
+            ("", b"text", ValueError),
+            ("../bob/SKILL.md", b"text", ValueError),
+            (str(self.root / "outside"), b"text", ValueError),
+        )
+        with patch.object(SharedResetMarker, "publish") as publish:
+            for relative_path, content, error in cases:
+                with self.subTest(path=relative_path, content=content), self.assertRaises(error):
+                    self.client.upload_file("alice", "example", relative_path, content)
+            publish.assert_not_called()
+        self.assertEqual((path / "SKILL.md").read_bytes(), original)
+        self.assert_cached_skill_descriptions(modules, ["保留描述"])
+
+    def test_repeated_writes_converge_and_create_copy_delete_reject_replay(self):
+        self.client.create_skill("alice", "example", "描述")
+        content = bytearray(self.markdown("重复更新"))
+        for _ in range(2):
+            self.assertIsNone(self.client.upload_file("alice", "example", "SKILL.md", content))
+        self.assertEqual(self.client.download_file("alice", "example", "SKILL.md"), bytes(content))
+        self.client.copy_skill("alice", "bob", "example")
+        with patch.object(SharedResetMarker, "publish") as publish:
+            with self.assertRaises(FileExistsError):
+                self.client.create_skill("alice", "example", "不覆盖")
+            with self.assertRaises(FileExistsError):
+                self.client.copy_skill("alice", "bob", "example")
+            publish.assert_not_called()
+        self.assertIsNone(self.client.delete_skill("alice", "example"))
+        with patch.object(SharedResetMarker, "publish") as publish:
+            with self.assertRaises(FileNotFoundError):
+                self.client.delete_skill("alice", "example")
+            publish.assert_not_called()
+        self.assertEqual(self.client.get_skill_info("bob", "example")["description"], "重复更新")
+
+    def test_write_failure_rolls_back_creation_without_notification(self):
+        with (
+            patch.object(type(self.client), "_write_text", side_effect=PermissionError("denied")),
+            patch.object(SharedResetMarker, "publish") as publish,
+            self.assertRaises(PermissionError),
+        ):
+            self.client.create_skill("alice", "example", "描述")
+        publish.assert_not_called()
+        self.assertFalse((self.paths.user_custom_skills_dir("alice") / "example").exists())
+
+    def test_marker_failures_preserve_local_visibility_and_exception_cause(self):
+        for error in (FileNotFoundError("gone"), PermissionError("denied"), ValueError("invalid config")):
+            with self.subTest(error=type(error).__name__):
+                modules = self.prompt_cache_modules()
+                name = f"example-{type(error).__name__.lower()}"
+                for module in modules:
+                    module.get_enabled_skills_for_config(self.config, "alice")
+                with (
+                    patch.object(SharedResetMarker, "publish", side_effect=error),
+                    self.assertRaisesRegex(RuntimeError, "技能已修改") as raised,
+                ):
+                    self.client.create_skill("alice", name, "描述")
+                self.assertIs(raised.exception.__cause__, error)
+                for module in modules:
+                    self.assertIn(name, [skill.name for skill in module.get_enabled_skills_for_config(self.config, "alice")])
+
+    def test_missing_shared_config_keeps_process_local_invalidation(self):
+        modules = self.prompt_cache_modules()
+        self.assert_cached_skill_descriptions(modules, [])
+        with (
+            patch("deerflow.config.shared_reset_marker.resolve_shared_config_path", return_value=None),
+            patch.object(SharedResetMarker, "publish") as publish,
+        ):
+            self.client.create_skill("alice", "example", "描述")
+            publish.assert_not_called()
+        self.assert_cached_skill_descriptions(modules, ["描述"])
+
+    def test_mutation_does_not_import_unloaded_prompt_modules(self):
+        names = ("deerflow.agents.lead_agent.prompt", "deerflow.agents.lead_agent.prompt_zh")
+        with patch.dict(sys.modules):
+            for name in names:
+                sys.modules.pop(name, None)
+            self.client.create_skill("alice", "example", "描述")
+            for name in names:
+                self.assertNotIn(name, sys.modules)
+
+    def test_legacy_and_invalid_shared_markers_retire_all_peer_caches(self):
+        marker = SharedResetMarker("skills-cache-reset")
+        for content in ('{"generation": "legacy", "extra": true}', '{"generation": 123}', '[]', 'invalid'):
+            with self.subTest(content=content):
+                marker.publish(self.config_path)
+                module = load_prompt_cache("deerflow.agents.lead_agent.prompt", self.user_storage)
+                module._skills_cache_reset_tracker = SharedResetMarkerTracker(
+                    marker, resolve_config_path=lambda: self.config_path, poll_interval_seconds=0,
+                )
+                module._check_shared_skills_cache_reset()
+                marker.path_for(self.config_path).write_text(content)
+                module._check_shared_skills_cache_reset()
+                module._invalidate_enabled_skills_cache.assert_called_once_with()
+
+    def test_peer_process_cache_observes_marker_after_poll_interval(self):
+        module = load_prompt_cache("deerflow.agents.lead_agent.prompt", self.user_storage)
+        now = [0.0]
+        module._skills_cache_reset_tracker = SharedResetMarkerTracker(
+            SharedResetMarker("skills-cache-reset"), resolve_config_path=lambda: self.config_path,
+            clock=lambda: now[0],
+        )
+        self.assertEqual(module.get_enabled_skills_for_config(self.config, "alice"), [])
+        module.get_enabled_skills_for_config(self.config, "bob")
+        other = module._enabled_skills_by_config_cache[(id(self.config), "bob")]
+        self.client.create_skill("alice", "example", "对端更新")
+        self.assertEqual(module.get_enabled_skills_for_config(self.config, "alice"), [])
+        now[0] = 1.0
+        self.assertEqual([skill.description for skill in module.get_enabled_skills_for_config(self.config, "alice")], ["对端更新"])
+        self.assertIs(module._enabled_skills_by_config_cache[(id(self.config), "bob")], other)
+        module._invalidate_enabled_skills_cache.assert_not_called()
+
+    def test_multiple_unobserved_publications_use_full_reset(self):
+        module = load_prompt_cache("deerflow.agents.lead_agent.prompt", self.user_storage)
+        module._skills_cache_reset_tracker = SharedResetMarkerTracker(
+            SharedResetMarker("skills-cache-reset"), resolve_config_path=lambda: self.config_path,
+            poll_interval_seconds=0,
+        )
+        module._check_shared_skills_cache_reset()
+        self.client.create_skill("alice", "example", "甲")
+        self.client.create_skill("bob", "example", "乙")
+        module._check_shared_skills_cache_reset()
+        module._invalidate_enabled_skills_cache.assert_called_once_with()
+
+    def test_poll_failure_retains_cache_and_retries(self):
+        for module in self.prompt_cache_modules():
+            module.get_enabled_skills_for_config(self.config, "alice")
+            module._skills_cache_reset_tracker.poll.side_effect = [OSError("unavailable"), None]
+            self.assertEqual(module.get_enabled_skills_for_config(self.config, "alice"), [])
+            self.assertEqual(module.get_enabled_skills_for_config(self.config, "alice"), [])
+            self.assertEqual(module._skills_cache_reset_tracker.poll.call_count, 3)
+
+    def test_cache_eviction_and_repeated_user_invalidation(self):
+        for module in self.prompt_cache_modules():
+            with self.subTest(module=module.__name__):
+                storage = Mock(load_skills=Mock(return_value=[]))
+                module.get_or_new_user_skill_storage = Mock(return_value=storage)
+                for index in range(257):
+                    module.get_enabled_skills_for_config(self.config, f"user-{index}")
+                self.assertEqual(len(module._enabled_skills_by_config_cache), 256)
+                self.assertNotIn((id(self.config), "user-0"), module._enabled_skills_by_config_cache)
+                for _ in range(2):
+                    module.invalidate_user_skill_cache("user-256")
+                self.assertEqual(len(module._enabled_skills_by_config_cache), 255)
+                self.assertEqual(module.get_enabled_skills_for_config(None, "user-256"), [])
+                module._get_enabled_skills.assert_called_once_with()
+
+    def test_user_invalidation_covers_all_configs_and_preserves_others(self):
+        for module in self.prompt_cache_modules():
+            for config in (self.config, SimpleNamespace(skills=self.config.skills)):
+                module.get_enabled_skills_for_config(config, "alice")
+                module.get_enabled_skills_for_config(config, "bob")
+            module.invalidate_user_skill_cache("alice")
+            self.assertEqual([key[1] for key in module._enabled_skills_by_config_cache], ["bob", "bob"])
+            module._get_cached_skills_prompt_section.cache_clear.assert_called_once_with()
+
+    def test_bounded_concurrent_custom_writes_and_repeated_lifecycle(self):
+        modules = self.prompt_cache_modules()
+        self.assert_cached_skill_descriptions(modules, [])
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(self.client.create_skill, "alice", f"skill-{index}", "并发描述") for index in range(32)]
+            results = [future.result(timeout=15) for future in futures]
+        self.assertEqual(len(set(results)), 32)
+        self.assert_cached_skill_descriptions(modules, ["并发描述"] * 32)
+        for _ in range(20):
+            self.client.create_skill("bob", "cycle", "循环创建")
+            self.client.upload_file("bob", "cycle", "SKILL.md", self.markdown("循环更新", name="cycle"))
+            self.client.delete_skill("bob", "cycle")
+        self.assertEqual(self.client.list_skills("bob"), [])
+        for module in modules:
+            self.assertEqual(module.get_enabled_skills_for_config(self.config, "bob"), [])
 
 
 if __name__ == "__main__":

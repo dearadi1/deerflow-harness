@@ -193,6 +193,8 @@ class _SkillOperations:
             yield storage, self._skill_dir(storage, name, exists=exists)
         if self._category == SkillCategory.PUBLIC:
             self._notify_skill_change()
+        else:
+            self._notify_skill_change(user_id=storage.user_id)
 
     @staticmethod
     def _notify_skill_change(*, user_id: str | None = None) -> None:
@@ -306,8 +308,6 @@ class _SkillOperations:
             staged = Path(temporary) / name
             self._stage_skill_copy(source_storage, name, staged)
             target_operations._publish_skill_copy(target_user_id, name, staged)
-        if self._category == SkillCategory.PUBLIC:
-            self._notify_skill_change(user_id=target_user_id)
         return str(target.resolve())
 
     def _validate_copy_package(self, directory: Path) -> None:
