@@ -2446,8 +2446,8 @@ def bash_tool(runtime: Runtime, command: str, description: str = "") -> str:
       it is killed at the command timeout.
 
     Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         command: The bash command to execute. Always use absolute paths for files and directories.
-        description: Optional short explanation of this command shown in the UI.
     """
     redaction_env = None
     try:
@@ -2559,8 +2559,8 @@ def ls_tool(runtime: Runtime, path: str, description: str = "") -> str:
     """List the contents of a directory up to 2 levels deep in tree format.
 
     Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         path: The **absolute** path to the directory to list.
-        description: Optional short explanation of this listing shown in the UI.
     """
     try:
         user_id = resolve_runtime_user_id(runtime)
@@ -2634,9 +2634,9 @@ def glob_tool(
     """Find files or directories that match a glob pattern under a root directory.
 
     Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         pattern: The glob pattern to match relative to the root path, for example `**/*.py`.
         path: The **absolute** root directory to search under.
-        description: Optional short explanation of this search shown in the UI.
         include_dirs: Whether matching directories should also be returned. Default is False.
         max_results: Maximum number of paths to return. Default is 200.
     """
@@ -2716,9 +2716,9 @@ def grep_tool(
     """Search for matching lines inside a text file or files under a root directory.
 
     Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         pattern: The string or regex pattern to search for.
         path: The **absolute** file or root directory to search.
-        description: Optional short explanation of this search shown in the UI.
         glob: Optional glob filter for candidate files, for example `**/*.py`.
         literal: Whether to treat `pattern` as a plain string. Default is False.
         case_sensitive: Whether matching is case-sensitive. Default is False.
@@ -2855,8 +2855,8 @@ def read_file_tool(
     """Read the contents of a text file. Use this to examine source code, configuration files, logs, or any text-based file.
 
     Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         path: The **absolute** path to the file to read.
-        description: Optional short explanation of this read shown in the UI.
         start_line: Optional starting line number (1-indexed, inclusive). Omit to start at the first line.
         end_line: Optional ending line number (1-indexed, inclusive). Omit to read through the last line.
     """
@@ -2982,9 +2982,9 @@ def write_file_tool(
     (0 disables the guard entirely). Raising it risks streaming timeouts.
 
     Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         path: The **absolute** path to the file to write to.
         content: The content to write to the file.
-        description: Optional short explanation of this write shown in the UI.
         append: Whether to append content to the end of the file instead of overwriting it. Defaults to False.
     """
     if not append:
@@ -3081,10 +3081,10 @@ def str_replace_tool(
     version with read_file first; any write invalidates earlier reads.
 
     Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         path: The **absolute** path to the file to replace the substring in.
         old_str: The substring to replace.
         new_str: The new substring.
-        description: Optional short explanation of this replacement shown in the UI.
         replace_all: Whether to replace all occurrences of the substring. If False, only the first occurrence will be replaced. Default is False.
     """
     try:

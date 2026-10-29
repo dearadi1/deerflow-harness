@@ -98,8 +98,8 @@ def update_agent(
     fields instead.
 
     Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         soul: Optional full replacement SOUL.md content.
-        description: Optional new one-line description.
         skills: Optional skill whitelist. ``[]`` = no skills, omit = unchanged.
         tool_groups: Optional tool-group whitelist. ``[]`` = empty, omit = unchanged.
         model: Optional model override (must match a configured model name).
