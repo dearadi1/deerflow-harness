@@ -1,3 +1,22 @@
+## 按轮禁用工具
+
+`DeerFlowClient.stream()` 新增显式关键字参数 `disabled_tools: list[str] | None = None`：
+
+```python
+for event in client.stream(
+    "仅分析已有资料",
+    thread_id="thread_001",
+    disabled_tools=["web_search", "web_fetch"],
+):
+    print(event)
+```
+
+按工具实际 `name` 精确匹配、区分大小写，禁用工具不会进入本轮主智能体的工具集合、MCP 延迟目录或中间件工具声明。`None` / `[]` 不额外禁用，重复名称去重，未知名称忽略。只接受字符串列表；错误类型抛出 `TypeError`，空白名称抛出 `ValueError`，均在开始迭代时校验。
+
+名单只对本次调用生效，不修改全局配置；下次省略即恢复原工具集合。`chat()`、池 session、TUI `stream_actions()` 及 `replay_last_turn=True` 均支持透传；重生成使用本次传入的名单。子智能体独立组装工具，不继承该名单；若要禁止委派，可同时禁用 `task`、`batch_task`。完整输入说明见 [客户端调用约定](../deerflow/CLIENT_AGENTS.md)。
+
+## 流事件协议
+
 客户端 `client.stream()` 返回 `deerflow.protocol` 中的事件模型。以下 JSON 表示模型序列化后的协议结构：
 
 上下文事件
