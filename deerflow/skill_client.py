@@ -463,8 +463,8 @@ class _SkillOperations:
         }
 
     @_chinese_errors
-    def list_skills(self, user_id: str) -> list[dict[str, str]]:
-        """仅扫描当前用户的 custom 目录，复用详情缓存，包含禁用项并跳过无效文档。"""
+    def list_skills(self, user_id: str) -> list[dict[str, Any]]:
+        """仅扫描当前作用域，复用详情缓存，包含禁用项并返回最终启用状态。"""
         storage = self._storage(user_id)
         root = self._root(storage)
         skills_by_name: dict[str, dict[str, str]] = {}
@@ -474,7 +474,11 @@ class _SkillOperations:
             except (ValueError, FileNotFoundError):
                 continue
             skills_by_name[metadata["name"]] = self._skill_info(root, directory, metadata)
-        return [skills_by_name[name] for name in sorted(skills_by_name)]
+        extensions = ExtensionsConfig.from_file()
+        return [
+            dict(skills_by_name[name], enabled=self._skill_state(storage, name, extensions)["enabled"])
+            for name in sorted(skills_by_name)
+        ]
 
     def _skill_state(self, storage: SkillStorage, name: str, extensions: ExtensionsConfig) -> dict[str, Any]:
         global_enabled = extensions.is_skill_enabled(name, self._category.value)
@@ -676,7 +680,7 @@ class _PublicSkillClient:
     def get_skill_info(self, skill_name: str) -> dict[str, Any]:
         return self._operations.get_skill_info(None, skill_name)
 
-    def list_skills(self) -> list[dict[str, str]]:
+    def list_skills(self) -> list[dict[str, Any]]:
         return self._operations.list_skills(None)
 
     def list_skill_states(self) -> list[dict[str, Any]]:

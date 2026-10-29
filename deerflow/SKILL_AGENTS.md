@@ -39,7 +39,7 @@ client = DeerFlowSkillClient(config_path="/absolute/path/config.yaml")
 
 `client.public` 与当前客户端共享配置，无需额外初始化或传入 `user_id`。public 原始目录为配置解析得到的 `<skills 根目录>/public/`；该根目录沿用 `skills.path`、`DEER_FLOW_SKILLS_PATH` 等现有解析规则。custom 原始目录仍为 `<数据目录>/users/<user_id>/skills/custom/`。
 
-下表列出 public 的全部 14 个同步接口。除复制方向和删除状态外，参数校验、返回结构和异常规则与下文对应的 custom 接口相同。
+下表列出 public 的全部 16 个同步接口。除复制方向和删除状态外，参数校验、返回结构和异常规则与下文对应的 custom 接口相同。
 
 | public 方法签名 | 输出与行为 |
 | --- | --- |
@@ -47,7 +47,9 @@ client = DeerFlowSkillClient(config_path="/absolute/path/config.yaml")
 | `copy_skill(skill_name: str, target_user_id: str) -> str` | 将 public 技能复制到目标用户的 custom，返回目标技能目录绝对路径 |
 | `delete_skill(skill_name: str) -> None` | 删除 public 技能目录；保留全局按名称共享的启用配置和各用户的状态、历史及 custom 技能 |
 | `get_skill_info(skill_name: str) -> dict[str, Any]` | 返回完整 YAML 头，保留原始字段类型 |
-| `list_skills() -> list[dict[str, str]]` | 仅列出 public，包含禁用项，跳过无效文档，按名称排序 |
+| `list_skills() -> list[dict[str, Any]]` | 仅列出 public，包含禁用项，返回最终启用状态 `enabled`，跳过无效文档，按名称排序 |
+| `list_skill_states() -> list[dict[str, Any]]` | 返回 public 的名称、全局开关及最终启用状态 |
+| `set_skill_enabled(skill_name: str, enabled: bool) -> dict[str, Any]` | 修改全局 public 开关，返回修改后的状态 |
 | `get_resource_tree(skill_name: str) -> list[dict[str, Any]]` | 返回该 public 技能的资源树 |
 | `create_file(skill_name: str, path: str) -> None` | 创建空文件，父目录必须存在 |
 | `create_folder(skill_name: str, path: str) -> None` | 创建空目录，父目录必须存在 |
@@ -76,7 +78,7 @@ client.public.delete_skill("shared-helper")
 
 `copy_skill(skill_name, target_user_id)` 固定从 public 复制到指定用户的 custom。保留技能名称和包内所有普通资源，包括隐藏文件、空目录和二进制文件；自动创建目标用户缺失的 custom 根目录。目标同名路径存在时抛出 `FileExistsError`，不覆盖、不合并；源文档无效、包内包含符号链接或特殊文件时拒绝复制。复制后的文件独立，用户修改或 public 后续删除均不会改变另一份资源。此接口不复制启用状态和历史记录；目标仍受现有全局按名称配置及该用户自身状态约束，不保证复制后启用。
 
-public 列表项与 custom 使用相同字段，其中 `skill_path` 为 `<容器技能根目录>/public/<技能相对目录>`，`host_path` 为实际目录绝对路径。public 和 custom 同名时，各管理入口只操作自身目录；运行时继续遵循现有的用户 custom 优先规则。
+public 列表项与 custom 使用相同字段，其中 `skill_path` 为 `<容器技能根目录>/public/<技能相对目录>`，`host_path` 为实际目录绝对路径，`enabled` 为布尔值，表示该技能当前的全局启用状态。public 和 custom 同名时，各管理入口只操作自身目录；运行时继续遵循现有的用户 custom 优先规则。
 
 public 写入会在全局 public 投影锁内修改并重建沙箱视图，成功后失效本进程已加载的技能提示词缓存，并发布全局共享缓存失效标记；public 复制到 custom 后仅通知目标用户的缓存。共享标记只有在能解析到 extensions 配置路径时才会发布，其他进程在后续缓存检查时识别，通常有至多约一秒的轮询延迟；不共享配置目录的进程不会收到通知。已开始运行的快照遵循原有运行时行为。
 
@@ -174,7 +176,7 @@ info = client.get_skill_info(user_id="lyj", skill_name="test-skill")
 ### list_skills
 
 ```text
-list_skills(user_id: str) -> list[dict[str, str]]
+list_skills(user_id: str) -> list[dict[str, Any]]
 ```
 
 **输入：** 用户标识。
@@ -193,12 +195,41 @@ skills = client.list_skills(user_id="lyj")
     "description": "测试技能",
     "skill_path": "/mnt/skills/custom/test-skill",
     "host_path": "/absolute/data/users/lyj/skills/custom/test-skill",
+    "enabled": True,
 }
 ```
 
-`skill_path` 是配置的容器路径，`host_path` 是实际存储目录的绝对路径；示例中的两个根路径都由配置决定。列表不包含完整 YAML 头，获取其他字段使用 `get_skill_info`。
+`skill_path` 是配置的容器路径，`host_path` 是实际存储目录的绝对路径；示例中的两个根路径都由配置决定。`enabled` 是布尔值，表示全局开关与该用户开关共同决定的最终启用状态；仅标注启用情况，不过滤禁用项，也不包含 Agent 白名单或授权策略的判断。启用状态每次查询重新读取，不随技能元数据缓存。列表不包含完整 YAML 头，获取其他字段使用 `get_skill_info`。
 
 **可能异常：** 用户标识或存储根路径无效时抛出 `ValueError`；目录类型错误时抛出 `NotADirectoryError`；无权访问目录或文件时抛出 `PermissionError`；技能文件持续变化时可能抛出 `RuntimeError`。无效 YAML 会跳过，不会因此中断整个列表查询。
+
+### list_skill_states 与 set_skill_enabled
+
+```python
+# custom 必须指定用户，只包含用户自有技能，不包含 legacy 或 integrations。
+states = client.list_skill_states(user_id="lyj")
+state = client.set_skill_enabled(user_id="lyj", skill_name="test-skill", enabled=False)
+
+# public 无需用户参数。
+public_states = client.public.list_skill_states()
+public_state = client.public.set_skill_enabled(skill_name="shared-helper", enabled=True)
+```
+
+`list_skill_states` 按名称排序，返回全部技能的状态；`set_skill_enabled` 返回对应技能修改后的状态：
+
+```python
+# custom
+{"name": "test-skill", "global_enabled": True, "user_enabled": False, "enabled": False}
+
+# public
+{"name": "shared-helper", "global_enabled": True, "enabled": True}
+```
+
+全局状态来自 `extensions_config.json`，按技能名称共享；用户状态来自 `<数据目录>/users/<user_id>/skills/_skill_states.json`。未配置时默认启用。public 的 `enabled` 等于 `global_enabled`；custom 的 `enabled` 等于 `global_enabled and user_enabled`，用户启用不能覆盖全局禁用，同名 custom 也受该全局开关约束。
+
+修改 custom 仅写入指定用户的状态；修改 public 写入全局扩展配置，保留其他配置及环境变量引用。修改会更新沙箱技能视图，失效本进程技能缓存，并通过共享重置标记通知其他进程；已构建的会话 Agent 快照仍需按原有生命周期重建。
+
+`enabled` 必须为布尔值，否则抛出 `TypeError`；指定作用域中不存在技能时抛出 `FileNotFoundError`。public 修改要求能定位到已有扩展配置，否则抛出 `FileNotFoundError`。配置格式无效时查询和修改均可能抛出配置校验异常。共享通知失败时会抛出上文所述的 `RuntimeError`，但状态可能已写入，应重新查询确认。
 
 ### get_resource_tree
 
