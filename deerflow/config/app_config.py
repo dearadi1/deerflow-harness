@@ -57,7 +57,7 @@ from deerflow.config.title_config import TitleConfig, load_title_config_from_dic
 from deerflow.config.token_budget_config import TokenBudgetConfig
 from deerflow.config.token_usage_config import TokenUsageConfig
 from deerflow.config.tool_artifact_config import ToolArtifactConfig
-from deerflow.config.tool_config import ToolConfig, ToolGroupConfig
+from deerflow.config.tool_config import BuiltinToolsConfig, ToolConfig, ToolGroupConfig
 from deerflow.config.tool_output_config import ToolOutputConfig
 from deerflow.config.tool_progress_config import ToolProgressConfig
 from deerflow.config.tool_search_config import ToolSearchConfig, load_tool_search_config_from_dict
@@ -278,6 +278,7 @@ class AppConfig(BaseModel):
         ),
     )
     tools: list[ToolConfig] = Field(default_factory=list, description="Available tools")
+    builtin_tools: BuiltinToolsConfig = Field(default_factory=BuiltinToolsConfig, description="可选内置工具开关")
     tool_groups: list[ToolGroupConfig] = Field(default_factory=list, description="Available tool groups")
     skills: SkillsConfig = Field(default_factory=SkillsConfig, description="Skills configuration")
     skill_scan: SkillScanConfig = Field(default_factory=SkillScanConfig, description="Native deterministic skill safety scanning configuration")

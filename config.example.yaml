@@ -18,7 +18,7 @@
 # ============================================================================
 # 配置架构发生变化时，请递增此版本号。
 # 运行 `make config-upgrade`，将新增字段合并到本地 `config.yaml`。
-config_version: 62
+config_version: 63
 
 # 可选：由运维人员维护的提示词文本扩展（参见 CONFIGURATION.md）：
 # lead_prompt_overlay:
@@ -797,7 +797,8 @@ tool_groups:
   - name: file:write
   - name: bash
   - name: browser
-  - name: knowledge
+  # - name: knowledge
+  - name: knowledge_base
 
 # ============================================================================
 # 工具配置
@@ -807,7 +808,7 @@ tool_groups:
 tools:
 
   - name: knowledge_base_search
-    group: knowledge
+    group: knowledge_base
     use: deerflow.community.hours_knowledge.tools:knowledge_base_search_tool
 
   # 读取显式引用的对话（仅限 Gateway API，需主动启用）。
@@ -1323,6 +1324,16 @@ tools:
   - name: bash
     group: bash
     use: deerflow.sandbox.tools:bash_tool
+
+# ============================================================================
+# 可选内置工具配置
+# ============================================================================
+
+builtin_tools:
+  # 按需发现历史上传文件，避免每轮自动注入全部清单。
+  list_uploaded_files: false
+  # 审查技能包而不激活或执行其中内容，与 skill_evolution.enabled 独立。
+  review_skill_package: false
 
 # ============================================================================
 # 工具搜索配置（延迟加载工具）
