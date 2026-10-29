@@ -1,4 +1,4 @@
-"""独立管理嵌入式客户端的线程、上传文件及转换产物。
+"""独立管理嵌入式客户端的线程及上传、工作和输出区文件。
 
 路径沿用 ``get_paths()``，不创建 Agent 或调用模型。默认使用配置中的同步
 checkpointer；若 DeerFlowClient 使用自定义实例，此处必须传入同一个实例。
@@ -18,6 +18,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import RLock
+from typing import Literal
 
 from langgraph.checkpoint.base import BaseCheckpointSaver, empty_checkpoint
 
@@ -37,6 +38,12 @@ logger = logging.getLogger(__name__)
 
 # 固定数量的锁避免线程数量增长导致锁表泄漏，并协调同进程的多个管理器实例。
 _THREAD_LOCKS = tuple(RLock() for _ in range(64))
+FileArea = Literal["uploads", "workspace", "outputs"]
+
+
+def _validate_area(area: FileArea) -> None:
+    if area not in ("uploads", "workspace", "outputs"):
+        raise ValueError("area 必须是 uploads、workspace 或 outputs")
 
 
 def _thread_lock(user_id: str, thread_id: str):
@@ -53,7 +60,7 @@ def _read_upload_file(path: Path) -> bytes:
     original = path.lstat()
     if not stat.S_ISREG(original.st_mode):
         raise UnsafeUploadPathError(f"下载目标必须是普通文件: {path.name}")
-    # 沙箱可修改上传目录，打开时拒绝链接，并核对文件身份后再读取内容。
+    # 沙箱可修改文件目录，打开时拒绝链接，并核对文件身份后再读取内容。
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
     try:
         descriptor = os.open(path, flags)
@@ -106,8 +113,9 @@ class DeerFlowThreadClient:
     config_path 未传或为 None 时读取 DEERFLOW_CONFIG_PATH，两者均未提供时报错。
     user_id 使用 DeerFlow 的存储用户 ID。线程 ID 在共享 checkpointer 中必须
     全局唯一，本管理器创建时使用 UUID。上传、下载和删除仅接受单个文件名。
-    文件列表仅返回 uploads 直属文件的文件名，不递归列出子目录，
-    排除有有效归属记录的转码文件；用户直接上传的 Markdown 仍正常返回。
+    下载、删除和列表默认操作 outputs，可通过 area 选择 uploads 或 workspace。
+    文件列表仅返回操作区直属文件的文件名，不递归列出子目录。
+    uploads 排除有有效归属记录的转码文件；用户直接上传的 Markdown 仍正常返回。
     """
 
     def __init__(self, config_path: str | None = None, checkpointer: BaseCheckpointSaver | None = None) -> None:
@@ -136,6 +144,18 @@ class DeerFlowThreadClient:
         _check_directory(uploads)
         _check_directory(directory / "upload-companions")
         return uploads
+
+    def _files_dir(self, user_id: str, thread_id: str, area: FileArea) -> Path:
+        if area == "uploads":
+            return self._uploads_dir(user_id, thread_id)
+        directory = self._thread_dir(user_id, thread_id)
+        if not directory.is_dir():
+            raise FileNotFoundError(f"用户线程不存在: {user_id}/{thread_id}")
+        paths = get_paths()
+        resolver = paths.sandbox_work_dir if area == "workspace" else paths.sandbox_outputs_dir
+        files_directory = resolver(thread_id, user_id=user_id)
+        _check_directory(files_directory)
+        return files_directory
 
     def create_thread(self, user_id: str) -> str:
         thread_id = str(uuid.uuid4())
@@ -221,29 +241,35 @@ class DeerFlowThreadClient:
             companion = publish_upload_copy(original.parent, output.name, converted, claim_seed=output.name, seen_names={original.name})
             register_companion(original, companion)
 
-    def download_file(self, user_id: str, thread_id: str, file_name: str) -> bytes:
+    def download_file(self, user_id: str, thread_id: str, file_name: str, area: FileArea = "outputs") -> bytes:
+        _validate_area(area)
         file_name = _validate_filename(file_name)
         with _thread_lock(user_id, thread_id):
-            uploads = self._uploads_dir(user_id, thread_id)
-            return _read_upload_file(uploads / file_name)
+            directory = self._files_dir(user_id, thread_id, area)
+            return _read_upload_file(directory / file_name)
 
-    def delete_file(self, user_id: str, thread_id: str, file_name: str) -> None:
-        """只连带删除归属记录验证通过的 Markdown，不按同名猜测删除。"""
+    def delete_file(self, user_id: str, thread_id: str, file_name: str, area: FileArea = "outputs") -> None:
+        """仅 uploads 连带删除归属记录验证通过的 Markdown，不按同名猜测删除。"""
+        _validate_area(area)
         file_name = _validate_filename(file_name)
         with _thread_lock(user_id, thread_id):
-            uploads = self._uploads_dir(user_id, thread_id)
-            original = uploads / file_name
-            companion = resolve_companion(original)
-            self._remove_previous_companion(uploads, companion)
-            delete_file_safe(uploads, file_name)
-            invalidate_overwritten_upload(original)
+            directory = self._files_dir(user_id, thread_id, area)
+            original = directory / file_name
+            if area == "uploads":
+                self._remove_previous_companion(directory, resolve_companion(original))
+            delete_file_safe(directory, file_name)
+            if area == "uploads":
+                invalidate_overwritten_upload(original)
 
-    def thread_files(self, user_id: str, thread_id: str) -> list[str]:
+    def thread_files(self, user_id: str, thread_id: str, area: FileArea = "outputs") -> list[str]:
+        _validate_area(area)
         with _thread_lock(user_id, thread_id):
             directory = self._thread_dir(user_id, thread_id)
             if not directory.exists():
                 return []
-            uploads = self._uploads_dir(user_id, thread_id)
-            files = list_files_in_dir(uploads)["files"]
-            companions = {companion.name for item in files if (companion := resolve_companion(uploads / item["filename"])) is not None}
+            directory = self._files_dir(user_id, thread_id, area)
+            files = list_files_in_dir(directory)["files"]
+            companions = set()
+            if area == "uploads":
+                companions = {companion.name for item in files if (companion := resolve_companion(directory / item["filename"])) is not None}
             return [item["filename"] for item in files if item["filename"] not in companions]
