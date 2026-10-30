@@ -897,6 +897,10 @@ def _get_cached_skills_prompt_section(
     skill_evolution_section: str,
 ) -> str:
     filtered = [(name, description, category, location) for name, description, category, location in skill_signature if available_skills_key is None or name in available_skills_key]
+    logger.info(
+        "本次组装的 skill 提示词条目: %s",
+        [{"name": name, "path": location} for name, _, _, location in filtered],
+    )
     skills_list = ""
     if filtered:
         skill_items = "\n".join(_render_available_skill(name, description, category, location) for name, description, category, location in filtered)

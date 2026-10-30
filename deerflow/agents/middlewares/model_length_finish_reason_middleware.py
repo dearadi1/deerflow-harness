@@ -31,7 +31,7 @@ from deerflow.agents.middlewares.model_response import append_visible_text, has_
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
 
 MODEL_LENGTH_CAPPED_STOP_REASON = "model_length_capped"
-_MODEL_LENGTH_CAPPED_CONTENT = "The model reached its output limit before producing a complete final response. Please continue the conversation to resume."
+_MODEL_LENGTH_CAPPED_CONTENT = "模型在生成完整最终回复前已达到输出上限，请继续对话以恢复生成。"
 logger = logging.getLogger(__name__)
 
 

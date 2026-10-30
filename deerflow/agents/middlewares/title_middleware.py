@@ -322,6 +322,7 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         """同步与异步入口使用同一模型配置，避免标题策略分叉。"""
         config = self._get_title_config()
         prompt, user_msg = self._build_title_prompt(state)
+        logger.info("标题生成模型提示词输入:\n%s", prompt)
         # 图级回调已携带追踪处理器，模型侧再次绑定会重复生成调用记录。
         model_kwargs = {"thinking_enabled": False, "attach_tracing": False}
         if self._app_config is not None:
