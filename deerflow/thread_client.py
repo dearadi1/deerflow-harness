@@ -56,27 +56,93 @@ def _validate_filename(file_name: str) -> str:
     return file_name
 
 
-def _read_upload_file(path: Path) -> bytes:
-    original = path.lstat()
-    if not stat.S_ISREG(original.st_mode):
-        raise UnsafeUploadPathError(f"下载目标必须是普通文件: {path.name}")
-    # 沙箱可修改文件目录，打开时拒绝链接，并核对文件身份后再读取内容。
+def _validate_file_path(file_path: str) -> tuple[str, ...]:
+    if not isinstance(file_path, str) or not file_path or file_path.startswith("/") or "\\" in file_path:
+        raise ValueError("file_path 必须是操作区内的相对文件路径")
+    parts = tuple(file_path.split("/"))
+    if any(part in ("", ".", "..") for part in parts):
+        raise ValueError("file_path 不能包含空目录、. 或 ..")
+    for part in parts:
+        if normalize_filename(part) != part:
+            raise ValueError("file_path 包含不合规的文件名")
+    return parts
+
+
+def _read_thread_file(directory: Path, file_parts: tuple[str, ...]) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    base_directory = get_paths().base_dir
+    relative_directory = directory.relative_to(base_directory)
+    directory_descriptor = os.open(base_directory, directory_flags)
+    opened_directories = [directory_descriptor]
     try:
-        descriptor = os.open(path, flags)
-    except OSError as error:
-        if error.errno == errno.ELOOP:
-            raise UnsafeUploadPathError(f"下载目标不能是符号链接: {path.name}") from error
-        raise
-    try:
-        opened = os.fstat(descriptor)
-        current = path.lstat()
-        if not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode) or not os.path.samestat(original, opened) or not os.path.samestat(current, opened):
-            raise UnsafeUploadPathError(f"下载目标在打开时发生变化: {path.name}")
-        with os.fdopen(descriptor, "rb", closefd=False) as source:
-            return source.read()
+        for directory_name in relative_directory.parts:
+            try:
+                directory_descriptor = os.open(directory_name, directory_flags, dir_fd=directory_descriptor)
+            except OSError as error:
+                if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise UnsafeUploadPathError(f"操作区路径包含符号链接或非目录: {directory_name}") from error
+                raise
+            opened_directories.append(directory_descriptor)
+
+        for directory_name in file_parts[:-1]:
+            try:
+                directory_descriptor = os.open(directory_name, directory_flags, dir_fd=directory_descriptor)
+            except OSError as error:
+                if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise UnsafeUploadPathError(f"下载路径包含符号链接或非目录: {directory_name}") from error
+                raise
+            opened_directories.append(directory_descriptor)
+
+        parent_descriptor = opened_directories[-1]
+        file_name = file_parts[-1]
+        original = os.stat(file_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if not stat.S_ISREG(original.st_mode):
+            raise UnsafeUploadPathError(f"下载目标必须是普通文件: {file_name}")
+        try:
+            descriptor = os.open(file_name, flags, dir_fd=parent_descriptor)
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise UnsafeUploadPathError(f"下载目标不能是符号链接: {file_name}") from error
+            raise
+        try:
+            opened = os.fstat(descriptor)
+            current = os.stat(file_name, dir_fd=parent_descriptor, follow_symlinks=False)
+            if not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode) or not os.path.samestat(original, opened) or not os.path.samestat(current, opened):
+                raise UnsafeUploadPathError(f"下载目标在打开时发生变化: {file_name}")
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                return source.read()
+        finally:
+            os.close(descriptor)
     finally:
-        os.close(descriptor)
+        for descriptor in reversed(opened_directories):
+            os.close(descriptor)
+
+
+def _delete_thread_file(directory: Path, file_parts: tuple[str, ...]) -> None:
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    base_directory = get_paths().base_dir
+    relative_directory = directory.relative_to(base_directory)
+    directory_descriptor = os.open(base_directory, directory_flags)
+    opened_directories = [directory_descriptor]
+    try:
+        for directory_name in (*relative_directory.parts, *file_parts[:-1]):
+            try:
+                directory_descriptor = os.open(directory_name, directory_flags, dir_fd=directory_descriptor)
+            except OSError as error:
+                if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise UnsafeUploadPathError(f"删除路径包含符号链接或非目录: {directory_name}") from error
+                raise
+            opened_directories.append(directory_descriptor)
+
+        file_name = file_parts[-1]
+        file_stat = os.stat(file_name, dir_fd=opened_directories[-1], follow_symlinks=False)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise FileNotFoundError(f"File not found: {file_name}")
+        os.unlink(file_name, dir_fd=opened_directories[-1])
+    finally:
+        for descriptor in reversed(opened_directories):
+            os.close(descriptor)
 
 
 def _check_directory(path: Path) -> None:
@@ -112,7 +178,8 @@ class DeerFlowThreadClient:
 
     config_path 未传或为 None 时读取 DEERFLOW_CONFIG_PATH，两者均未提供时报错。
     user_id 使用 DeerFlow 的存储用户 ID。线程 ID 在共享 checkpointer 中必须
-    全局唯一，本管理器创建时使用 UUID。上传、下载和删除仅接受单个文件名。
+    全局唯一，本管理器创建时使用 UUID。上传仅接受单个文件名；下载和删除接受
+    操作区内的相对文件路径。
     下载、删除和列表默认操作 outputs，可通过 area 选择 uploads 或 workspace。
     文件列表仅返回操作区直属文件的文件名，不递归列出子目录。
     uploads 排除有有效归属记录的转码文件；用户直接上传的 Markdown 仍正常返回。
@@ -241,24 +308,24 @@ class DeerFlowThreadClient:
             companion = publish_upload_copy(original.parent, output.name, converted, claim_seed=output.name, seen_names={original.name})
             register_companion(original, companion)
 
-    def download_file(self, user_id: str, thread_id: str, file_name: str, area: FileArea = "outputs") -> bytes:
+    def download_file(self, user_id: str, thread_id: str, file_path: str, area: FileArea = "outputs") -> bytes:
         _validate_area(area)
-        file_name = _validate_filename(file_name)
+        file_parts = _validate_file_path(file_path)
         with _thread_lock(user_id, thread_id):
             directory = self._files_dir(user_id, thread_id, area)
-            return _read_upload_file(directory / file_name)
+            return _read_thread_file(directory, file_parts)
 
-    def delete_file(self, user_id: str, thread_id: str, file_name: str, area: FileArea = "outputs") -> None:
+    def delete_file(self, user_id: str, thread_id: str, file_path: str, area: FileArea = "outputs") -> None:
         """仅 uploads 连带删除归属记录验证通过的 Markdown，不按同名猜测删除。"""
         _validate_area(area)
-        file_name = _validate_filename(file_name)
+        file_parts = _validate_file_path(file_path)
         with _thread_lock(user_id, thread_id):
             directory = self._files_dir(user_id, thread_id, area)
-            original = directory / file_name
-            if area == "uploads":
+            original = directory.joinpath(*file_parts)
+            if area == "uploads" and len(file_parts) == 1:
                 self._remove_previous_companion(directory, resolve_companion(original))
-            delete_file_safe(directory, file_name)
-            if area == "uploads":
+            _delete_thread_file(directory, file_parts)
+            if area == "uploads" and len(file_parts) == 1:
                 invalidate_overwritten_upload(original)
 
     def thread_files(self, user_id: str, thread_id: str, area: FileArea = "outputs") -> list[str]:

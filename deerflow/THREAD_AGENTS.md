@@ -28,7 +28,8 @@ manager = DeerFlowThreadClient(
 | --- | --- | --- |
 | `user_id` | `str` | DeerFlow 的存储用户 ID，非空，仅允许 ASCII 字母、数字、下划线和连字符。每次调用显式传入，不读取当前用户上下文。 |
 | `thread_id` | `str` | 通常使用 `create_thread()` 的返回值；允许 1～64 个 ASCII 字母、数字、下划线或连字符。 |
-| `file_name` | `str` | 单个文件名，例如 `report.pdf`；不能传入完整路径、目录分隔符或 `.`、`..`。需符合现有上传文件名校验，UTF-8 编码不超过 255 字节，不能使用上传暂存保留名称。 |
+| `file_name` | `str` | 上传使用单个文件名，例如 `report.pdf`；不能包含目录。需符合现有上传文件名校验，UTF-8 编码不超过 255 字节，不能使用上传暂存保留名称。 |
+| `file_path` | `str` | 下载和删除使用操作区内的相对文件路径，例如 `xxx/report.pdf`；不能是绝对路径、包含 `.`/`..`、空路径段或反斜杠，且每段需符合文件名校验。 |
 | `area` | `Literal["uploads", "workspace", "outputs"]` | 下载、删除、列表的操作区，默认 `"outputs"`；其他值抛出 `ValueError`。上传不接受此参数。 |
 | `file_bytes` | `bytes` | 文件的二进制内容；不能传入字符串、文件对象或 `bytearray`。允许空字节串。 |
 
@@ -74,23 +75,25 @@ def upload_file(self, user_id: str, thread_id: str, file_name: str, file_bytes: 
 ### 下载文件
 
 ```python
-def download_file(self, user_id: str, thread_id: str, file_name: str, area: FileArea = "outputs") -> bytes
+def download_file(self, user_id: str, thread_id: str, file_path: str, area: FileArea = "outputs") -> bytes
 ```
 
-- 输入：`user_id`、`thread_id`、`file_name`、`area`；仅接受单个文件名，例如 `report.pdf`，不接受任何路径。
+- 输入：`user_id`、`thread_id`、`file_path`、`area`；接受相对于所选操作区的路径，例如 `xxx/report.pdf`。`area` 仍将下载限制在当前用户、当前线程对应的 `uploads`、`workspace` 或 `outputs` 根目录内。
 - 输出：原始文件的二进制内容 `bytes`，空文件返回 `b""`。
-- 只读取当前用户、当前线程所选操作区目录的直属普通文件，不搜索子目录或其他线程。
-- 文件或线程不存在时抛出 `FileNotFoundError`；目录、符号链接等非普通文件抛出 `UnsafeUploadPathError`。
+- 只读取选定操作区内路径指向的普通文件，不读取其他操作区或其他线程的文件。每级目录均以禁止符号链接的方式打开，防止子目录链接越界；目标文件在打开前后核对身份。
+- 拒绝绝对路径、`.`、`..`、空路径段及反斜杠路径；路径段仍遵循文件名长度和暂存名称限制。
+- 文件或线程不存在时抛出 `FileNotFoundError`；路径中的符号链接、非目录中间段或非普通目标抛出 `UnsafeUploadPathError`。
 
 ### 删除文件
 
 ```python
-def delete_file(self, user_id: str, thread_id: str, file_name: str, area: FileArea = "outputs") -> None
+def delete_file(self, user_id: str, thread_id: str, file_path: str, area: FileArea = "outputs") -> None
 ```
 
-- 输入：`user_id`、`thread_id`、`file_name`、`area`。
+- 输入：`user_id`、`thread_id`、`file_path`、`area`；路径相对于所选操作区，例如 `xxx/report.pdf`，且不能越出当前用户、当前线程及所选操作区。
 - 输出：`None`。
-- 删除所选操作区的指定文件；仅 `uploads` 连带清理归属记录验证通过的转码 Markdown，包括带编号的转码文件。`workspace` 和 `outputs` 只删除指定文件。
+- 删除所选操作区内指定的普通文件；逐级拒绝符号链接目录，拒绝绝对路径、`.`、`..`、空路径段及反斜杠。
+- 仅 `uploads` 根目录中的文件会连带清理归属记录验证通过的转码 Markdown，包括带编号的转码文件。子目录文件、`workspace` 和 `outputs` 只删除指定文件。
 - 没有有效归属记录的 `.md` 不会因同名被连带删除。文件不存在时抛出 `FileNotFoundError`。
 
 ### 列出文件
@@ -121,6 +124,10 @@ for file_name in file_names:
     file_bytes = manager.download_file(user_id, thread_id, file_name, area="uploads")
     manager.delete_file(user_id, thread_id, file_name, area="uploads")
 
+# 下载子目录文件时，file_path 相对于 area 根目录。
+report = manager.download_file(user_id, thread_id, "xxx/report.pdf", area="outputs")
+manager.delete_file(user_id, thread_id, "xxx/report.pdf", area="outputs")
+
 # 默认列出 outputs；工作区文件需显式选择 workspace。
 output_names = manager.thread_files(user_id, thread_id)
 workspace_names = manager.thread_files(user_id, thread_id, area="workspace")
@@ -148,7 +155,7 @@ answer = client.chat("你好", user_id="user_001", thread_id=thread_id)
 
 | 异常 | 触发场景或报错示例 |
 | --- | --- |
-| `ValueError` | 用户 ID、线程 ID、文件名或操作区不符合校验要求。例如 `user_id 必须是非空字符串`、`file_name 必须是单个文件名，不能包含目录`。底层校验也可能返回英文报错。 |
+| `ValueError` | 用户 ID、线程 ID、文件名、下载路径或操作区不符合校验要求。例如 `file_name 必须是单个文件名，不能包含目录`、`file_path 必须是操作区内的相对文件路径`。底层校验也可能返回英文报错。 |
 | `TypeError` | `file_bytes` 不是 `bytes`：`file_bytes 必须是 bytes`。 |
 | `FileNotFoundError` | 上传、下载或删除文件时线程目录不存在：`用户线程不存在: <user_id>/<thread_id>`；下载文件不存在；删除的文件不存在或不是普通文件：`File not found: <file_name>`；配置文件缺失也可能触发。 |
 | `UnsafeUploadPathError` | 线程路径中的目录是符号链接，上传或下载目标是符号链接、目录等不安全目标，或下载目标在打开时被替换。此异常继承自 `ValueError`，从 `deerflow.uploads.manager` 导入。 |
