@@ -291,7 +291,7 @@ class ContextUsageTests(unittest.TestCase):
         runtime = SimpleNamespace(config={"metadata": {}}, state={}, context={"user_id": "test_context", "thread_id": "thread_1"})
         replacements = {"get_available_subagent_names": Mock(return_value=[config.name]), "get_subagent_config": Mock(return_value=config), "run_assembly": AsyncMock(return_value=[]), "SubagentExecutor": Mock(return_value=SimpleNamespace(execute_async=Mock(return_value=result.task_id))), "get_background_task_result": Mock(return_value=result), "get_stream_writer": Mock(return_value=payloads.append), "cleanup_background_task": Mock(), "resolve_run_extensions": Mock(return_value=None)}
         with patch.multiple("deerflow.tools.builtins.task_tool", **replacements):
-            asyncio.run(task_tool.coroutine(runtime, "验证上下文", config.name, "call_1"))
+            asyncio.run(task_tool.coroutine(runtime=runtime, description="验证子任务上下文事件", prompt="验证上下文", subagent_type=config.name, tool_call_id="call_1"))
         parser = ClientStreamParser("thread_1", "run_1")
         events = [event for payload in payloads for event in parser.parse(("custom", payload))]
         context_events = [event for event in events if event.type.startswith("context_")]

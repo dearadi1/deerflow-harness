@@ -1922,6 +1922,7 @@ async def _run_sync_tool_after_async_sandbox_init(
     func: Callable[..., str] | None,
     runtime: Runtime,
     *args: object,
+    **kwargs: object,
 ) -> str:
     """Initialize lazily via async provider, then run sync tool body off-thread."""
     try:
@@ -1931,7 +1932,7 @@ async def _run_sync_tool_after_async_sandbox_init(
             if func is None:
                 return "Error: Tool implementation not available"
 
-            return await run_sync_lifecycle_operation(func, runtime, *args)
+            return await run_sync_lifecycle_operation(func, runtime, *args, **kwargs)
     except SandboxError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -2547,8 +2548,17 @@ def bash_tool(runtime: Runtime, description: str, command: str) -> str:
         return mask_secret_values(f"Error: Unexpected error executing command: {_sanitize_error(e, runtime)}", redaction_env)
 
 
-async def _bash_tool_async(runtime: Runtime, command: str, description: str = "") -> str:
-    return await _run_sync_tool_after_async_sandbox_init(bash_tool.func, runtime, command, description)
+async def _bash_tool_async(
+    runtime: Runtime,
+    description: str,
+    command: str,
+) -> str:
+    return await _run_sync_tool_after_async_sandbox_init(
+        bash_tool.func,
+        runtime,
+        description=description,
+        command=command,
+    )
 
 
 bash_tool.coroutine = _bash_tool_async
@@ -2615,8 +2625,17 @@ def ls_tool(runtime: Runtime, description: str, path: str) -> str:
         return f"Error: Unexpected error listing directory: {_sanitize_error(e, runtime)}"
 
 
-async def _ls_tool_async(runtime: Runtime, path: str, description: str = "") -> str:
-    return await _run_sync_tool_after_async_sandbox_init(ls_tool.func, runtime, path, description)
+async def _ls_tool_async(
+    runtime: Runtime,
+    description: str,
+    path: str,
+) -> str:
+    return await _run_sync_tool_after_async_sandbox_init(
+        ls_tool.func,
+        runtime,
+        description=description,
+        path=path,
+    )
 
 
 ls_tool.coroutine = _ls_tool_async
@@ -2682,20 +2701,20 @@ def glob_tool(
 
 async def _glob_tool_async(
     runtime: Runtime,
+    description: str,
     pattern: str,
     path: str,
-    description: str = "",
     include_dirs: bool = False,
     max_results: int = _DEFAULT_GLOB_MAX_RESULTS,
 ) -> str:
     return await _run_sync_tool_after_async_sandbox_init(
         glob_tool.func,
         runtime,
-        pattern,
-        path,
-        description,
-        include_dirs,
-        max_results,
+        description=description,
+        pattern=pattern,
+        path=path,
+        include_dirs=include_dirs,
+        max_results=max_results,
     )
 
 
@@ -2783,9 +2802,9 @@ def grep_tool(
 
 async def _grep_tool_async(
     runtime: Runtime,
+    description: str,
     pattern: str,
     path: str,
-    description: str = "",
     glob: str | None = None,
     literal: bool = False,
     case_sensitive: bool = False,
@@ -2794,13 +2813,13 @@ async def _grep_tool_async(
     return await _run_sync_tool_after_async_sandbox_init(
         grep_tool.func,
         runtime,
-        pattern,
-        path,
-        description,
-        glob,
-        literal,
-        case_sensitive,
-        max_results,
+        description=description,
+        pattern=pattern,
+        path=path,
+        glob=glob,
+        literal=literal,
+        case_sensitive=case_sensitive,
+        max_results=max_results,
     )
 
 
@@ -2917,12 +2936,19 @@ def read_file_tool(
 
 async def _read_file_tool_async(
     runtime: Runtime,
+    description: str,
     path: str,
-    description: str = "",
     start_line: int | None = None,
     end_line: int | None = None,
 ) -> str:
-    return await _run_sync_tool_after_async_sandbox_init(read_file_tool.func, runtime, path, description, start_line, end_line)
+    return await _run_sync_tool_after_async_sandbox_init(
+        read_file_tool.func,
+        runtime,
+        description=description,
+        path=path,
+        start_line=start_line,
+        end_line=end_line,
+    )
 
 
 read_file_tool.coroutine = _read_file_tool_async
@@ -3033,12 +3059,19 @@ def write_file_tool(
 
 async def _write_file_tool_async(
     runtime: Runtime,
+    description: str,
     path: str,
     content: str,
-    description: str = "",
     append: bool = False,
 ) -> str:
-    return await _run_sync_tool_after_async_sandbox_init(write_file_tool.func, runtime, path, content, description, append)
+    return await _run_sync_tool_after_async_sandbox_init(
+        write_file_tool.func,
+        runtime,
+        description=description,
+        path=path,
+        content=content,
+        append=append,
+    )
 
 
 write_file_tool.coroutine = _write_file_tool_async
@@ -3124,20 +3157,20 @@ def str_replace_tool(
 
 async def _str_replace_tool_async(
     runtime: Runtime,
+    description: str,
     path: str,
     old_str: str,
     new_str: str,
-    description: str = "",
     replace_all: bool = False,
 ) -> str:
     return await _run_sync_tool_after_async_sandbox_init(
         str_replace_tool.func,
         runtime,
-        path,
-        old_str,
-        new_str,
-        description,
-        replace_all,
+        description=description,
+        path=path,
+        old_str=old_str,
+        new_str=new_str,
+        replace_all=replace_all,
     )
 
 
