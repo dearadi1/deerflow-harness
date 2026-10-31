@@ -434,7 +434,7 @@ class DynamicContextMiddleware(AgentMiddleware):
         backend for query-aware fact ranking (issue #4495); ``None`` keeps the
         legacy confidence-only ordering.
         """
-        from deerflow.agents.lead_agent.prompt_zh import _get_memory_context
+        from deerflow.agents.lead_agent.prompt import _get_memory_context
 
         injection_enabled = self._memory_enabled and (self._app_config.memory.injection_enabled if self._app_config else True)
         memory_context = (
