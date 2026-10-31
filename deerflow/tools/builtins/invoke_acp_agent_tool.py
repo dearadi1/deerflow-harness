@@ -196,7 +196,7 @@ def _format_invocation_error(agent: str, cmd: str, exc: Exception) -> str:
 
     if agent == "mcode":
         return (
-            f"{message} Install it with `npm install --global @minimax-ai/code`, run `mcode login`, and restart DeerFlow so it inherits the updated PATH. "
+            f"{message} Install it with `npm install --global @minimax-ai/code`, run `mcode login`, and restart the service so it inherits the updated PATH. "
             "If the Gateway runs in Docker, ensure `mcode` is installed and authenticated inside the Gateway container/image."
         )
     return f"{message} Install the agent binary or update `acp_agents.{agent}.command` in config.yaml."

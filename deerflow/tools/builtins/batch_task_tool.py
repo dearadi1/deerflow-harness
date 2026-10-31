@@ -161,7 +161,7 @@ async def batch_task(
     max_live_items: int | None = None,
     max_running_items: int | None = None,
 ) -> Command:
-    """Submit many independent items to DeerFlow's explicit durable batch mode.
+    """将多个独立任务提交到持久化批处理模式。
 
     Use this only when every item is independent, idempotent or read-only, and
     can be completed without another item's output. This tool returns a batch
