@@ -716,9 +716,12 @@ async def task_tool(
     - Independent tasks that materially reduce wall-clock time when run in parallel
     - A specialist subagent provides capability unavailable on the direct path
     - Bounded exploration that would otherwise displace important parent context
+    - Repetitive searches, scripts, or commands of the same kind across multiple targets;
+      delegate the bounded group to one subagent rather than repeating each operation directly
 
     When NOT to use this tool:
     - Merely because a task is complex, multi-step, verbose, or touches a large repo
+    - A single straightforward search, script, or command that is cheaper to run directly
     - Splitting dependent steps across parallel subagents; keep the chain together
       and delegate it as one bounded task only when specialist or context-isolation
       benefit clearly wins
