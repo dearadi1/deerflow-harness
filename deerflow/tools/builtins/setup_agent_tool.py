@@ -58,7 +58,7 @@ def setup_agent(
     soul: str,
     skills: list[str] | None = None,
 ) -> Command:
-    """Setup the custom DeerFlow agent.
+    """设置自定义智能体。
 
     Args:
         description: One-line description of the agent's capabilities. This is required; provide it first.

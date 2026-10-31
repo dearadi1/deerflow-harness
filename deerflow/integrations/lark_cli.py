@@ -150,8 +150,12 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 exec "$script_dir/../linux-$arch/lark-cli" "$@"
 """
 _VERSION_TAG_RE = re.compile(r"v?\d+\.\d+\.\d+")
-_DEERFLOW_LARK_SHARED_GUIDANCE_MARKER = "<!-- deerflow-lark-cli-auth-guidance-v3 -->"
-_DEERFLOW_LARK_SHARED_GUIDANCE_LEGACY_MARKERS = ("<!-- deerflow-lark-cli-auth-guidance-v1 -->", "<!-- deerflow-lark-cli-auth-guidance-v2 -->")
+_DEERFLOW_LARK_SHARED_GUIDANCE_MARKER = "<!-- lark-cli-auth-guidance-v4 -->"
+_DEERFLOW_LARK_SHARED_GUIDANCE_LEGACY_MARKERS = (
+    "<!-- deerflow-lark-cli-auth-guidance-v1 -->",
+    "<!-- deerflow-lark-cli-auth-guidance-v2 -->",
+    "<!-- deerflow-lark-cli-auth-guidance-v3 -->",
+)
 _LARK_APP_REGISTRATION_PATH = "/oauth/v1/app/registration"
 
 LARK_SKILL_NAMES: tuple[str, ...] = (
@@ -3053,9 +3057,9 @@ def _append_deerflow_lark_shared_guidance(root: Path) -> None:
 
 {_DEERFLOW_LARK_SHARED_GUIDANCE_MARKER}
 
-## DeerFlow 授权入口
+## 飞书授权入口
 
-在 DeerFlow 中，如果 `lark-cli auth status` 或业务命令提示未配置、未登录、token 过期或缺少用户授权：
+在当前应用中，如果 `lark-cli auth status` 或业务命令提示未配置、未登录、token 过期或缺少用户授权：
 
 1. 不要要求用户在终端执行 `lark-cli config init`、`lark-cli auth login` 或 `lark-cli auth login --device-code`。
 2. 回复用户这个可点击链接：[打开飞书授权设置](/workspace/capabilities?tab=plugins&plugin=lark)。
