@@ -35,7 +35,7 @@ from langchain_core.runnables import RunnableConfig
 from deerflow.protocol import ClientStreamEvent
 
 from deerflow.agents.lead_agent.agent import _authorize_model_name, build_middlewares
-from deerflow.agents.lead_agent.prompt_zh import apply_prompt_template, get_enabled_skills_for_config, has_bash_tool
+from deerflow.agents.lead_agent.prompt import apply_prompt_template, get_enabled_skills_for_config, has_bash_tool
 from deerflow.agents.middlewares.tool_declarations import apply_declared_tool_view, collect_declared_tools, layer_one_outcome, narrow_declared_tools, verify_declared_tool_view
 from deerflow.client_stream import ClientStreamParser
 from deerflow.client_stream_pricing import ClientStreamPricing
@@ -1302,7 +1302,7 @@ class DeerFlowClient:
         # cached enabled-state would stay stale until process restart. See
         # review feedback on PR #3889.
         try:
-            from deerflow.agents.lead_agent.prompt_zh import clear_skills_system_prompt_cache, invalidate_user_skill_cache
+            from deerflow.agents.lead_agent.prompt import clear_skills_system_prompt_cache, invalidate_user_skill_cache
 
             skill_category_value = skill.category.value if hasattr(skill.category, "value") else skill.category
             if skill_category_value == SkillCategory.PUBLIC.value:

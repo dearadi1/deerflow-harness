@@ -13,7 +13,7 @@ from weakref import WeakValueDictionary
 
 from langchain.tools import tool
 
-from deerflow.agents.lead_agent.prompt_zh import refresh_user_skills_system_prompt_cache_async
+from deerflow.agents.lead_agent.prompt import refresh_user_skills_system_prompt_cache_async
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.skills.security_scanner import scan_skill_content
 from deerflow.skills.security_static_scanner import (

@@ -36,7 +36,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.runnables import RunnableConfig
 
 from deerflow.agents.interaction_policy import resolve_run_interaction_policy
-from deerflow.agents.lead_agent.prompt_zh import apply_prompt_template, has_bash_tool
+from deerflow.agents.lead_agent.prompt import apply_prompt_template, has_bash_tool
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from deerflow.agents.middlewares.configured_extensions import load_configured_extension_middlewares
 from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
@@ -842,7 +842,7 @@ def _available_skill_names(agent_config, is_bootstrap: bool) -> set[str] | None:
 
 def _load_enabled_available_skills(available_skills: set[str] | None, *, app_config: AppConfig, user_id: str | None = None) -> list[Skill]:
     try:
-        from deerflow.agents.lead_agent.prompt_zh import get_enabled_skills_for_config
+        from deerflow.agents.lead_agent.prompt import get_enabled_skills_for_config
 
         skills = get_enabled_skills_for_config(app_config, user_id=user_id)
     except Exception:
@@ -1053,7 +1053,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     candidate_skill_names = None
     if available_skills is None and skill_authorization is not None:
         try:
-            from deerflow.agents.lead_agent.prompt_zh import get_enabled_skills_for_config
+            from deerflow.agents.lead_agent.prompt import get_enabled_skills_for_config
 
             candidate_skill_names = [s.name for s in get_enabled_skills_for_config(resolved_app_config, user_id=resolved_user_id)]
         except Exception:
