@@ -1,5 +1,9 @@
 ### Configuration System
 
+`lead_prompt_language` 在应用配置中选择主代理提示词：`en`（默认）使用
+`agents/lead_agent/prompt.py`，`zh` 使用 `prompt_zh.py`。Gateway 与嵌入式客户端
+共用 `prompt_selector.apply_prompt_template`，并向选中的渲染器传递同一配置快照。
+
 `Paths.user_projects_dir()` uses `extended_length_path()` on native Windows.
 All document paths, including staging and retention walks, inherit the same
 extended drive/UNC namespace even when the root itself is short. Persisted

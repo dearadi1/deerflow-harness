@@ -223,6 +223,7 @@ def apply_logging_level(name: str | None) -> None:
 class AppConfig(BaseModel):
     """Config for the DeerFlow application"""
 
+    lead_prompt_language: Literal["en", "zh"] = Field(default="en", description="主代理提示词语言：en 使用 prompt.py，zh 使用 prompt_zh.py")
     lead_prompt_overlay: PromptOverlay = Field(default_factory=PromptOverlay, description="Operator-owned literal prepend/append around the assembled lead-agent system prompt")
 
     log_level: str = Field(

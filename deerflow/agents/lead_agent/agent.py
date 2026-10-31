@@ -36,7 +36,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.runnables import RunnableConfig
 
 from deerflow.agents.interaction_policy import resolve_run_interaction_policy
-from deerflow.agents.lead_agent.prompt import apply_prompt_template, has_bash_tool
+from deerflow.agents.lead_agent.prompt import has_bash_tool
+from deerflow.agents.lead_agent.prompt_selector import apply_prompt_template
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from deerflow.agents.middlewares.configured_extensions import load_configured_extension_middlewares
 from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware

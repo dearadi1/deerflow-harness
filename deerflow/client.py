@@ -35,7 +35,8 @@ from langchain_core.runnables import RunnableConfig
 from deerflow.protocol import ClientStreamEvent
 
 from deerflow.agents.lead_agent.agent import _authorize_model_name, build_middlewares
-from deerflow.agents.lead_agent.prompt import apply_prompt_template, get_enabled_skills_for_config, has_bash_tool
+from deerflow.agents.lead_agent.prompt import get_enabled_skills_for_config, has_bash_tool
+from deerflow.agents.lead_agent.prompt_selector import apply_prompt_template
 from deerflow.agents.middlewares.tool_declarations import apply_declared_tool_view, collect_declared_tools, layer_one_outcome, narrow_declared_tools, verify_declared_tool_view
 from deerflow.client_stream import ClientStreamParser
 from deerflow.client_stream_pricing import ClientStreamPricing

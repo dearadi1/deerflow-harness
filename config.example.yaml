@@ -18,7 +18,10 @@
 # ============================================================================
 # 配置架构发生变化时，请递增此版本号。
 # 运行 `make config-upgrade`，将新增字段合并到本地 `config.yaml`。
-config_version: 63
+config_version: 64
+
+# 主代理提示词语言：en 使用 prompt.py，zh 使用 prompt_zh.py；省略时默认 en。
+lead_prompt_language: en
 
 # 可选：由运维人员维护的提示词文本扩展（参见 CONFIGURATION.md）：
 # lead_prompt_overlay:
