@@ -35,6 +35,15 @@ thread-data maintenance.
 
 ## Structured tool results
 
+`knowledge_base_search` 使用独立的结构化裁剪，不复用 `knowledge_search` 的引用协议。
+成功结果保持 `[{title, sections: [{score, content, url}]}]`，不替换为摘要或文件路径。
+上限取该工具外置阈值（支持 `tool_overrides`）与兜底上限中较小的正数；
+两者均禁用或工具被豁免时不裁剪。按原始顺序保留完整段落，最后一个可容纳的
+段落仅缩短 `content` 并添加截断标记，标题、分数和 URL 保持完整。
+若连引用信息也放不下则舍弃该段落及后续结果，最小合法结果为 `[]`（两个字符）。
+长度按紧凑 JSON 序列化后的字符数计算，包含转义和结构开销；实时与历史消息遵循同一规则。
+错误字符串与未知结构继续走通用预算路径。
+
 `type=json` payloads count toward the configured text budget, including results
 that also carry media or other non-text blocks. Externalization saves the full
 text/JSON rendering and replaces that portion with a synopsis; other blocks stay
