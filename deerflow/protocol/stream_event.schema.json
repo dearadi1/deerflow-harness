@@ -531,7 +531,6 @@
               "type": "number"
             },
             {
-              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
               "type": "string"
             }
           ],
@@ -544,7 +543,6 @@
               "type": "number"
             },
             {
-              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
               "type": "string"
             }
           ],
@@ -557,7 +555,6 @@
               "type": "number"
             },
             {
-              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
               "type": "string"
             }
           ],
@@ -635,6 +632,26 @@
         }
       },
       "title": "OutputTokenDetails",
+      "type": "object"
+    },
+    "PresentedFileResult": {
+      "additionalProperties": false,
+      "description": "present_files 工具对单个文件的处理结果。",
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "msg": {
+          "title": "Msg",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "msg"
+      ],
+      "title": "PresentedFileResult",
       "type": "object"
     },
     "ReasoningContentEvent": {
@@ -843,7 +860,6 @@
                   "type": "number"
                 },
                 {
-                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
                   "type": "string"
                 }
               ],
@@ -864,7 +880,6 @@
                   "type": "number"
                 },
                 {
-                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
                   "type": "string"
                 }
               ],
@@ -885,7 +900,6 @@
                   "type": "number"
                 },
                 {
-                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
                   "type": "string"
                 }
               ],
@@ -906,7 +920,6 @@
                   "type": "number"
                 },
                 {
-                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
                   "type": "string"
                 }
               ],
@@ -1258,6 +1271,12 @@
           "anyOf": [
             {
               "type": "string"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/PresentedFileResult"
+              },
+              "type": "array"
             },
             {
               "items": {

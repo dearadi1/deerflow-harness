@@ -105,17 +105,25 @@ def present_file_tool(
     Args:
         filepaths: List of absolute file paths to present to the user. **Only** files in `/mnt/user-data/outputs` can be presented.
     """
-    try:
-        normalized_paths = [_normalize_presented_filepath(runtime, filepath) for filepath in filepaths]
-    except ValueError as exc:
-        return Command(
-            update={"messages": [ToolMessage(f"Error: {exc}", tool_call_id=tool_call_id)]},
-        )
+    normalized_paths = []
+    results = []
+    for filepath in filepaths:
+        try:
+            normalized_path = _normalize_presented_filepath(runtime, filepath)
+            outputs_path = Path((runtime.state.get("thread_data") or {})["outputs_path"]).resolve()
+            relative_path = normalized_path.removeprefix(OUTPUTS_VIRTUAL_PREFIX + "/")
+            actual_path = outputs_path / relative_path
+            if not actual_path.is_file():
+                raise ValueError(f"File does not exist: {normalized_path}")
+            normalized_paths.append(normalized_path)
+            results.append({"path": normalized_path, "msg": "Successfully presented files"})
+        except (ValueError, OSError, KeyError) as exc:
+            results.append({"path": filepath, "msg": f"Error: {exc}"})
 
     # The merge_artifacts reducer will handle merging and deduplication
     return Command(
         update={
             "artifacts": normalized_paths,
-            "messages": [ToolMessage("Successfully presented files", tool_call_id=tool_call_id)],
+            "messages": [ToolMessage(results, tool_call_id=tool_call_id)],
         },
     )

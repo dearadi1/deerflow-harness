@@ -19,6 +19,7 @@ from .models import (
     ModelPrice,
     TokenCost,
     OutputTokenDetails,
+    PresentedFileResult,
     ProtocolModel,
     ReasoningContentEvent,
     StreamEvent,
@@ -44,7 +45,7 @@ from .models import (
 
 __all__ = [
     "STREAM_EVENT_ADAPTER", "AnswerContentEvent", "ClientStreamEvent", "ContentData", "EndData", "EndEvent",
-    "ModelPrice", "TokenCost", "InputTokenDetails", "MessageMetadata", "OutputTokenDetails", "ProtocolModel", "ReasoningContentEvent",
+    "ModelPrice", "TokenCost", "InputTokenDetails", "MessageMetadata", "OutputTokenDetails", "PresentedFileResult", "ProtocolModel", "ReasoningContentEvent",
     "StreamEvent", "StreamEventType", "TitleData", "TitleEvent", "TokenUsage", "TokenUsageData", "TokenUsageEvent",
     "SuggestionsData", "SuggestionsEvent",
     "ContextCompactionStartData", "ContextCompactionStartEvent", "ContextCompactionEndData", "ContextCompactionEndEvent",
