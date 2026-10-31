@@ -2,7 +2,7 @@
 
 公共入口统一为 `deerflow.protocol`，随 Harness 一起安装，原顶层包 `deerflow_protocol` 已迁入此处。协议模块只依赖 Pydantic 2 和标准库；`deerflow` 顶层采用按需导出，导入协议不会加载客户端、LangChain、LangGraph、配置、模型服务或沙箱。下游代码请将 `from deerflow_protocol import ...` 更新为 `from deerflow.protocol import ...`。
 
-十二类事件都有具体模型：`ReasoningContentEvent`、`AnswerContentEvent`、`TitleEvent`、`SuggestionsEvent`、`ToolChunkEvent`、`ToolCallsEvent`、`ToolResultEvent`、`TokenUsageEvent`、`ContextCompactionStartEvent`、`ContextCompactionEndEvent`、`ContextUsedEvent`、`EndEvent`。公共基类是 `StreamEvent`，判别联合类型是 `ClientStreamEvent`。
+十二类事件都有具体模型：`ReasoningContentEvent`、`AnswerContentEvent`、`TitleEvent`、`SuggestionsEvent`、`ToolChunkEvent`、`ToolCallsEvent`、`ToolResultEvent`、`TokenUsageEvent`、`ContextCompactionStartEvent`、`ContextCompactionEndEvent`、`ContextUsedEvent`、`EndEvent`。公共基类是 `StreamEvent`，判别联合类型是 `ClientStreamEvent`。`present_files` 的工具结果 `content` 是 `PresentedFileResult` 对象数组，每个文件独立携带 `path` 和 `msg`。
 
 ```python
 from deerflow.protocol import ToolCallsEvent, TokenUsageEvent, parse_stream_event

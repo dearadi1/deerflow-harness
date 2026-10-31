@@ -160,9 +160,16 @@ class ToolCallData(ProtocolModel):
     function: ToolFunction
 
 
+class PresentedFileResult(ProtocolModel):
+    """present_files 工具对单个文件的处理结果。"""
+
+    path: str
+    msg: str
+
+
 class ToolResultData(ProtocolModel):
     id: Identifier
-    content: str | list[str | dict[str, Any]]
+    content: str | list[PresentedFileResult] | list[str | dict[str, Any]]
     tool_call_id: Identifier
     name: str | None = None
     status: str = "success"

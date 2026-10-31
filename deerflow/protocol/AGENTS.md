@@ -99,6 +99,8 @@ AI 正文增量，字段与思考块相同：`id`、`content`、可选的 `addit
 | `artifact` | any | 可选，原生附加结果，结构由工具定义。 |
 | `additional_kwargs` | object / null | 可选，扩展元数据。 |
 
+`present_files` 的 `content` 为对象数组，每项包含 `path`（`/mnt/user-data/outputs/` 下的容器绝对路径）和 `msg`。每个文件独立报告成功或 `Error: ...`，失败项不影响成功项。
+
 按 `(agent_id, tool_call_id)` 匹配调用并去重。工具调用和结果本身不额外产生模型用量；结果被下次模型读取时，计入下一条 AI 消息的输入量。
 
 ## 8. 用量块 `token_usage`
