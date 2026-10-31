@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, ParamSpec, TypeVar
 
 import yaml
+from pypinyin import lazy_pinyin
 
 from deerflow.client_config import load_client_config
 from deerflow.config.app_config import AppConfig
@@ -530,7 +531,7 @@ class _SkillOperations:
     def get_resource_tree(self, user_id: str, skill_name: str) -> list[dict[str, Any]]:
         """返回指定用户技能的资源树，路径相对技能根目录且使用 / 分隔。
 
-        保留旧版节点结构及忽略大小写的名称排序；排除点号开头的目录及其
+        保留旧版节点结构及按文件名拼音排序；排除点号开头的目录及其
         子树，但保留隐藏文件。文件和空目录的 children 为 None；符号链接
         仅作为文件节点展示，不读取链接目标内容或递归遍历目标目录。
         """
@@ -542,9 +543,18 @@ class _SkillOperations:
         directory = self._check_owned_path(root, directory)
         return [
             self._build_resource_node(root, child)
-            for child in sorted(directory.iterdir(), key=lambda item: item.name.lower())
+            for child in sorted(directory.iterdir(), key=self._resource_sort_key)
             if not (child.name.startswith(".") and child.is_dir())
         ]
+
+    @staticmethod
+    def _resource_sort_key(path: Path) -> tuple[int, list[str], str]:
+        is_directory = not path.is_symlink() and path.is_dir()
+        return (
+            0 if is_directory else 1,
+            lazy_pinyin(path.name.lower()),
+            path.name.lower(),
+        )
 
     def _build_resource_node(self, root: Path, path: Path) -> dict[str, Any]:
         is_directory = not path.is_symlink() and path.is_dir()

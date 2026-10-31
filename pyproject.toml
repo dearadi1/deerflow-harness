@@ -36,6 +36,7 @@ dependencies = [
     "markdownify>=1.2.2",
     "markitdown[all,xlsx]>=0.0.1a2",
     "packaging>=24.2",
+    "pypinyin>=0.53.0",
     "pydantic>=2.12.5",
     "pyyaml>=6.0.3",
     "readabilipy>=0.3.0",

@@ -221,6 +221,27 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertEqual(self.public.list_skills(), [])
         self.assertFalse((self.view / "example").exists())
 
+    def test_resource_tree_sorts_folders_first_and_names_by_pinyin(self):
+        self.public.create_skill("example", "描述")
+        for folder in ("zeta", "中文", "apple"):
+            self.public.create_folder("example", folder)
+        for file_name in ("中文.txt", "zeta.txt", "apple.txt"):
+            self.public.create_file("example", file_name)
+
+        tree = self.public.get_resource_tree("example")
+
+        self.assertEqual(
+            [(node["name"], node["type"]) for node in tree],
+            [
+                ("apple", "folder"),
+                ("zeta", "folder"),
+                ("中文", "folder"),
+                ("apple.txt", "file"),
+                ("zeta.txt", "file"),
+                ("中文.txt", "file"),
+            ],
+        )
+
     def test_public_metadata_cache_updates_and_returns_independent_values(self):
         self.public.create_skill("example", "描述")
         self.public.upload_file("example", "SKILL.md", self.markdown())
