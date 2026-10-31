@@ -50,6 +50,7 @@ from deerflow.agents.middlewares.tool_call_args import ToolCallOccurrence, pair_
 from deerflow.agents.middlewares.tool_output_synopsis import render_tool_output_preview
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
 from deerflow.agents.middlewares.tool_transform_meta import append_tool_transform
+from deerflow.community.hours_knowledge.output_budget import budget_knowledge_base_search
 from deerflow.community.ragflow.sources import budget_source_artifact
 from deerflow.config.summarization_config import DEFAULT_SKILL_FILE_READ_TOOL_NAMES
 from deerflow.config.tool_output_config import ToolOutputConfig
@@ -550,6 +551,13 @@ def _budget_content(
         return None
     if len(content) <= threshold and len(content) <= config.fallback_max_chars:
         return None
+
+    if tool_name == "knowledge_base_search":
+        limit = _effective_trigger(tool_name, config)
+        if limit > 0 and len(content) > limit:
+            replacement = budget_knowledge_base_search(content, limit)
+            if replacement is not None:
+                return _BudgetedContent(replacement, "truncated")
 
     if threshold > 0 and len(content) > threshold:
         virtual_path: str | None = None
