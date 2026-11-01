@@ -54,14 +54,15 @@ def _publish_text(target: Path, text: str) -> None:
 @tool(parse_docstring=True)
 def setup_agent(
     runtime: Runtime,
-    description: str,
+    description: str = "",
+    *,
     soul: str,
     skills: list[str] | None = None,
 ) -> Command:
     """设置自定义智能体。
 
     Args:
-        description: One-line description of the agent's capabilities. This is required; provide it first.
+        description: One-line description of the agent's capabilities. This is optional; when provided, output it as the first tool argument.
         soul: Full SOUL.md content defining the agent's personality and behavior.
         skills: Optional list of skill names this agent should use. None means use all enabled skills, empty list means no skills.
     """

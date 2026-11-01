@@ -39,10 +39,10 @@ def _search_parameters(runtime: Runtime, query: str, top_k: int) -> dict[str, An
     return parameters
 
 
-async def _search(runtime: Runtime, description: str, query: str, top_k: int) -> list[dict[str, Any]] | str:
+async def _search(runtime: Runtime, query: str, top_k: int) -> list[dict[str, Any]] | str:
     try:
-        if not description.strip() or not query.strip():
-            raise ValueError("description 和 query 不能为空")
+        if not query.strip():
+            raise ValueError("query 不能为空")
         if isinstance(top_k, bool) or not 1 <= top_k <= 100:
             raise ValueError("top_k 必须为 1 到 100 之间的整数")
         items = knowledge_search(**_search_parameters(runtime, query, top_k))
@@ -61,18 +61,19 @@ _search_sync = make_sync_tool_wrapper(_search, "knowledge_base_search")
 @tool("knowledge_base_search", parse_docstring=True)
 def knowledge_base_search_tool(
     runtime: Runtime,
-    description: str,
+    description: str = "",
+    *,
     query: str,
     top_k: int = 5,
 ) -> list[dict[str, Any]] | str:
     """Searches the enterprise knowledge base for specific documents, procedures, and domain knowledge.
 
     Args:
-        description: Briefly explain the purpose of this knowledge search. This is required; provide it first.
+        description: Briefly explain the purpose of this knowledge search. This is optional; when provided, output it as the first tool argument.
         query: A complete, independent search query formulated based on the user's intent from multi-turn conversations, with pronouns and contextual references replaced by explicit names or terms.
         top_k: Maximum number of matching passages to retrieve, ranging from 1 to 100. Defaults to 5.
     """
-    return _search_sync(runtime, description, query, top_k)
+    return _search_sync(runtime, query, top_k)
 
 
 knowledge_base_search_tool.handle_validation_error = lambda error: f"Error: {error}"

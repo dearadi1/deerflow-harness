@@ -680,11 +680,11 @@ def _task_result_command(
 @tool("task", parse_docstring=True)
 async def task_tool(
     runtime: Runtime,
-    description: str,
+    description: str = "",
+    *,
     prompt: str,
     subagent_type: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    *,
     acceptance_criteria: list[str] | None = None,
     context_mode: Literal["isolated", "snapshot"] = "isolated",
 ) -> str | Command:
@@ -774,7 +774,7 @@ async def task_tool(
       exhausted, deliver confirmed results with explicit gaps and uncertainty.
 
     Args:
-        description: Short label for the delegated task (3–5 words). This is required; provide it first.
+        description: Short label for the delegated task (3–5 words). This is optional; when provided, output it as the first tool argument.
         prompt: The task description for the subagent. Be specific and clear about what needs to be done.
         subagent_type: The type of subagent to use.
         acceptance_criteria: Optional list of completion requirements, handed to
