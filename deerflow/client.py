@@ -108,6 +108,21 @@ _EMBEDDED_AUTHORIZATION_CONTEXT_KEYS = frozenset(
 )
 
 
+def _resolve_recursion_limit(overrides: Mapping[str, Any]) -> int:
+    """优先使用部署环境的步数预算，避免调用方透传覆盖统一设置。"""
+    raw_value = os.environ.get("DEER_FLOW_RECURSION_LIMIT", "").strip()
+    if not raw_value:
+        return overrides.get("recursion_limit", 100)
+    error_message = "环境变量 DEER_FLOW_RECURSION_LIMIT 必须是正整数"
+    try:
+        recursion_limit = int(raw_value)
+    except ValueError as error:
+        raise ValueError(error_message) from error
+    if recursion_limit < 1:
+        raise ValueError(error_message)
+    return recursion_limit
+
+
 def _stream_with_sandbox_lease_cleanup(items: Iterator[Any], context: dict[str, Any]) -> Iterator[Any]:
     """Fence an embedded graph iterator with execution-lease cleanup."""
     try:
@@ -321,7 +336,7 @@ class DeerFlowClient:
         }
         return RunnableConfig(
             configurable=configurable,
-            recursion_limit=overrides.get("recursion_limit", 100),
+            recursion_limit=_resolve_recursion_limit(overrides),
         )
 
     def _ensure_agent(self, config: RunnableConfig, *, context: Mapping[str, Any] | None = None):
@@ -853,6 +868,8 @@ class DeerFlowClient:
         传新问题即修改生成。仅恢复线程状态，不撤销长期记忆、文件或外部工具副作用。
         disabled_tools 按工具实际名称精确匹配，仅禁用本轮主智能体的工具。
         None 或空列表不额外禁用工具；不修改全局工具配置。
+        非空的 DEER_FLOW_RECURSION_LIMIT 环境变量优先于 kwargs.recursion_limit，
+        两者均未设置时使用 100；环境变量必须是正整数。
         推荐追问统一由应用配置 suggestions.enabled 控制，默认生成 3 个。
         临时约定：knowledge_search_kwargs={"kb_ids": [...]} 经 runtime.context 透传给
         注册的知识库检索函数，也可包含 dense_weight、sparse_weight 等宿主参数。
