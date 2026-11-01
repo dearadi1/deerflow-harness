@@ -108,6 +108,15 @@ and opt-in via `make test-live` or `DEER_FLOW_RUN_LIVE_TESTS=1`. It calls real
 APIs (possible costs) and may create local sandboxes, artifacts, and files.
 Marked `live`, it is excluded from `make test` and skipped in default CI.
 
+托管流入口为 `DeerFlowClientPool.start_stream()`，实现分布在 `agent_stream.py`
+和 `runtime/client_async.py`，使用说明见 `AGENT_AGENTS.md`。旧 session 保留线程归属
+约束；新流的跨线程 `close()` 只发送取消并等待，不能从关闭线程直接推进生成器或
+归还槽位。对话锁必须覆盖异步任务、默认执行器中的同步节点、checkpoint 收尾和
+沙盒租约释放；超时只限制等待，不能提前释放锁或容量。正常图结束即提交托管重生成。
+同步与托管执行共用 `_prepare_stream_turn`、事件解析器和同步 saver，不能新建独立的
+内存 checkpointer。回归覆盖 `tests/test_agent_managed_stream.py` 与
+`tests/test_client_replay.py`；事件模型及 JSON Schema 不因生命周期控制而改变。
+
 **Gateway Conformance Tests** (`TestGatewayConformance`): Parse every dict-returning client method's output through its Gateway Pydantic model so missing required fields raise `ValidationError` in CI. Covers: `ModelsListResponse`, `ModelResponse`, `SkillsListResponse`, `SkillResponse`, `SkillInstallResponse`, `McpConfigResponse`, `UploadResponse`, `MemoryConfigResponse`, `MemoryStatusResponse`.
 
 ### AIO Sandbox Network Policy

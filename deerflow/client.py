@@ -24,6 +24,7 @@ import os
 import tempfile
 import uuid
 from collections.abc import Generator, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -94,6 +95,18 @@ from deerflow.uploads.manager import (
 from deerflow.utils.thread_id import resolve_thread_id, validate_thread_id
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _ClientTurn:
+    """同步与托管流共用本轮配置，避免两条执行路径的事件协议漂移。"""
+
+    agent: Any
+    state: dict[str, Any]
+    config: RunnableConfig
+    context: dict[str, Any]
+    parser: ClientStreamParser
+
 
 _EMBEDDED_AUTHORIZATION_CONTEXT_KEYS = frozenset(
     {
@@ -903,6 +916,33 @@ class DeerFlowClient:
         子智能体步骤。解析器按轮隔离状态，以免并行工具及历史消息互相污染。
         files 仍通过 kwargs 声明已上传文件；重放复用相同的解析和清理流程。
         """
+        turn = self._prepare_stream_turn(
+            message, thread_id=thread_id, _turn_replay=_turn_replay,
+            disabled_tools=disabled_tools, **kwargs,
+        )
+        agent_items = turn.agent.stream(
+            turn.state, config=turn.config, context=turn.context,
+            stream_mode=["messages", "values", "custom"],
+        )
+        items = _stream_with_sandbox_lease_cleanup(agent_items, turn.context)
+        try:
+            for item in items:
+                yield from turn.parser.parse(item)
+            yield from turn.parser.finish()
+        finally:
+            if close := getattr(items, "close", None):
+                close()
+
+    def _prepare_stream_turn(
+        self,
+        message: str,
+        *,
+        thread_id: str | None = None,
+        _turn_replay: ClientTurnReplay | None = None,
+        disabled_tools: list[str] | None = None,
+        **kwargs: Any,
+    ) -> _ClientTurn:
+        """保留同步存储和初始化语义，托管流在受监督的工作线程中调用。"""
         thread_id = resolve_thread_id(thread_id)
 
         config = self._get_runnable_config(thread_id, **kwargs)
@@ -991,20 +1031,7 @@ class DeerFlowClient:
             default_model=effective_model_name or configurable.get("model_name") or self._model_name,
         )
         parser = ClientStreamParser(thread_id, run_id, pricing=pricing)
-        agent_items = self._agent.stream(
-            state,
-            config=config,
-            context=context,
-            stream_mode=["messages", "values", "custom"],
-        )
-        items = _stream_with_sandbox_lease_cleanup(agent_items, context)
-        try:
-            for item in items:
-                yield from parser.parse(item)
-            yield from parser.finish()
-        finally:
-            if close := getattr(items, "close", None):
-                close()
+        return _ClientTurn(self._agent, state, config, context, parser)
 
     @staticmethod
     def _validate_disabled_tools(disabled_tools: list[str] | None) -> list[str]:

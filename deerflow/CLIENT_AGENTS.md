@@ -19,12 +19,15 @@ def stream(
 
 返回同步生成器，逐项产出 `deerflow.protocol.ClientStreamEvent` 联合类型中的具体事件模型。调用 `stream()` 只创建生成器；参数检查、线程占用、模型调用等发生在迭代时。使用普通 `for` 消费，方法本身不生成 HTTP 响应或 SSE 文本。
 
+需要从停止监听线程中断正在等待下一帧的执行时，使用池的 `start_stream()`，返回支持跨线程 `close(timeout=...)` 的 `ManagedAgentStream`。原 `stream()` 和 session 流不增加跨线程关闭能力。新入口仍复用本文的输入参数和输出事件模型，差异及后端接入见 [AGENT_AGENTS.md](AGENT_AGENTS.md)。
+
 内部调用链：
 
 ```text
 stream
   → stream_client_turn：参数检查、客户端/线程锁、重生成恢复
-  → _stream_turn：运行配置、上下文、HumanMessage、Agent 执行
+  → _prepare_stream_turn：运行配置、上下文、HumanMessage、Agent 准备
+  → _stream_turn：同步 Agent 执行
   → ClientStreamParser.parse / finish：协议事件
 ```
 
