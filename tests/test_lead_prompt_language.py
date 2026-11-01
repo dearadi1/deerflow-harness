@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from pydantic import ValidationError
 
+from deerflow.agents.interaction_policy import RunInteractionMode, RunInteractionPolicy
 from deerflow.agents.lead_agent import prompt, prompt_selector, prompt_zh
 from deerflow.config.app_config import AppConfig
 from deerflow.config.prompt_overlay import PromptOverlay
@@ -33,6 +34,25 @@ class LeadPromptLanguageTests(unittest.TestCase):
             self.assertIn(identity, rendered)
             self.assertTrue(rendered.startswith("组织规范\n\n"))
             self.assertTrue(rendered.endswith("\n\n补充要求"))
+
+    def render_interaction_prompt(self, language, module, mode):
+        config = self.make_config(lead_prompt_language=language)
+        with patch.object(module, "get_skills_prompt_section", return_value=""), patch.object(module, "get_agent_soul", return_value=""):
+            return prompt_selector.apply_prompt_template(app_config=config, memory_enabled=False, interaction_policy=RunInteractionPolicy(mode))
+
+    def test_interaction_guidance_follows_language_and_run_mode(self):
+        for language, module in (("en", prompt), ("zh", prompt_zh)):
+            for mode in RunInteractionMode:
+                with self.subTest(language=language, mode=mode):
+                    rendered = self.render_interaction_prompt(language, module, mode)
+                    interactive = mode is RunInteractionMode.INTERACTIVE
+                    self.assertEqual("ASK THE USER WHEN INPUT WOULD HELP" in rendered, interactive and language == "en")
+                    self.assertEqual("在任务的任何阶段，只要用户的回答有助于推进，就可以询问" in rendered, interactive and language == "zh")
+                    self.assertEqual("USER INPUT CHECK" in rendered, interactive and language == "en")
+                    self.assertEqual("用户输入检查" in rendered, interactive and language == "zh")
+                    self.assertEqual("Ask Throughout the Task" in rendered, interactive and language == "en")
+                    self.assertEqual("全程可询问" in rendered, interactive and language == "zh")
+                    self.assertEqual("There is no human available" in rendered, not interactive)
 
     def test_explicit_snapshot_and_render_arguments_are_preserved(self):
         config = self.make_config(lead_prompt_language="zh")

@@ -1182,9 +1182,7 @@ def apply_prompt_template(
     # as a <system-reminder> in the first HumanMessage, keeping this prompt
     # identical across users and sessions for maximum prefix-cache reuse.
     rendered_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-        interaction_thinking_guidance=interaction_policy.thinking_guidance,
-        clarification_system=interaction_policy.clarification_system,
-        clarification_reminder=interaction_policy.clarification_reminder,
+        **interaction_policy.prompt_sections(language="en"),
         agent_name=agent_name or "an AI assistant",
         soul=get_agent_soul(agent_name, user_id=user_id),
         self_update_section=_build_self_update_section(agent_name),

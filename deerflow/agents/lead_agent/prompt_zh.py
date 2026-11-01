@@ -1138,9 +1138,7 @@ def apply_prompt_template(
     # 记忆和当前日期由 DynamicContextMiddleware 在每轮首条 HumanMessage 中
     # 以 <system-reminder> 注入，使本提示词在不同用户和会话间保持一致。
     rendered_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-        interaction_thinking_guidance=interaction_policy.thinking_guidance,
-        clarification_system=interaction_policy.clarification_system,
-        clarification_reminder=interaction_policy.clarification_reminder,
+        **interaction_policy.prompt_sections(language="zh"),
         agent_name=agent_name or "智能助手",
         soul=get_agent_soul(agent_name, user_id=user_id),
         self_update_section=_build_self_update_section(agent_name),
