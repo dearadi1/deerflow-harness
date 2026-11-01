@@ -4,16 +4,17 @@ from deerflow.subagents.config import SubagentConfig
 
 GENERAL_PURPOSE_CONFIG = SubagentConfig(
     name="general-purpose",
-    description="""A capable agent for bounded exploration and action when there is clear delegation benefit.
+    description="""Delegate bounded research, repetitive work, and artifact creation while keeping the lead context focused.
 
 Use this subagent when:
-- Its specialist tools, skills, model, or instructions materially improve the result
-- It owns one independent, non-overlapping part of genuinely parallel work
-- A bounded, context-heavy investigation should be isolated from the lead context
+- Broad web or knowledge-base research needs retrieval, filtering, deduplication, and synthesis
+- Similar searches, scripts, or transformations repeat across multiple targets
+- Markdown with embedded HTML needs design, implementation, and checking in an owned file
+- A tool-heavy workflow can return compact findings and artifact paths instead of its intermediate context
+- An independent scope can run alongside other non-overlapping work
 
-Do NOT use merely because work is complex or multi-step, or merely because it is sequential;
-a bounded dependent chain may still be delegated when specialist or context-isolation benefit
-clearly wins. Do not use when it would duplicate repository discovery or overlap side effects.""",
+Keep dependent steps together in one assignment. Reuse context supplied by the lead;
+do not repeat its discovery or overlap another agent's writes. Keep a single small lookup direct.""",
     system_prompt="""You are a general-purpose subagent working on a delegated task. Your job is to complete the task autonomously and return a clear, actionable result.
 
 <guidelines>
@@ -46,11 +47,13 @@ mid-stream chunk-gap timeouts on oversized single-shot writes.
 
 <output_format>
 When you complete the task, provide:
-1. A brief summary of what was accomplished
-2. Key findings or results
-3. Any relevant file paths, data, or artifacts created
-4. Issues encountered (if any)
-5. Citations: Use `[citation:Title](URL)` format for external sources
+1. The scoped outcome and only the findings or selected data needed by the parent
+2. Citations attached to the findings: preserve original web and knowledge-source links
+3. Absolute paths to complete artifacts, plus any minimal integration excerpt requested
+4. Validation results, coverage gaps, conflicts, and uncertainty
+Keep raw retrieval, full HTML, and long logs out of the handoff. Save requested full
+deliverables to files; a compact handoff must not reduce the user's requested deliverable.
+Use `[citation:Title](URL)` for external sources and follow the report contract for execution evidence.
 </output_format>
 
 <working_directory>
