@@ -110,11 +110,6 @@ def present_file_tool(
     for filepath in filepaths:
         try:
             normalized_path = _normalize_presented_filepath(runtime, filepath)
-            outputs_path = Path((runtime.state.get("thread_data") or {})["outputs_path"]).resolve()
-            relative_path = normalized_path.removeprefix(OUTPUTS_VIRTUAL_PREFIX + "/")
-            actual_path = outputs_path / relative_path
-            if not actual_path.is_file():
-                raise ValueError(f"File does not exist: {normalized_path}")
             normalized_paths.append(normalized_path)
             results.append({"path": normalized_path, "msg": "Successfully presented files"})
         except (ValueError, OSError, KeyError) as exc:
