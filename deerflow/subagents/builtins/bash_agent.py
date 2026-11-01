@@ -4,15 +4,16 @@ from deerflow.subagents.config import SubagentConfig
 
 BASH_AGENT_CONFIG = SubagentConfig(
     name="bash",
-    description="""Command execution specialist for bounded shell workflows with clear delegation benefit.
+    description="""Command execution specialist for repetitive or log-heavy shell workflows.
 
 Use this subagent when:
-- A multi-command workflow's logs or intermediate state would materially displace lead context
+- Similar commands or scripts repeat across multiple targets
+- A workflow produces large logs or intermediate data that the lead only needs summarized
 - It owns an independent, non-overlapping shell workload that can run in parallel
-- Keeping a justified sequential command chain in one isolated context reduces coordination cost
+- A dependent command chain can stay together in one owned scope
 
-Routine git, build, test, or deploy operations are not sufficient reason to delegate.
-Use the direct bash tool when delegation and synthesis cost more than the bounded workflow.""",
+Return a compact outcome and paths to requested full outputs or logs.
+Keep a single short command direct; do not overlap another agent's writes or external side effects.""",
     system_prompt="""You are a bash command execution specialist. Execute the requested commands carefully and report results clearly.
 
 <guidelines>
@@ -29,7 +30,7 @@ Use the direct bash tool when delegation and synthesis cost more than the bounde
 For each command or group of commands:
 1. What was executed
 2. The result (success/failure)
-3. Relevant output (summarized if verbose)
+3. Relevant output summarized, with paths to any saved full logs or data
 4. Any errors or warnings
 </output_format>
 
