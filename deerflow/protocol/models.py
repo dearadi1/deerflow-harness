@@ -8,7 +8,7 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, TypeAdapter, model_validator
 
-StreamEventType = Literal["reasoning_content", "answer_content", "title", "suggestions", "tool_chunk", "tool_calls", "tool_result", "token_usage", "context_compaction_start", "context_compaction_end", "context_used", "end"]
+StreamEventType = Literal["reasoning_content", "answer_content", "title", "suggestions", "tool_chunk", "tool_calls", "tool_result", "token_usage", "context_compaction_start", "context_compaction_end", "context_used", "end", "error"]
 Identifier = Annotated[str, Field(min_length=1)]
 
 
@@ -275,6 +275,17 @@ class EndEvent(StreamEvent[EndData]):
     type: Literal["end"] = "end"
 
 
+class ErrorData(ProtocolModel):
+    error: Annotated[str, Field(min_length=1)]
+
+
+class ErrorEvent(StreamEvent[ErrorData]):
+    """整轮未处理异常的终态，不替代已有模型或工具错误结果。"""
+
+    type: Literal["error"] = "error"
+    agent_id: Literal["main"]
+
+
 class ContextCompactionStartEvent(StreamEvent[ContextCompactionStartData]):
     type: Literal["context_compaction_start"] = "context_compaction_start"
 
@@ -288,7 +299,7 @@ class ContextUsedEvent(StreamEvent[ContextUsedData]):
 
 
 ClientStreamEvent = Annotated[
-    ReasoningContentEvent | AnswerContentEvent | TitleEvent | SuggestionsEvent | ToolChunkEvent | ToolCallsEvent | ToolResultEvent | TokenUsageEvent | ContextCompactionStartEvent | ContextCompactionEndEvent | ContextUsedEvent | EndEvent,
+    ReasoningContentEvent | AnswerContentEvent | TitleEvent | SuggestionsEvent | ToolChunkEvent | ToolCallsEvent | ToolResultEvent | TokenUsageEvent | ContextCompactionStartEvent | ContextCompactionEndEvent | ContextUsedEvent | EndEvent | ErrorEvent,
     Field(discriminator="type"),
 ]
 STREAM_EVENT_ADAPTER = TypeAdapter(ClientStreamEvent)

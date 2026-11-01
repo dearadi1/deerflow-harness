@@ -38,6 +38,8 @@ def translate(event: ClientStreamEvent) -> list[Action]:
         return [ToolResult(tool_call_id=data.tool_call_id, content=_extract_text(data.content), is_error=data.status == "error", tool_name=_as_str(data.name))]
     if event.type == "end":
         return [RunEnded(usage=event.data.usage_metadata.model_dump(exclude_unset=True))]
+    if event.type == "error":
+        return [AssistantError(event.data.error), RunEnded()]
     if event.type == "title" and event.data.content.strip():
         return [ThreadTitle(title=event.data.content.strip())]
     return []
@@ -60,7 +62,7 @@ def stream_actions(client: _ClientLike, message: str, *, thread_id: str | None =
     try:
         for event in client.stream(message, thread_id=thread_id, disabled_tools=disabled_tools, **kwargs):
             yield from translate(event)
-            if event.type == "end" and event.agent_id == "main":
+            if event.type in {"end", "error"} and event.agent_id == "main":
                 return  # RunEnded already emitted by translate()
         yield RunEnded()
     except Exception as exc:  # noqa: BLE001 - surface any model/runtime error in-UI

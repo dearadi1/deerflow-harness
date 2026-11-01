@@ -311,8 +311,11 @@ class _RunOutcome:
 
         self._messages = _AIMessageAccumulator()
         self._errors: dict[str, MessageMetadata] = {}
+        self.terminal_error: str | None = None
 
     def observe(self, event: ClientStreamEvent) -> None:
+        if event.type == "error":
+            self.terminal_error = event.data.error
         self._messages.observe(event)
         if event.type != "answer_content" or event.agent_id != "main":
             return
@@ -326,6 +329,8 @@ class _RunOutcome:
 
     def error_text(self) -> str | None:
         """One-line description when the final AI message is an error fallback."""
+        if self.terminal_error is not None:
+            return self.terminal_error
         # Error fallbacks carry text, or follow up on an id whose text was already sent.
         error = self._errors.get(self._messages.last_id)
         if error is None:
@@ -385,6 +390,10 @@ def _run_json(plan: LaunchPlan) -> int:
     except Exception as exc:  # noqa: BLE001 - headless boundary: report, never traceback
         return _report_json_error(_error_text(exc))
     if (error_text := outcome.error_text()) is not None:
+        if outcome.terminal_error is not None:
+            # 协议错误已经写入 stdout，不再追加另一种格式的错误块。
+            print(f"Error: {error_text}", file=sys.stderr)
+            return 1
         return _report_json_error(error_text)
     return 0
 

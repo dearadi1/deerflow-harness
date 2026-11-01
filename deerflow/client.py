@@ -121,6 +121,17 @@ def _stream_with_sandbox_lease_cleanup(items: Iterator[Any], context: dict[str, 
             logger.warning("Failed to release embedded sandbox execution lease", exc_info=True)
 
 
+def _close_stream_iterator(items: Iterator[Any], active_error: BaseException | None) -> None:
+    """收尾失败单独记录，避免覆盖原始运行异常或取消信号。"""
+    try:
+        if close := getattr(items, "close", None):
+            close()
+    except Exception:
+        if active_error is None:
+            raise
+        logger.exception("关闭客户端图迭代器失败")
+
+
 def _run_async_from_sync(coro):
     """Run an async helper from this synchronous client API."""
     try:
@@ -998,13 +1009,16 @@ class DeerFlowClient:
             stream_mode=["messages", "values", "custom"],
         )
         items = _stream_with_sandbox_lease_cleanup(agent_items, context)
+        active_error = None
         try:
             for item in items:
                 yield from parser.parse(item)
             yield from parser.finish()
+        except BaseException as error:
+            active_error = error
+            raise
         finally:
-            if close := getattr(items, "close", None):
-                close()
+            _close_stream_iterator(items, active_error)
 
     @staticmethod
     def _validate_disabled_tools(disabled_tools: list[str] | None) -> list[str]:
@@ -1036,6 +1050,8 @@ class DeerFlowClient:
         """
         answer = _AIMessageAccumulator()
         for event in self.stream(message, thread_id=thread_id, disabled_tools=disabled_tools, **kwargs):
+            if event.type == "error":
+                raise RuntimeError(event.data.error)
             answer.observe(event)
         return answer.answer()
 

@@ -14,6 +14,8 @@ from .models import (
     ContextUsedEvent,
     EndData,
     EndEvent,
+    ErrorData,
+    ErrorEvent,
     InputTokenDetails,
     MessageMetadata,
     ModelPrice,
@@ -44,6 +46,7 @@ from .models import (
 )
 
 __all__ = [
+    "ErrorData", "ErrorEvent",
     "STREAM_EVENT_ADAPTER", "AnswerContentEvent", "ClientStreamEvent", "ContentData", "EndData", "EndEvent",
     "ModelPrice", "TokenCost", "InputTokenDetails", "MessageMetadata", "OutputTokenDetails", "PresentedFileResult", "ProtocolModel", "ReasoningContentEvent",
     "StreamEvent", "StreamEventType", "TitleData", "TitleEvent", "TokenUsage", "TokenUsageData", "TokenUsageEvent",
