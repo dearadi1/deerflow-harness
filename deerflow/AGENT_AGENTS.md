@@ -478,3 +478,23 @@ pool.close(wait=False)
 服务退出时先对持有的托管流调用 `events.close(timeout=...)`，再关闭池并等待后台线程退出；`pool.close()` 保留原语义，不主动取消托管流，也不替代断连通知。停止消费但没有关闭、且事件队列已满的流，会继续占用实例。
 
 `pool.close()` 可以重复调用，但已关闭的池不能重新打开。关闭池只释放其持有的实例引用，不会关闭进程共享的数据库、MCP、Memory Manager 或沙盒 Provider；这些资源的生命周期仍由宿主服务负责。
+
+## 10. 真实模型中断验收
+
+验收脚本为 [test_agent_managed_stream_live.py](../tests/test_agent_managed_stream_live.py)，默认跳过。显式开启后会调用模型服务，使用配置中的真实模型和凭据；只发送白名单合成提示及 `slow_probe` 测试工具定义。当前出站白名单为 `ark.cn-beijing.volces.com`。运行前应安装项目声明的依赖并配置有效模型。
+
+```bash
+DEER_FLOW_RUN_LIVE_TESTS=1 DEER_FLOW_LIVE_CHECKPOINT_MODE=full \
+  .venv/bin/python -m unittest discover -s tests -p 'test_agent_managed_stream_live.py' -v
+
+DEER_FLOW_RUN_LIVE_TESTS=1 DEER_FLOW_LIVE_CHECKPOINT_MODE=delta \
+  .venv/bin/python -m unittest discover -s tests -p 'test_agent_managed_stream_live.py' -v
+```
+
+两个模式必须分进程运行。默认读取根目录 `config.yaml` 中的第一个模型；可用 `DEER_FLOW_LIVE_CONFIG`、`DEER_FLOW_LIVE_MODEL` 指定来源和模型。报告路径由 `DEER_FLOW_LIVE_REPORT` 指定，默认 `/private/tmp/deerflow_managed_live_{full|delta}.json`。临时配置、SQLite checkpoint 和运行目录在测试结束时删除，不读取或修改业务对话。
+
+每个模式覆盖 11 项：连续两轮与连接复用、真实输出中主动停止、无下一帧时停止、响应中途断流、响应读取超时、消费端异常、同步工具关闭超时、异步工具取消后继续、重生成取消恢复原答案、双用户隔离、HTTP 等待协程取消后关闭后台流。断流和超时通过真实 HTTP 响应上的受控注入复现；耗时工具由真实模型选择调用。收尾后检查池容量与 checkpoint 待执行节点，并真实继续或重新生成。
+
+测试使用生产池、模型适配器、LangGraph、事件解析和 SQLite；能力装配仅包含固定测试提示、必要的悬空工具调用修复中间件和测试工具。它不代表完整业务工具、真实 HTTP 服务或进程被强杀后的恢复验收。
+
+2026-11-01 使用 `doubao-seed-2-1-pro-260915` 验证 full/delta 共 22 个场景通过。可取消路径的主动关闭实测约 2–7 毫秒；同步工具尚未退出时正确抛出关闭超时并保留占用，放行后才归还实例。该耗时是本次测试观测值，不是服务时延承诺。
