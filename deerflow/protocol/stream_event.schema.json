@@ -438,6 +438,59 @@
       "title": "EndEvent",
       "type": "object"
     },
+    "ErrorData": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "minLength": 1,
+          "title": "Error",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "title": "ErrorData",
+      "type": "object"
+    },
+    "ErrorEvent": {
+      "additionalProperties": false,
+      "description": "整轮未处理异常的终态，不替代已有模型或工具错误结果。",
+      "properties": {
+        "type": {
+          "const": "error",
+          "default": "error",
+          "title": "Type",
+          "type": "string"
+        },
+        "agent_id": {
+          "const": "main",
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/ErrorData"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "data",
+        "thread_id",
+        "seq"
+      ],
+      "title": "ErrorEvent",
+      "type": "object"
+    },
     "InputTokenDetails": {
       "additionalProperties": {
         "anyOf": [
@@ -1386,6 +1439,7 @@
       "context_compaction_start": "#/$defs/ContextCompactionStartEvent",
       "context_used": "#/$defs/ContextUsedEvent",
       "end": "#/$defs/EndEvent",
+      "error": "#/$defs/ErrorEvent",
       "reasoning_content": "#/$defs/ReasoningContentEvent",
       "suggestions": "#/$defs/SuggestionsEvent",
       "title": "#/$defs/TitleEvent",
@@ -1432,6 +1486,9 @@
     },
     {
       "$ref": "#/$defs/EndEvent"
+    },
+    {
+      "$ref": "#/$defs/ErrorEvent"
     }
   ]
 }

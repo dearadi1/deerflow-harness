@@ -27,7 +27,7 @@ for event in client.stream("你好", thread_id="thread_001"):
 
 `exclude_unset=True` 保留原协议的稀疏字段：未提供的可选字段不额外写成 null，来源显式提供的 null 仍会保留。不要直接 `json.dumps(event)` 或使用 `dict(event)` 代替嵌套序列化。
 
-思考、正文、工具请求及用量通过 `(agent_id, id)` 关联；工具请求与结果通过 `(agent_id, tool_call_id)` 关联。同一 AI 消息发起的并行工具共用一次 `token_usage`，不同 AI 消息发起的串行工具分别记账。`tool_result.id` 是工具结果自身的消息 ID。子智能体 `end` 只结束对应 agent，主智能体 `end` 才结束本轮。
+思考、正文、工具请求及用量通过 `(agent_id, id)` 关联；工具请求与结果通过 `(agent_id, tool_call_id)` 关联。同一 AI 消息发起的并行工具共用一次 `token_usage`，不同 AI 消息发起的串行工具分别记账。`tool_result.id` 是工具结果自身的消息 ID。子智能体 `end` 只结束对应 agent，主智能体 `end` 表示正常收尾，主 `error` 表示异常终止。
 
 LLM 生成的标题与对应的 `token_usage` 共用标题模型的消息 ID，使用 `agent_id="main"`，其用量及费用计入本轮主 `end` 汇总。标题 ID 与外层会话 `thread_id` 分别表示消息和会话。本地标题及历史快照使用独立生成的标题 ID，不产生模型用量；供应商未返回用量时不虚构统计。
 
@@ -45,3 +45,5 @@ LLM 生成的标题与对应的 `token_usage` 共用标题模型的消息 ID，�
 
 
 `TokenUsageEvent.data` 还包含实际绑定的 `model_name` 和费用模型 `TokenCost`。例如 `event.data.cost.total_cost` 为 Decimal，JSON 中为精确十进制字符串，币种为 CNY。`ModelPrice` 保存本次元/百万 Token 单价；普通输入、缓存命中输入、输出分别计价。`EndEvent.data.cost` 汇总各模型独立计算的费用。无法确定完整金额时 `cost.status="unpriced"`，`total_cost=None`，原因见 `cost.reason`；不会用零伪装未知费用。旧 JSON 未携带这些新增可选字段时仍可解析。
+
+`error` 的载荷为 `{"error":"智能体执行失败，当前任务无法继续"}`，仅承接未处理的运行异常；每轮最多一个，之后不再发送主 `end`。已有模型、工具和子任务错误继续使用原事件。参数及重放拒绝、图控制信号、取消仍保留原行为。`chat()` 收到终止错误后抛出 `RuntimeError`。完整边界见 [协议说明](AGENTS.md#13-终止错误块-error)。
