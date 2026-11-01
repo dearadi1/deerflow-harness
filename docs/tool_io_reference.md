@@ -491,7 +491,10 @@ Successfully presented files
 
 ## 12. ask_clarification
 
-向用户提出澄清问题；标准中间件会记录问题并结束当前图执行，等待后续用户输入。
+向用户询问信息、偏好、决定、确认或反馈，可在推理、规划、调研、执行或结果检查的任何阶段使用。
+不局限于开始工作前澄清需求，也不必等到完全无法继续；过程中出现的新疑问同样可以暂停询问。
+标准中间件会记录问题并结束当前图执行，等待后续用户输入；收到回答后结合已有进展从暂停处继续。
+调用时不可同轮调用其他工具，同轮其他调用会被丢弃。已有回答和授权应复用，避免重复询问。
 
 源码：[clarification_tool.py](../deerflow/tools/builtins/clarification_tool.py)、[clarification_middleware.py](../deerflow/agents/middlewares/clarification_middleware.py)。
 
@@ -503,11 +506,11 @@ Successfully presented files
 
 | 参数 | 类型／默认值 | 说明及可选值 |
 |---|---|---|
-| `question` | string，必填 | 要展示的问题。 |
-| `clarification_type` | enum string，必填 | `missing_info` 缺信息、`ambiguous_requirement` 需求有歧义、`approach_choice` 方案选择、`risk_confirmation` 风险确认、`suggestion` 建议。 |
-| `context` | string/null，默认 null | 解释提问背景；非空时显示在问题前。 |
-| `options` | string[]/null，默认 null | 单选列表；去标签、去空白及去重后使用，可搭配自由输入。 |
-| `fields` | object[]/null，默认 null | 表单字段；有效且非空时优先于 options。 |
+| `question` | string，必填 | 具体问题，明确需要用户补充的信息或做出的决定，也可询问执行中新发现的问题。 |
+| `clarification_type` | enum string，必填 | 询问目的：`missing_info` 补充信息、`ambiguous_requirement` 确认含义或意图、`approach_choice` 选择方向／方案／优先级、`risk_confirmation` 确认尚未充分授权的风险操作、`suggestion` 征求对建议或调整的意见。各类型均可在执行中使用。 |
+| `context` | string/null，默认 null | 简述当前发现、疑问及回答对下一步的影响，不展开内部推理；非空时显示在问题前。 |
+| `options` | string[]/null，默认 null | 任意询问类型可用的单选列表，选项应清晰易区分；去标签、去空白及去重后使用，可搭配自由输入。多选使用 fields。 |
+| `fields` | object[]/null，默认 null | 一次收集多个相关值或提供多选的表单字段；有效且非空时优先于 options。 |
 
 `fields` 中每个对象：
 
