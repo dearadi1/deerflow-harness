@@ -2,9 +2,58 @@
 
 实现文件：[agent_client.py](agent_client.py)。原始客户端：[client.py](client.py)。
 
-`DeerFlowClientPool` 管理固定数量的 `DeerFlowClient`，实例不永久绑定用户。调用时通过 `session(user_id=...)` 独占借用，退出 `with` 后归还；没有空闲实例时按 FIFO 顺序排队。
+`DeerFlowClientPool` 管理固定数量的 `DeerFlowClient`，实例不永久绑定用户。通过 `start_stream()` 托管一轮生成，或通过 `session(user_id=...)` 独占借用；两种方式共享容量和 FIFO 等待队列。
 
-**推荐用法：每个服务进程在启动时创建一个池；每次操作借用一个 session；流式调用再使用一层 `with`。借用、调用、消费流和归还必须在同一个工作线程内完成。**
+**推荐用法：每个服务进程启动时创建一个池；需要停止/断连取消的流式对话使用 `start_stream()`；管理操作及原有同步调用继续使用 `session()`。原 session 的借用、调用、消费和关闭仍必须在同一线程；新托管流支持跨线程 `close()`。**
+
+## 托管流：支持独立停止线程
+
+```python
+events = pool.start_stream(
+    "请分析这个问题",
+    user_id="user_001",
+    thread_id="thread_001",
+    replay_last_turn=False,
+    disabled_tools=["web_search"],
+    acquire_timeout=5,
+    buffer_size=64,
+)
+
+# 消费线程：后端保存本轮 events，供停止和断连处理器使用。
+try:
+    for event in events:
+        send_to_frontend(event)
+finally:
+    events.close(timeout=10)
+```
+
+收到用户停止或连接断开时，在另一个线程直接调用同一个对象：
+
+```python
+events.close(timeout=10)
+```
+
+不需要等待下一帧，也不要通过关闭整个 pool 来停止一轮。`close()` 成功返回表示本轮执行与必要清理结束、对话锁释放、池实例归还；随后可使用相同 `thread_id` 继续对话或重新生成。重复关闭安全，旧对象不会取消下一轮。返回类型及异常可从 `deerflow.agent_client` 导入：`ManagedAgentStream`、`StreamCloseTimeoutError`、`StreamCleanupError`。
+
+| 接口 | 约定 |
+| --- | --- |
+| `pool.start_stream(message, *, user_id=None, thread_id=None, replay_last_turn=False, disabled_tools=None, acquire_timeout=None, buffer_size=64, **kwargs)` | 同步等待实例，成功后立即启动本轮；无需先 `next()`，参数规则沿用原 stream |
+| `for event in events` | 单消费者同步迭代；输出仍为原 `ClientStreamEvent`，字段和事件类型不变 |
+| `events.close(timeout=None)` | 可跨线程、幂等；默认等待清理完成；显式超时只限制本次等待 |
+| `events.closed` | 实例已归还时为 `True`；收到停止请求但清理未完成时仍为 `False` |
+| `with pool.start_stream(...) as events` | 退出时关闭，适合保证提前 break 或消费异常后的收尾 |
+
+`acquire_timeout=None` 沿用池默认值，`0` 表示立即尝试；`buffer_size` 是正整数，限制待消费事件数。队列满时暂停交付，关闭信号不经过该队列。正常执行结束后自动归还实例，未读取的事件仍可继续消费；显式关闭丢弃未消费事件并结束迭代。主动停止不伪造正常完成的 `end` 事件。
+
+模型或工具执行异常通过迭代传播，完成收尾后实例仍可复用；`close()` 单独报告收尾失败。`StreamCleanupError` 表示资源或状态收尾失败，池停止新分配。`StreamCloseTimeoutError` 表示尚未清理完毕，此时不得假定对话可重新执行；后台继续持有实例和对话锁，调用方可以再次调用 `close()` 等待。不要因超时而创建新池绕过占用。
+
+内部每个槽位按需创建并复用后台线程和事件循环，独占运行本轮 `agent.astream()`，避免缓存模型的异步连接跨循环复用，原同步 checkpointer 通过异步适配器复用，不创建另一份存储。普通对话取消后保留已落盘内容并清理待执行调度；重生成中断时恢复之前的有效状态。尚未落盘输入的轮次没有可重生成的历史，应再次按普通对话提交。已完成的外部工具副作用不回滚。
+
+同步工具不能被强制杀死。托管执行会等待默认执行器内已开始的同步节点退出，再恢复状态和释放对话锁；模型、工具、数据库仍应配置各自超时。自行创建线程、独立执行器或远端后台作业的自定义工具，必须自行实现取消和清理，框架无法从其返回值推断后台作业是否结束。
+
+身份和 trace 上下文在启动时捕获，并传到执行及清理任务；池仍不负责宿主鉴权。自定义 `client_factory` 需返回支持现有同步存储协议的 `DeerFlowClient`；仅有异步方法的 saver 不适用。跨进程停止由宿主把停止请求路由到持有本轮对象的进程。
+
+异步 HTTP 后端应在工作线程创建和消费该同步流；停止处理器可 `await asyncio.to_thread(events.close, timeout=10)`。请求断连本身不会自动通知池，后端必须把停止、断连和请求异常都接到本轮 `close()`。若关闭等待协程也被取消，已发出的停止请求和后台清理仍继续进行。
 
 ## 1. 最小使用示例
 
@@ -117,7 +166,7 @@ thread_id = uuid4().hex
 with pool.session(user_id="user_001") as client:
     with client.stream("请帮助我分析这个问题。", thread_id=thread_id) as events:
         for event in events:
-            # 当需要退出时，直接在这里 break 即可，池会自动触发close。
+            # break 后退出内层 with 才会关闭流；仅 break 不会触发关闭。
             # if xxx:
             #     break
             print(event.model_dump(mode="json"))
@@ -278,7 +327,7 @@ async def ask_async(pool, user_id, message):
 
 ## 6. 可调用的方法
 
-session 代理当前 `DeerFlowClient` 的全部 30 个公开方法。参数和普通返回值沿用原接口；流返回可迭代、可关闭、可用于 `with` 的包装对象。
+session 代理当前 `DeerFlowClient` 的全部 30 个公开方法。参数和普通返回值沿用原接口；流返回可迭代、可关闭、可用于 `with` 的包装对象。`pool.start_stream()` 是池上的新增入口，不通过 session 调用。
 
 | 类别 | 方法 |
 | --- | --- |
@@ -343,6 +392,8 @@ except ReplayConflictError:
 | `PoolQueueFullError` | 需要排队，但等待人数达到上限 |
 | `PoolTimeoutError` | 等待实例超时，或等待池关闭排空超时 |
 | `PoolClosedError` | 池已关闭，或底层流清理失败后池停止分配 |
+| `StreamCloseTimeoutError` | 托管流已请求停止，但仍在执行或清理，尚未归还实例 |
+| `StreamCleanupError` | 托管流的资源或 checkpoint 收尾失败，池停止新分配 |
 | `ValueError` | 配置无效、缺少用户、调用身份与 session 不一致 |
 | `RuntimeError` | 跨线程使用、使用已归还 session、嵌套借用、流未结束时调用其他方法等 |
 | 原客户端异常 | 模型、工具、存储、权限或同会话冲突等错误，继续向调用方传播 |
@@ -407,7 +458,7 @@ print(pool.stats)
 }
 ```
 
-`available` 是空闲实例数，`borrowed` 是当前借用数，`waiting` 是排队人数。`failed` 表示是否因流清理失败而停止分配，不代表所有模型调用的健康状态。关闭后 `available` 会清零，`size` 仍保留初始配置值。
+`available` 是空闲实例数，`borrowed` 是 session 与托管流的当前借用总数，`waiting` 是排队人数。`failed` 表示是否因流清理失败而停止分配，不代表所有模型调用的健康状态。关闭后 `available` 会清零，`size` 仍保留初始配置值。
 
 ## 9. 服务退出与关闭
 
@@ -424,4 +475,26 @@ pool.close(wait=False)
 
 `wait=False` 不会中断正在执行的请求，也不会提前回收它们的实例。当前线程仍持有 session 时，不能调用 `pool.close(wait=True)`，应先退出 session，避免等待自身归还。
 
+服务退出时先对持有的托管流调用 `events.close(timeout=...)`，再关闭池并等待后台线程退出；`pool.close()` 保留原语义，不主动取消托管流，也不替代断连通知。停止消费但没有关闭、且事件队列已满的流，会继续占用实例。
+
 `pool.close()` 可以重复调用，但已关闭的池不能重新打开。关闭池只释放其持有的实例引用，不会关闭进程共享的数据库、MCP、Memory Manager 或沙盒 Provider；这些资源的生命周期仍由宿主服务负责。
+
+## 10. 真实模型中断验收
+
+验收脚本为 [test_agent_managed_stream_live.py](../tests/test_agent_managed_stream_live.py)，默认跳过。显式开启后会调用模型服务，使用配置中的真实模型和凭据；只发送白名单合成提示及 `slow_probe` 测试工具定义。当前出站白名单为 `ark.cn-beijing.volces.com`。运行前应安装项目声明的依赖并配置有效模型。
+
+```bash
+DEER_FLOW_RUN_LIVE_TESTS=1 DEER_FLOW_LIVE_CHECKPOINT_MODE=full \
+  .venv/bin/python -m unittest discover -s tests -p 'test_agent_managed_stream_live.py' -v
+
+DEER_FLOW_RUN_LIVE_TESTS=1 DEER_FLOW_LIVE_CHECKPOINT_MODE=delta \
+  .venv/bin/python -m unittest discover -s tests -p 'test_agent_managed_stream_live.py' -v
+```
+
+两个模式必须分进程运行。默认读取根目录 `config.yaml` 中的第一个模型；可用 `DEER_FLOW_LIVE_CONFIG`、`DEER_FLOW_LIVE_MODEL` 指定来源和模型。报告路径由 `DEER_FLOW_LIVE_REPORT` 指定，默认 `/private/tmp/deerflow_managed_live_{full|delta}.json`。临时配置、SQLite checkpoint 和运行目录在测试结束时删除，不读取或修改业务对话。
+
+每个模式覆盖 11 项：连续两轮与连接复用、真实输出中主动停止、无下一帧时停止、响应中途断流、响应读取超时、消费端异常、同步工具关闭超时、异步工具取消后继续、重生成取消恢复原答案、双用户隔离、HTTP 等待协程取消后关闭后台流。断流和超时通过真实 HTTP 响应上的受控注入复现；耗时工具由真实模型选择调用。收尾后检查池容量与 checkpoint 待执行节点，并真实继续或重新生成。
+
+测试使用生产池、模型适配器、LangGraph、事件解析和 SQLite；能力装配仅包含固定测试提示、必要的悬空工具调用修复中间件和测试工具。它不代表完整业务工具、真实 HTTP 服务或进程被强杀后的恢复验收。
+
+2026-11-01 使用 `doubao-seed-2-1-pro-260915` 验证 full/delta 共 22 个场景通过。可取消路径的主动关闭实测约 2–7 毫秒；同步工具尚未退出时正确抛出关闭超时并保留占用，放行后才归还实例。该耗时是本次测试观测值，不是服务时延承诺。

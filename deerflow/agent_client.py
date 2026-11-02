@@ -19,6 +19,10 @@ session 代理 DeerFlowClient 的全部公开方法；普通方法保留原返�
 session。租约及其流只能由借用线程使用，异步服务应在工作线程中完成整个租约，
 不能只把获取实例或单次 next 分别派发到任意线程。
 
+需要独立停止入口时使用 pool.start_stream：返回 ManagedAgentStream，消费方式
+仍为同步迭代，但 close(timeout=...) 可跨线程调用。池持有整轮执行直到清理完成，
+之后自动归还实例；主动停止不依赖下一帧，关闭超时不会提前释放占用。
+
 池只协调本进程的实例，不提供鉴权、同会话排队或跨进程限流。原接口的用户过滤、
 全局配置及存储语义保持不变。相同 thread_id 仍受原客户端的冲突保护。不要为同一
 进程配置不同的 config_path；外部修改配置后应调用 invalidate_agents。
@@ -40,12 +44,19 @@ from enum import Enum
 from functools import wraps
 from typing import Any
 
+from deerflow.agent_stream import ManagedAgentStream, ManagedStreamWorker, StreamCloseTimeoutError
 from deerflow.client import DeerFlowClient
 from deerflow.client_config import load_client_config
 from deerflow.config.app_config import get_app_config
+from deerflow.runtime.client_async import StreamCleanupError
 from deerflow.runtime.user_context import CurrentUser, get_current_user, reset_current_user, set_current_user
+from deerflow.utils.thread_id import resolve_thread_id
 
-__all__ = ["DeerFlowClientPool", "AgentClientSession", "PoolClosedError", "PoolTimeoutError", "PoolQueueFullError"]
+__all__ = [
+    "DeerFlowClientPool", "AgentClientSession", "ManagedAgentStream",
+    "PoolClosedError", "PoolTimeoutError", "PoolQueueFullError",
+    "StreamCloseTimeoutError", "StreamCleanupError",
+]
 
 _INITIALIZATION_LOCK = threading.Lock()
 _INVALIDATING_METHODS = frozenset({
@@ -126,6 +137,7 @@ class _ClientSlot:
     client: DeerFlowClient
     generation: int = 0
     healthy: bool = True
+    worker: ManagedStreamWorker | None = None
 
 
 class DeerFlowClientPool:
@@ -164,7 +176,8 @@ class DeerFlowClientPool:
         self._max_waiters = max_waiters
         self._condition = threading.Condition()
         self._waiters: deque[object] = deque()
-        self._borrowers: set[int] = set()
+        self._borrowers: set[object] = set()
+        self._stream_workers: set[ManagedStreamWorker] = set()
         self._closed = False
         self._failure: BaseException | None = None
         self._generation = 0
@@ -218,12 +231,48 @@ class DeerFlowClientPool:
         if self._closed:
             raise PoolClosedError("客户端池已关闭" if self._failure is None else "流清理失败，客户端池已停止分配") from self._failure
 
-    def _acquire(self, timeout: float | None) -> _ClientSlot:
-        owner = threading.get_ident()
+    def start_stream(
+        self,
+        message: str,
+        *,
+        user_id: str | None = None,
+        thread_id: str | None = None,
+        replay_last_turn: bool = False,
+        disabled_tools: list[str] | None = None,
+        acquire_timeout: float | None = None,
+        buffer_size: int = 64,
+        **kwargs: Any,
+    ) -> ManagedAgentStream:
+        """托管整轮生成，返回支持跨线程 close 的同步流；执行结束后自动归还实例。"""
+        user = _resolve_user(user_id)
+        if not isinstance(replay_last_turn, bool):
+            raise TypeError("replay_last_turn 必须为布尔值")
+        if replay_last_turn and thread_id is None:
+            raise ValueError("重新生成必须提供已有 thread_id")
+        if isinstance(buffer_size, bool) or not isinstance(buffer_size, int) or buffer_size <= 0:
+            raise ValueError("buffer_size 必须是正整数")
+        options = {
+            **kwargs, "thread_id": resolve_thread_id(thread_id),
+            "replay_last_turn": replay_last_turn,
+            "disabled_tools": DeerFlowClient._validate_disabled_tools(disabled_tools),
+        }
+        wait_timeout = self._acquire_timeout if acquire_timeout is None else _validate_timeout(acquire_timeout)
+        owner = object()
+        slot = self._acquire(wait_timeout, owner=owner)
+        try:
+            stream = ManagedAgentStream(self, slot, owner, user, message, options, buffer_size)
+            stream._start()
+            return stream
+        except BaseException:
+            self._release(slot, owner)
+            raise
+
+    def _acquire(self, timeout: float | None, *, owner: object | None = None) -> _ClientSlot:
+        owner = threading.get_ident() if owner is None else owner
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._condition:
             self._ensure_open()
-            if owner in self._borrowers:
+            if threading.get_ident() in self._borrowers:
                 raise RuntimeError("同一线程不能嵌套借用同一个池，请复用已有 session")
             if self._available and not self._waiters:
                 return self._take_slot(owner)
@@ -231,11 +280,11 @@ class DeerFlowClientPool:
                 raise PoolTimeoutError("当前没有空闲客户端")
             return self._wait_for_slot(owner, deadline)
 
-    def _take_slot(self, owner: int) -> _ClientSlot:
+    def _take_slot(self, owner: object) -> _ClientSlot:
         self._borrowers.add(owner)
         return self._available.popleft()
 
-    def _wait_for_slot(self, owner: int, deadline: float | None) -> _ClientSlot:
+    def _wait_for_slot(self, owner: object, deadline: float | None) -> _ClientSlot:
         if self._max_waiters is not None and len(self._waiters) >= self._max_waiters:
             raise PoolQueueFullError("客户端池等待队列已满")
         ticket = object()
@@ -253,12 +302,28 @@ class DeerFlowClientPool:
             self._waiters.remove(ticket)
             self._condition.notify_all()
 
-    def _release(self, slot: _ClientSlot, owner: int) -> None:
+    def _release(self, slot: _ClientSlot, owner: object) -> None:
         with self._condition:
             self._borrowers.remove(owner)
             if not self._closed and slot.healthy:
                 self._available.append(slot)
+            elif slot.worker is not None:
+                slot.worker.close(wait=False)
             self._condition.notify_all()
+
+    def _get_stream_worker(self, slot: _ClientSlot) -> ManagedStreamWorker:
+        if slot.worker is None:
+            worker = ManagedStreamWorker()
+            with self._condition:
+                self._stream_workers.add(worker)
+                slot.worker = worker
+        return slot.worker
+
+    def _close_idle_workers(self) -> None:
+        for slot in self._available:
+            if slot.worker is not None:
+                slot.worker.close(wait=False)
+        self._available.clear()
 
     def _mark_failed(self, slot: _ClientSlot, error: BaseException) -> None:
         # 关闭失败不能证明底层执行已退出，停止新分配，避免不安全地重用资源。
@@ -266,7 +331,7 @@ class DeerFlowClientPool:
             slot.healthy = False
             self._failure = error
             self._closed = True
-            self._available.clear()
+            self._close_idle_workers()
             self._condition.notify_all()
 
     def invalidate_agents(self) -> None:
@@ -292,22 +357,32 @@ class DeerFlowClientPool:
     def close(self, *, wait: bool = True, timeout: float | None = None) -> None:
         """拒绝新租约并唤醒排队者；可等待现有租约归还，不强行中断执行。
 
-        超时后池仍关闭，可再次调用 close 等待排空。仅释放池持有的实例引用，
-        不关闭进程共享的数据库、MCP、记忆管理器或沙盒 Provider。
+        超时后池仍关闭，可再次调用 close 等待排空。释放池持有的实例引用及
+        托管执行线程，不关闭进程共享的数据库、MCP、记忆管理器或沙盒 Provider。
         """
         timeout = _validate_timeout(timeout)
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._condition:
-            if wait and threading.get_ident() in self._borrowers:
+            if wait and (
+                threading.get_ident() in self._borrowers
+                or any(threading.current_thread() is worker.thread for worker in self._stream_workers)
+            ):
                 raise RuntimeError("请先退出当前 session，再等待池关闭；或使用 wait=False")
             self._closed = True
-            self._available.clear()
+            self._close_idle_workers()
             self._condition.notify_all()
             while wait and self._borrowers:
                 remaining = _remaining(deadline)
                 if remaining == 0:
                     raise PoolTimeoutError("等待客户端池排空超时，执行中的实例尚未归还")
                 self._condition.wait(remaining)
+            workers = tuple(self._stream_workers)
+        if wait:
+            for worker in workers:
+                if not worker.close(wait=True, timeout=_remaining(deadline)):
+                    raise PoolTimeoutError("等待托管执行线程退出超时")
+            with self._condition:
+                self._stream_workers.clear()
 
     def __enter__(self) -> DeerFlowClientPool:
         with self._condition:

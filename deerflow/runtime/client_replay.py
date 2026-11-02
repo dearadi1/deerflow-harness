@@ -312,3 +312,15 @@ class ClientTurnReplay:
         for task_id, writes in writes_by_task.items():
             self.accessor.checkpointer.put_writes(restored, writes, task_id=task_id)
         self.restore_required = False
+
+    def finish_managed_turn(self, *, run_id: str | None, completed: bool) -> None:
+        """托管执行已排空后收尾；旧同步流仍保持原来的失败恢复约定。"""
+        if self.enabled:
+            self.restore_if_needed()
+            return
+        if completed or run_id is None or self.accessor is None:
+            return
+        metadata = self.accessor.get_metadata(self.read_config)
+        # 尚未落盘本轮输入时，不得把上一轮的待执行任务误认为本轮遗留。
+        if metadata.get(_RUN_KEY) == run_id:
+            self._clear_tasks(metadata)

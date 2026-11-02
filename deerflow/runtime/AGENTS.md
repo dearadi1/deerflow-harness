@@ -13,6 +13,13 @@ Memory/Redis bridges keep startup-only `stream_bridge.heartbeat_interval_seconds
 
 ### Checkpoint Channel Modes (`full` / `delta`)
 
+嵌入式托管流在 `client_async.py` 中运行，复用同步 saver 的异步适配器必须保留
+`get_delta_channel_history` 与 serializer allowlist 语义。所有同步存储操作都排空后
+才传播取消；对话锁在派生任务、默认执行器、checkpoint 收尾和沙盒租约全部结束后
+释放。`ClientTurnReplay.finish_managed_turn()` 只清理本轮 run ID 对应的普通中断
+状态，不清理未通过归属检查或尚未落盘输入的旧轮次。原同步流的失败语义保持不变。
+验证见 `tests/test_agent_managed_stream.py`。
+
 Checkpointer storage runs in one of two channel modes, selected by `checkpoint_channel_mode` in `config.yaml` (default `full`). `delta` mode adopts LangGraph 1.2's `DeltaChannel` for `messages`: checkpoints store a sentinel + per-step writes instead of the full message list, so storage/serde grows O(N) instead of O(N²) in turns. All checkpointer backends (memory/sqlite/postgres) serve both modes unchanged — the semantics live in the compiled graph's channel table, not in the saver.
 
 **Mode is process-frozen and restart-required.** `make_lead_agent` and the embedded `DeerFlowClient` freeze the resolved mode (`runtime/checkpoint_mode.py::freeze_checkpoint_channel_mode`) before compiling the graph with the mode-matched schema (`agents/thread_state.py::get_thread_state_schema`, plus `adapt_state_schema_for_mode` / `normalize_middleware_state_schemas` for middleware state). Adapted middleware schemas are cached by schema, mode, and resolved snapshot frequency so a pre-freeze ephemeral graph cannot leave a stale default-frequency schema behind. A second, different mode or frequency in the same process raises `CheckpointModeReconfigurationError`. To switch: edit config, restart.
