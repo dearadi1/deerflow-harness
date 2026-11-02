@@ -131,3 +131,9 @@ packages = ["deerflow"]
 
 [tool.uv.sources]
 deerflow-extension-api = { path = "extension-api" }
+
+# 避免本机全局镜像不可用时阻断项目依赖解析。
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
