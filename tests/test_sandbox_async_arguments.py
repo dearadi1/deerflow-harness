@@ -59,6 +59,22 @@ class SandboxAsyncArgumentsTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(tool=tool.name):
                 await self.check_tool_arguments(tool, {"description": "验证非默认参数", **required, **optional})
 
+    async def test_omitted_description_reaches_sync_body_with_default(self):
+        for tool, required, optional in TOOL_CASES:
+            with self.subTest(tool=tool.name):
+                await self.check_tool_arguments(tool, {**required, **optional})
+
+    def test_sync_invocation_accepts_omitted_description(self):
+        for tool, required, optional in TOOL_CASES:
+            with self.subTest(tool=tool.name):
+                signature = inspect.signature(tool.func)
+                captured = {}
+                with patch.object(tool, "func", side_effect=capture_arguments(signature, captured)):
+                    result = tool.invoke({"runtime": self.runtime, **required, **optional})
+                self.assertEqual(result, "工具执行成功")
+                self.assertEqual(captured["description"], "")
+                self.assertEqual({name: captured[name] for name in required | optional}, required | optional)
+
     async def test_bash_returns_real_shell_stdout(self):
         sandbox = LocalSandbox("local")
         self.enterContext(patch.object(tools, "ensure_sandbox_initialized", return_value=sandbox))
@@ -68,8 +84,10 @@ class SandboxAsyncArgumentsTests(unittest.IsolatedAsyncioTestCase):
         workspace = self.enterContext(TemporaryDirectory())
         self.enterContext(patch.object(tools, "get_thread_data", return_value={"workspace_path": workspace}))
         self.enterContext(patch("deerflow.config.app_config.get_app_config", return_value=SimpleNamespace(sandbox=None)))
-        output = await tools.bash_tool.ainvoke({"runtime": self.runtime, "description": "这是一段不能执行的说明文字", "command": "printf 'actual_stdout'"})
-        self.assertEqual(output.strip(), "actual_stdout")
+        for arguments in ({}, {"description": "这是一段不能执行的说明文字"}):
+            with self.subTest(arguments=arguments):
+                output = await tools.bash_tool.ainvoke({"runtime": self.runtime, **arguments, "command": "printf 'actual_stdout'"})
+                self.assertEqual(output.strip(), "actual_stdout")
 
 
 if __name__ == "__main__":

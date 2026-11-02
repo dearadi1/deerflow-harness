@@ -37,6 +37,17 @@ MAX_CRITERION_CHARS = 500
 
 _HANDLES_LINE = "- Attach a verifiable handle to every deliverable: absolute file path, URL, record ID, or HTTP status."
 _HONESTY_LINE = "- State explicitly what failed, was skipped, or remains uncertain — never claim an action you did not execute."
+_COMPACT_HANDOFF = (
+    "- Return a compact handoff: outcome, decision-relevant findings or selected data, supporting source links, artifact paths, "
+    "validation results, and unresolved gaps. Default to at most 8 concise bullets or the compact structured format requested by the parent; "
+    "include additional detail when needed to address every acceptance criterion or material uncertainty.\n"
+    "- Keep raw search results, document dumps, full HTML, long logs, and intermediate reasoning out of the final report. "
+    "When the task requests a complete deliverable, save the full content to the agreed file and return its absolute path with only "
+    "the minimal excerpt needed for integration. If saving is unavailable or fails, report that and return the necessary content; "
+    "never silently drop required data to shorten the handoff.\n"
+    "- Preserve original web and knowledge-source citation links alongside the claims they support; do not invent or rewrite source IDs. "
+    "Compression must retain execution evidence, coverage limits, conflicting findings, and uncertainty."
+)
 
 
 def build_report_contract_section(*, receipts_enabled: bool = True) -> str:
@@ -58,6 +69,7 @@ def build_report_contract_section(*, receipts_enabled: bool = True) -> str:
         "<report_contract>",
         opening,
         "",
+        _COMPACT_HANDOFF,
     ]
     if receipts_enabled:
         # Lazy import: the executor package is imported in cycles with

@@ -680,58 +680,49 @@ def _task_result_command(
 @tool("task", parse_docstring=True)
 async def task_tool(
     runtime: Runtime,
-    description: str,
+    description: str = "",
+    *,
     prompt: str,
     subagent_type: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    *,
     acceptance_criteria: list[str] | None = None,
     context_mode: Literal["isolated", "snapshot"] = "isolated",
 ) -> str | Command:
-    """Delegate a bounded task to a specialized subagent in its own context.
+    """主动将范围明确的重复工作或上下文繁重的流程交给子智能体，接收精简结果。
 
-    Delegate only when expected benefit clearly exceeds delegation overhead.
-    Useful benefits are:
-    - Material wall-clock savings from independent parallel work
-    - Specialist tools, skills, models, or domain instructions
-    - Context isolation for a bounded, unusually context-heavy investigation
+    优先委派：
+    - 多个目标上的同类检索、脚本、命令或转换，集中交给一个子智能体完成。
+    - 宽泛的网络检索：让子智能体完成检索、筛选、去重和归纳，返回结论与支撑链接。
+    - 跨文档或主题的知识库检索：返回相关事实、原始来源引用、覆盖范围和未解决的矛盾。
+    - Markdown 内嵌 HTML 设计：将指定产物的设计、实现和检查一起委派，返回文件路径和必要的集成说明。
+    - 大量日志、文档或中间数据的处理，以及能力匹配的专业任务。
 
-    Built-in subagent types:
-    - **general-purpose**: A capable agent for bounded exploration and action. Use
-      when the assignment has clear specialist or context-isolation benefit, or is
-      one of several independent, non-overlapping tasks that can actually run in
-      parallel.
-    - **bash**: Command execution specialist for running bash commands. This is only
-      available when host bash is explicitly allowed or when using an isolated shell
-      sandbox such as `AioSandboxProvider`. Use it only for a bounded shell workflow
-      with clear context-isolation or independent-parallel benefit.
-      Routine git, build, test, or deploy operations are not sufficient reason to delegate.
+    上述场景本身足以成为委派理由，不要求子智能体拥有独有工具或能并行运行。
+    在主智能体收集大量中间上下文之前委派，不要反复评估成本或重复探索来证明委派有价值。
+    主智能体负责目标、拆分、最终判断和交付，子智能体负责限定范围内的完整工作流程。
 
-    Additional custom subagent types may be defined in config.yaml under
-    `subagents.custom_agents`. Each custom type can have its own system prompt,
-    tools, skills, model, and timeout configuration. If an unknown subagent_type
-    is provided, the error message will list all available types.
+    内置类型：
+    - **general-purpose**：用于检索、归纳、重复操作和产物制作。
+    - **bash**：用于多目标重复命令或日志量较大的 shell 流程；仅在明确允许宿主 bash
+      或使用隔离 shell 沙箱时可用，且仍受主智能体工具范围限制。
+    自定义类型来自 `subagents.custom_agents` 或已启用的管理员定义，可有独立提示词、
+    工具、技能、模型和超时配置；未知类型的错误会列出可用名称。
 
-    When to use this tool:
-    - Independent tasks that materially reduce wall-clock time when run in parallel
-    - A specialist subagent provides capability unavailable on the direct path
-    - Bounded exploration that would otherwise displace important parent context
-    - Repetitive searches, scripts, or commands of the same kind across multiple targets;
-      delegate the bounded group to one subagent rather than repeating each operation directly
+    委派边界：
+    - 单次简短查询、命令或小范围编辑直接执行；不要委派已完成的工作。
+    - 有依赖的步骤放在同一个任务中；并行任务须输出独立，且不重叠修改文件、共享状态或外部副作用。
+    - 先解决影响范围的缺失需求；委派不会扩大权限，不应将需要即时用户交互的流程交给子智能体。
+    - 传入已知上下文、目标范围、文件归属和回报格式，避免子智能体重复探索。
+    - 遵守本次响应和本次运行的调用额度，复用已有结果，不重复启动同一任务。
 
-    When NOT to use this tool:
-    - Merely because a task is complex, multi-step, verbose, or touches a large repo
-    - A single straightforward search, script, or command that is cheaper to run directly
-    - Splitting dependent steps across parallel subagents; keep the chain together
-      and delegate it as one bounded task only when specialist or context-isolation
-      benefit clearly wins
-    - Parallel work with overlapping files, shared mutable state, or external side effects
-    - Tasks requiring user interaction or clarification
-
-    Costs to include in the delegation decision:
-    - Repeating the same repository discovery in multiple contexts
-    - Coordination, verification, and synthesis of returned results
-    - Any task the parent can complete more cheaply with direct tools
+    精简回报约定：
+    - 默认最多 8 条简明要点或精简的结构化结果，包括所需结论或精选数据、原始来源引用、
+      产物绝对路径、验证状态和缺口；逐项验收和重要不确定性需要更多细节时保留。
+    - 不回传原始检索全集、整篇文档、完整 HTML、长日志或探索过程。用户需要的完整内容
+      保存到约定文件，主智能体只读取整合或核验所需部分，并交付完整产物。
+    - 文件保存失败时明确说明并返回必要内容，不能为了精简回报丢弃交付要求。
+    - 保留结论对应的原始网络及知识库引用、执行证据、覆盖限制和矛盾，不伪造来源标识。
+    - 优先使用 isolated 和简明任务说明；只有关键上下文无法准确浓缩时才使用 snapshot。
 
     Reading the result (subagent reports are SELF-REPORTS, not verified facts):
     - While receipt verification is enabled (the default; `verification.receipts_enabled`
@@ -774,8 +765,11 @@ async def task_tool(
       exhausted, deliver confirmed results with explicit gaps and uncertainty.
 
     Args:
-        description: Short label for the delegated task (3–5 words). This is required; provide it first.
-        prompt: The task description for the subagent. Be specific and clear about what needs to be done.
+        description: Short label for the delegated task (3–5 words). This is optional; when provided, output it as the first tool argument.
+        prompt: 明确任务目标、边界、相关已知上下文、文件或副作用归属，以及精简回报格式。
+            指定需要返回的事实或数据字段、来源引用、产物路径、验证状态和缺口。
+            对大量检索或内容制作，委派完整处理流程并指定完整产物的保存位置，
+            不要求将全部中间数据粘贴回主智能体。
         subagent_type: The type of subagent to use.
         acceptance_criteria: Optional list of completion requirements, handed to
             the subagent as untrusted data appended to its task input (never as

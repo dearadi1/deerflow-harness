@@ -7,19 +7,22 @@
 from __future__ import annotations
 
 import copy
+import logging
 import threading
 import weakref
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 from langgraph.graph import END
+from langgraph.errors import GraphBubbleUp
 
-from deerflow.protocol import ClientStreamEvent
+from deerflow.protocol import ClientStreamEvent, ErrorData, ErrorEvent
 
 from deerflow.agents.middlewares.message_utils import is_genuine_user_message
 from deerflow.runtime.checkpoint_state import CheckpointStateAccessor, build_state_mutation_graph, graph_state_schema
+from deerflow.runtime.checkpoint_mode import CheckpointModeMismatchError, CheckpointModeReconfigurationError
 from deerflow.runtime.context_keys import CHECKPOINT_AGENT_NAME_METADATA_KEY, DEFAULT_AGENT_NAME_METADATA_VALUE
 from deerflow.utils.thread_id import resolve_thread_id
 
@@ -31,6 +34,7 @@ _REGISTRY_GUARD = threading.Lock()
 _CLIENT_LOCKS: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
 _THREAD_LOCKS: weakref.WeakValueDictionary[str, Any] = weakref.WeakValueDictionary()
 _MAX_LINEAGE_DEPTH = 10000
+logger = logging.getLogger(__name__)
 
 
 class ReplayUnavailableError(ValueError):
@@ -39,6 +43,10 @@ class ReplayUnavailableError(ValueError):
 
 class ReplayConflictError(RuntimeError):
     """客户端或线程仍被另一次生成占用。"""
+
+
+class ReplayAccessError(PermissionError):
+    """线程归属校验拒绝，不属于执行中的意外失败。"""
 
 
 def _turn_locks(client: Any, thread_id: str) -> tuple[Any, Any]:
@@ -67,25 +75,63 @@ def _reserve_turn(client: Any, thread_id: str) -> Iterator[None]:
 
 
 def stream_client_turn(client: Any, message: str, *, thread_id: str | None, replay_last_turn: bool, **kwargs: Any) -> Iterator[ClientStreamEvent]:
-    """保留原流事件协议，并在异常或提前关闭时恢复重放前的有效状态。"""
+    """清理和恢复完成后，将尚未处理的运行异常转换为唯一失败终态。"""
     if not isinstance(replay_last_turn, bool):
         raise TypeError("replay_last_turn 必须是布尔值")
     if replay_last_turn and thread_id is None:
         raise ReplayUnavailableError("重新生成必须提供已有 thread_id")
     thread_id = resolve_thread_id(thread_id)
     with _reserve_turn(client, thread_id):
-        replay = ClientTurnReplay(enabled=replay_last_turn)
-        inner = client._stream_turn(message, thread_id=thread_id, _turn_replay=replay, **kwargs)
+        last_seq = 0
         try:
-            for event in inner:
-                if event.type == "end" and event.agent_id == "main": # 仅识别主agent结束
-                    replay.committed = True
+            with closing(_stream_completed_turn(client, message, thread_id, replay_last_turn, kwargs)) as events:
+                for event in events:
+                    last_seq = event.seq
+                    yield event
+        except (GraphBubbleUp, ReplayUnavailableError, ReplayConflictError, ReplayAccessError, CheckpointModeMismatchError, CheckpointModeReconfigurationError):
+            raise
+        except Exception:
+            logger.exception("客户端运行失败：thread_id=%s", thread_id)
+            yield ErrorEvent(type="error", agent_id="main", thread_id=thread_id, seq=last_seq + 1, data=ErrorData(error="智能体执行失败，当前任务无法继续"))
+
+
+def _stream_completed_turn(client: Any, message: str, thread_id: str, replay_last_turn: bool, kwargs: dict) -> Iterator[ClientStreamEvent]:
+    replay = ClientTurnReplay(enabled=replay_last_turn)
+    inner = client._stream_turn(message, thread_id=thread_id, _turn_replay=replay, **kwargs)
+    pending_end = None
+    active_error = None
+    try:
+        for event in inner:
+            if event.type == "end" and event.agent_id == "main":
+                # 先耗尽生成器，确保其 finally 成功，才承诺本轮正常结束。
+                pending_end = event
+            else:
                 yield event
-        finally:
-            try:
-                inner.close()
-            finally:
-                replay.restore_if_needed()
+    except BaseException as error:
+        active_error = error
+        raise
+    finally:
+        _cleanup_client_turn(inner, replay, completed=pending_end is not None, active_error=active_error)
+    if pending_end is not None:
+        yield pending_end
+
+
+def _cleanup_client_turn(inner: Iterator, replay: ClientTurnReplay, *, completed: bool, active_error: BaseException | None) -> None:
+    """始终尝试恢复重放；清理异常不能覆盖最初失败或取消信号。"""
+    cleanup_error = None
+    try:
+        inner.close()
+    except Exception as error:
+        logger.exception("关闭客户端运行失败")
+        cleanup_error = error
+    replay.committed = completed and active_error is None and cleanup_error is None
+    try:
+        replay.restore_if_needed()
+    except Exception as error:
+        logger.exception("恢复客户端重放失败")
+        cleanup_error = cleanup_error or error
+    if active_error is None and cleanup_error is not None:
+        raise cleanup_error
 
 
 def _checkpoint_id(config: dict[str, Any]) -> str | None:
@@ -137,7 +183,7 @@ class ClientTurnReplay:
         persisted_metadata = getattr(checkpoint, "metadata", None) or {}
         owner = persisted_metadata.get(_OWNER_KEY)
         if owner is not None and owner != context["user_id"]:
-            raise PermissionError("当前用户不能访问该线程")
+            raise ReplayAccessError("当前用户不能访问该线程")
         metadata = config.setdefault("metadata", {})
         metadata.update({
             _OWNER_KEY: context["user_id"],

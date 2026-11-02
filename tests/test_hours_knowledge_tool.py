@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from pydantic import create_model
 
-from deerflow import callable as callbacks
 from deerflow.client import DeerFlowClient
+from deerflow.community.hours_knowledge import callable as callbacks
 from deerflow.community.hours_knowledge.tools import knowledge_base_search_tool
 from deerflow.tools.types import Runtime
 
@@ -95,10 +95,24 @@ class HoursKnowledgeToolTests(unittest.TestCase):
     def test_invalid_inputs_do_not_call_backend(self):
         callback = Mock(return_value=[])
         callbacks.configure_knowledge_search(callback)
-        for inputs in ({"description": " "}, {"query": " "}, {"top_k": 0}, {"top_k": 101}, {"top_k": "bad"}):
+        for inputs in ({"query": " "}, {"top_k": 0}, {"top_k": 101}, {"top_k": "bad"}):
             with self.subTest(inputs=inputs):
                 self.assertTrue(self.invoke(**inputs).startswith("Error: "))
         callback.assert_not_called()
+
+    def test_optional_description_does_not_block_search(self):
+        callback = Mock(return_value=[make_item()])
+        callbacks.configure_knowledge_search(callback)
+        for arguments in ({}, {"description": ""}, {"description": " "}):
+            for asynchronous in (False, True):
+                with self.subTest(arguments=arguments, asynchronous=asynchronous):
+                    parameters = {"runtime": self.runtime, "query": "聚合条件", **arguments}
+                    if asynchronous:
+                        result = asyncio.run(knowledge_base_search_tool.ainvoke(parameters))
+                    else:
+                        result = knowledge_base_search_tool.invoke(parameters)
+                    self.assertEqual(result[0]["title"], "同名文档")
+                    callback.assert_called_with(**self.parameters, query="聚合条件", top_k=5)
 
     def test_model_schema_has_only_requested_inputs_in_order(self):
         schema = knowledge_base_search_tool.tool_call_schema.model_json_schema()

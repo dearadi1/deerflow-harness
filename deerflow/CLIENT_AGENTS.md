@@ -74,9 +74,11 @@ for event in client.stream(
 | `thinking_enabled` | `bool` | 客户端的 `thinking_enabled`，构造默认 `True` | 写入 `configurable.thinking_enabled`，用于模型和 Agent 构建。 |
 | `plan_mode` | `bool` | 客户端的 `plan_mode`，构造默认 `False` | 映射为 `configurable.is_plan_mode`。 |
 | `subagent_enabled` | `bool` | 客户端的 `subagent_enabled`，构造默认 `False` | 写入 `configurable.subagent_enabled`。 |
-| `recursion_limit` | `int` | `100` | 写入 `RunnableConfig.recursion_limit`，限制图执行递归步数。 |
+| `recursion_limit` | `int` | 非空的环境变量 `DEER_FLOW_RECURSION_LIMIT`，否则 `100` | 写入 `RunnableConfig.recursion_limit`，限制图执行步数；环境变量优先于调用参数。 |
 
-这些覆盖值使用 `kwargs.get(key, default)` 读取：显式传入 `None` 不等于省略参数。布尔配置应传入真正的布尔值，不能把字符串 `"false"` 当成关闭开关。
+`recursion_limit` 的优先级为：非空的 `DEER_FLOW_RECURSION_LIMIT` → 调用参数 → `100`。可在 `.env` 中设置 `DEER_FLOW_RECURSION_LIMIT=300`，也可通过 `DEER_FLOW_ENV_FILE` 指定环境文件；沿用框架启动时的加载机制，已有进程环境变量不会被环境文件覆盖。每次构建运行配置时读取进程环境变量，但不会重新读取环境文件。环境变量去除首尾空白后为空视为未设置；非空值必须是正整数，否则运行配置构建失败。客户端池的 `session.stream()` / `session.chat()` 使用相同规则。
+
+其他覆盖值及环境变量未设置时的 `recursion_limit` 使用 `kwargs.get(key, default)` 读取：显式传入 `None` 不等于省略参数。布尔配置应传入真正的布尔值，不能把字符串 `"false"` 当成关闭开关。
 
 ### 3.2 用户与授权上下文
 

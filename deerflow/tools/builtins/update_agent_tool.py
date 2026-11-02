@@ -77,7 +77,7 @@ OptionalStringList = Annotated[list[str] | None, BeforeValidator(_normalize_null
 @tool(parse_docstring=True)
 def update_agent(
     runtime: Runtime,
-    description: OptionalText,
+    description: OptionalText = "",
     soul: OptionalText = None,
     skills: OptionalStringList = None,
     tool_groups: OptionalStringList = None,
@@ -98,7 +98,7 @@ def update_agent(
     fields instead.
 
     Args:
-        description: New one-line description of the agent. This is required; provide it first; use null to leave it unchanged.
+        description: New one-line description of the agent. This is optional; when provided, output it as the first tool argument. Omit, use an empty string, or use null to leave it unchanged.
         soul: Optional full replacement SOUL.md content.
         skills: Optional skill whitelist. ``[]`` = no skills, omit = unchanged.
         tool_groups: Optional tool-group whitelist. ``[]`` = empty, omit = unchanged.
@@ -126,7 +126,7 @@ def update_agent(
     if channel_name in _UNTRUSTED_CHANNELS:
         return _err(f"update_agent is disabled on the {channel_name!r} channel. Self-mutation requests must come from an operator-trusted surface (chat UI or the HTTP API), not a webhook fan-out.")
 
-    if soul is None and description is None and skills is None and tool_groups is None and model is None:
+    if soul is None and not description and skills is None and tool_groups is None and model is None:
         return _err('No fields provided. Pass at least one of: soul, description, skills, tool_groups, model. Omit unchanged fields instead of passing null-like strings such as "null", "none", or "undefined".')
 
     # Reject empty / whitespace-only soul before touching the filesystem.
@@ -185,9 +185,9 @@ def update_agent(
     # Force the on-disk ``name`` to match the directory we are writing into,
     # even if ``existing_cfg.name`` had drifted (e.g. from manual yaml edits).
     config_data: dict[str, Any] = {"name": agent_name}
-    new_description = description if description is not None else existing_cfg.description
+    new_description = description or existing_cfg.description
     config_data["description"] = new_description
-    if description is not None and description != existing_cfg.description:
+    if description and description != existing_cfg.description:
         updated_fields.append("description")
 
     new_model = model if model is not None else existing_cfg.model

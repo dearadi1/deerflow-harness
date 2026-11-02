@@ -228,14 +228,22 @@ class ClientReplayTests(unittest.TestCase):
                 self.stream(client, "保留问题")
                 original = deepcopy(harness.snapshot().values)
                 harness.fail = True
-                with self.assertRaisesRegex(RuntimeError, "模拟模型失败"):
-                    self.stream(client, "失败修改", replay_last_turn=True)
+                events = self.stream(client, "失败修改", replay_last_turn=True)
+                self.assertEqual(events[-1].type, "error")
+                self.assertFalse(any(event.type == "end" and event.agent_id == "main" for event in events))
                 self.assertTrue(harness.wrote_failure)
                 self.assertEqual(harness.snapshot().values, original)
                 self.assertFalse(harness.snapshot().next)
                 harness.fail = False
                 self.stream(client, "成功修改", replay_last_turn=True)
                 self.assertEqual(self.users(harness.snapshot()), ["成功修改"])
+
+    def test_checkpoint_read_failure_becomes_terminal_error(self):
+        harness, client = self.harness("full")
+        with patch.object(harness.checkpointer, "get_tuple", side_effect=OSError("数据库不可用")):
+            events = self.stream(client, "问题")
+        self.assertEqual([event.type for event in events], ["error"])
+        self.assertEqual(events[0].seq, 1)
 
     def test_early_close_restores_original_state_and_releases_locks(self):
         for mode in ("full", "delta"):
@@ -406,8 +414,7 @@ class ClientReplayTests(unittest.TestCase):
     def test_incomplete_normal_turn_cannot_be_replayed(self):
         harness, client = self.harness("full")
         harness.fail = True
-        with self.assertRaises(RuntimeError):
-            self.stream(client, "未完成问题")
+        self.assertEqual(self.stream(client, "未完成问题")[-1].type, "error")
         original = deepcopy(harness.snapshot().values)
         with self.assertRaises(ReplayConflictError):
             self.stream(client, "不能重放", replay_last_turn=True)

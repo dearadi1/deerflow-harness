@@ -438,7 +438,11 @@ class AgentClientSession:
         disabled_tools: list[str] | None = None,
         **kwargs: Any,
     ) -> Iterator[Any]:
-        """流式调用底层客户端，并在整个流期间保持 session 租约。"""
+        """流式调用底层客户端，并在整个流期间保持 session 租约。
+
+        非空的 DEER_FLOW_RECURSION_LIMIT 环境变量优先于透传的 recursion_limit，
+        两者均未设置时使用 100；环境文件沿用框架加载机制。
+        """
         return self._invoke(
             "stream",
             (message,),
