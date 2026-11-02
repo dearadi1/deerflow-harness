@@ -119,6 +119,10 @@ Marked `live`, it is excluded from `make test` and skipped in default CI.
 真实模型中断验收为 `tests/test_agent_managed_stream_live.py`，仅在
 `DEER_FLOW_RUN_LIVE_TESTS=1` 时运行。使用固定合成提示、隔离 SQLite 和真实响应上的
 故障注入；full/delta 必须分进程执行。命令、范围和最近验收结果见 `AGENT_AGENTS.md`。
+池管理真实验收为 `tests/test_agent_client_pool_live.py`，覆盖 FIFO、共享容量、排队
+超时与上限、session 线程归属、关闭排空、缓存失效、多用户状态隔离和本地 HTTP
+断连。公共动作从 `agent_client` 进入；共享模型与传输夹具位于
+`tests/agent_pool_live_support.py`，报告不能写入凭据或完整业务配置。
 
 **Gateway Conformance Tests** (`TestGatewayConformance`): Parse every dict-returning client method's output through its Gateway Pydantic model so missing required fields raise `ValidationError` in CI. Covers: `ModelsListResponse`, `ModelResponse`, `SkillsListResponse`, `SkillResponse`, `SkillInstallResponse`, `McpConfigResponse`, `UploadResponse`, `MemoryConfigResponse`, `MemoryStatusResponse`.
 
