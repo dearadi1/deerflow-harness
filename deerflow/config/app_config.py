@@ -500,6 +500,10 @@ class AppConfig(BaseModel):
         reading the file a second time. *extensions* is the already-loaded
         ``extensions_config.json`` to merge; when omitted the file is read.
         """
+        from deerflow.logging_config import configure_logging
+
+        # 配置版本检查也会记录日志，必须先切换到文件输出。
+        configure_logging(None)
         config_data = yaml.safe_load(text) or {}
 
         # Check config version before processing
@@ -527,6 +531,7 @@ class AppConfig(BaseModel):
         config_data["extensions"] = extensions_data
 
         result = cls.model_validate(config_data)
+        configure_logging(result)
         if not result.models:
             logger.warning(
                 "No models are configured in %s. Add at least one entry under `models:` (see the commented examples in config.example.yaml) or run `make setup`.",

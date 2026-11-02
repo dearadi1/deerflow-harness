@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from deerflow.config.app_config import apply_logging_level
+from deerflow.config.app_config import apply_logging_level, logging_level_from_config
+from deerflow.config.runtime_paths import runtime_home
 from deerflow.trace_context import get_current_trace_id
 
 DEFAULT_LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -474,9 +477,21 @@ class TraceTextFormatter(logging.Formatter):
 
 
 def _ensure_root_handler() -> None:
-    if logging.root.handlers:
+    directory = os.getenv("DEER_FLOW_LOG_DIR", "").strip()
+    log_directory = Path(directory).expanduser() if directory else runtime_home() / "logs"
+    log_file = (log_directory / "deerflow.log").resolve()
+    if len(logging.root.handlers) == 1 and isinstance(logging.root.handlers[0], logging.FileHandler) and logging.root.handlers[0].baseFilename == str(log_file):
         return
-    logging.basicConfig(level=logging.INFO, format=DEFAULT_LOG_FORMAT, datefmt=DEFAULT_LOG_DATE_FORMAT)
+    log_directory.mkdir(parents=True, exist_ok=True)
+    # 替换已有控制台处理器，避免同一条日志继续打印到终端。
+    logging.basicConfig(
+        filename=log_file,
+        encoding="utf-8",
+        level=logging_level_from_config(os.getenv("DEER_FLOW_LOG_LEVEL")),
+        format=DEFAULT_LOG_FORMAT,
+        datefmt=DEFAULT_LOG_DATE_FORMAT,
+        force=True,
+    )
 
 
 def _has_trace_filter(handler: logging.Handler) -> bool:
@@ -503,13 +518,7 @@ def _trace_formatter(format_name: str | None) -> logging.Formatter:
 
 
 def configure_logging(config: object) -> None:
-    """Configure DeerFlow logging from an AppConfig-like object.
-
-    With logging enhancement disabled this preserves the previous
-    ``basicConfig + apply_logging_level`` behavior. With enhancement enabled,
-    root handlers gain a trace-context filter and a formatter that includes
-    only the additional ``trace_id`` field.
-    """
+    """按环境变量写入文件，并保留配置中的脱敏及请求追踪格式。"""
     _ensure_root_handler()
     install_url_log_redaction()
 
@@ -530,4 +539,4 @@ def configure_logging(config: object) -> None:
             if getattr(handler.formatter, "_deerflow_trace_formatter", False):
                 handler.setFormatter(_default_formatter())
 
-    apply_logging_level(getattr(config, "log_level", None))
+    apply_logging_level(os.getenv("DEER_FLOW_LOG_LEVEL"))
