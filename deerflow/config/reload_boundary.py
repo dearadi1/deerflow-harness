@@ -55,12 +55,12 @@ STARTUP_ONLY_FIELDS: dict[str, str] = {
         "sandbox identity, mounts, remote metadata, and skill synchronization must keep using that one root until the Gateway restarts."
     ),
     "log_level": (
-        "apply_logging_level() runs only during app.py startup; it sets the deerflow/app logger levels and may lower root handler thresholds so configured messages can propagate. A freshly reloaded AppConfig does not retrigger it."
+        "日志等级在 Gateway 或嵌入式客户端初始化时应用；DEER_FLOW_LOG_LEVEL 优先于配置。配置热重载不会重新配置日志，需要重启服务。"
     ),
     "logging": (
-        "configure_logging() runs only during app.py startup; it installs/removes the trace-context filter and the enhanced formatter on root handlers, "
-        "and a freshly reloaded AppConfig does not retrigger it, so a runtime edit to logging.enhance.* needs a Gateway restart. Only log output is "
-        "affected: trace ids are issued unconditionally and always returned in the X-Trace-Id response header, whatever this setting says."
+        "configure_logging 在 Gateway 或嵌入式客户端初始化时安装按天写入的 JSONL Handler；"
+        "默认目录为 DEER_FLOW_HOME/logs，DEER_FLOW_LOG_DIR 可覆盖。logging.enhance.enabled 控制日志中的 trace_id；"
+        "文件格式固定为 JSONL，旧 format 字段保留兼容。配置热重载不重建日志输出，需要重启服务；Trace ID 的签发不受影响。"
     ),
     # Not part of the AppConfig Pydantic schema — channel credentials are
     # consumed directly by ``start_channel_service()`` once at lifespan

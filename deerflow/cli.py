@@ -8,6 +8,10 @@ from collections.abc import Sequence
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "logs":
+        from deerflow.log_cli import main as logs_main
+
+        return logs_main(arguments[1:])
     if arguments and arguments[0] == "init":
         from deerflow.project_init import main as init_main
 

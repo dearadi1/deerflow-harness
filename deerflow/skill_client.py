@@ -20,6 +20,7 @@ import yaml
 from pypinyin import lazy_pinyin
 
 from deerflow.client_config import load_client_config
+from deerflow.log_context import logged_operation
 from deerflow.config.app_config import AppConfig
 from deerflow.config.extensions_config import (
     ExtensionsConfig,
@@ -272,6 +273,7 @@ class _SkillOperations:
         self._validate_markdown(name, content)
         return content
 
+    @logged_operation("skill")
     @_chinese_errors
     def create_skill(self, user_id: str, name: str, description: str, **extra_fields: str) -> str:
         name = self._validate_skill_name(name)
@@ -297,6 +299,7 @@ class _SkillOperations:
             raise
         return None
 
+    @logged_operation("skill")
     @_chinese_errors
     def copy_skill(self, source_user_id: str, target_user_id: str, skill_name: str) -> str:
         """将来源用户的 custom 技能完整复制到目标用户，返回目标技能的绝对路径。
@@ -381,6 +384,7 @@ class _SkillOperations:
                 del states[name]
                 storage._write_skill_states(states)
 
+    @logged_operation("skill")
     @_chinese_errors
     def delete_skill(self, user_id: str, skill_name: str) -> None:
         """删除技能目录、历史记录和该用户的启用状态。"""
@@ -429,6 +433,7 @@ class _SkillOperations:
                 return deepcopy(metadata)
         raise RuntimeError("技能文件持续发生变化，暂时无法读取技能信息，请稍后重试")
 
+    @logged_operation("skill")
     @_chinese_errors
     def get_skill_info(self, user_id: str, skill_name: str) -> dict[str, Any]:
         """返回该用户 custom 技能的完整 YAML 头，保留各字段原始类型。
@@ -463,6 +468,7 @@ class _SkillOperations:
             "host_path": str(directory),
         }
 
+    @logged_operation("skill")
     @_chinese_errors
     def list_skills(self, user_id: str) -> list[dict[str, Any]]:
         """仅扫描当前作用域，复用详情缓存，包含禁用项并返回最终启用状态。"""
@@ -489,6 +495,7 @@ class _SkillOperations:
             state.update(user_enabled=user_enabled, enabled=global_enabled and user_enabled)
         return state
 
+    @logged_operation("skill")
     @_chinese_errors
     def list_skill_states(self, user_id: str) -> list[dict[str, Any]]:
         """独立查询用户自有 custom 的启用状态，不包含 legacy 或 integrations。"""
@@ -511,6 +518,7 @@ class _SkillOperations:
                 atomic_write_extensions_config(config_path, raw_config)
                 reload_extensions_config()
 
+    @logged_operation("skill")
     @_chinese_errors
     def set_skill_enabled(self, user_id: str, skill_name: str, enabled: bool) -> dict[str, Any]:
         """修改用户 custom 开关并返回有效状态；全局禁用仍具有约束力。"""
@@ -527,6 +535,7 @@ class _SkillOperations:
             self._notify_skill_change(user_id=storage.user_id)
         return self._skill_state(storage, skill_name, ExtensionsConfig.from_file())
 
+    @logged_operation("skill")
     @_chinese_errors
     def get_resource_tree(self, user_id: str, skill_name: str) -> list[dict[str, Any]]:
         """返回指定用户技能的资源树，路径相对技能根目录且使用 / 分隔。
@@ -567,6 +576,7 @@ class _SkillOperations:
             "children": children or None,
         }
 
+    @logged_operation("skill")
     @_chinese_errors
     def create_file(self, user_id: str, skill_name: str, path: str) -> None:
         with self._mutation(user_id, skill_name, protected_paths=(path,)) as (_, directory):
@@ -575,6 +585,7 @@ class _SkillOperations:
                 pass
             make_skill_written_path_sandbox_readable(directory, target)
 
+    @logged_operation("skill")
     @_chinese_errors
     def create_folder(self, user_id: str, skill_name: str, path: str) -> None:
         with self._mutation(user_id, skill_name, protected_paths=(path,)) as (_, directory):
@@ -582,6 +593,7 @@ class _SkillOperations:
             target.mkdir()
             make_skill_written_path_sandbox_readable(directory, target)
 
+    @logged_operation("skill")
     @_chinese_errors
     def delete_file(self, user_id: str, skill_name: str, path: str) -> None:
         with self._mutation(user_id, skill_name, protected_paths=(path,)) as (_, directory):
@@ -589,6 +601,7 @@ class _SkillOperations:
             self._require_file(target)
             target.unlink()
 
+    @logged_operation("skill")
     @_chinese_errors
     def delete_folder(self, user_id: str, skill_name: str, path: str) -> None:
         with self._mutation(user_id, skill_name, protected_paths=(path,)) as (_, directory):
@@ -608,10 +621,12 @@ class _SkillOperations:
             source.rename(target)
             make_skill_written_path_sandbox_readable(directory, target)
 
+    @logged_operation("skill")
     @_chinese_errors
     def move_file(self, user_id: str, skill_name: str, path: str, new_path: str) -> None:
         self._move(user_id, skill_name, path, new_path, folder=False)
 
+    @logged_operation("skill")
     @_chinese_errors
     def move_folder(self, user_id: str, skill_name: str, path: str, new_path: str) -> None:
         self._move(user_id, skill_name, path, new_path, folder=True)
@@ -649,6 +664,7 @@ class _SkillOperations:
             self._validate_markdown(directory.name, content)
         return target
 
+    @logged_operation("skill")
     @_chinese_errors
     def upload_file(self, user_id: str, skill_name: str, path: str, file_bytes: bytes) -> None:
         if not isinstance(file_bytes, (bytes, bytearray)):
@@ -662,6 +678,7 @@ class _SkillOperations:
             target = self._validate_upload(directory, path, content)
             self._write_text(directory, target, content)
 
+    @logged_operation("skill")
     @_chinese_errors
     def download_file(self, user_id: str, skill_name: str, path: str) -> bytes:
         storage = self._storage(user_id)

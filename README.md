@@ -59,6 +59,13 @@ uv run deerflow init --target /path/to/project --force
 `config_path="/path/to/project/config.yaml"`；本命令不修改配置加载规则或环境变量。
 若 uv 依赖来源固定了 Git revision，需要先更新到包含此功能的 revision 并同步依赖。
 
+## 日志归档与查询
+
+日志默认保存到 `${DEER_FLOW_HOME}/logs/deerflow-YYYY-MM-DD.jsonl`，不实时打印。
+通过 `.env` 的 `DEER_FLOW_LOG_DIR`、`DEER_FLOW_LOG_LEVEL` 配置目录和等级。
+使用 `uv run deerflow logs 日期 用户ID [线程ID]` 查看，模块筛选和导出见
+[日志使用说明](docs/logging.md)。
+
 ## 同步上游
 
 ### 交给 Agent 自动完成

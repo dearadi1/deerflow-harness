@@ -15,7 +15,12 @@ def load_client_config(config_path: str | None = None) -> AppConfig:
     if not selected_path:
         raise ValueError("必须显式传入 config_path 或设置环境变量 DEERFLOW_CONFIG_PATH")
     resolved_path = str(Path(selected_path).resolve())
+    from deerflow.logging_config import configure_logging
+
+    # 配置解析本身也会记录警告，先安装文件输出，再应用文件中的等级。
+    configure_logging(None)
     config = reload_app_config(resolved_path)
     # 后续 get_app_config 会重新解析路径，必须固定来源以保留配置及热更新语义。
     os.environ["DEER_FLOW_CONFIG_PATH"] = resolved_path
+    configure_logging(config)
     return config

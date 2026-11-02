@@ -58,6 +58,8 @@ from deerflow.config.extensions_config import (
 )
 from deerflow.config.paths import get_paths
 from deerflow.config.subagent_runtime_config import SubagentRuntimeConfig
+from deerflow.log_context import LoggedIterator
+from deerflow.logging_config import configure_logging
 from deerflow.mcp.lifecycle import LIFECYCLE_KEY, plan_mcp_lifecycle
 from deerflow.mcp_scope import THREAD_INCARNATION_CONTEXT_KEY
 from deerflow.models import create_chat_model
@@ -269,9 +271,11 @@ class DeerFlowClient:
                 explicit value for programmatic callers that do not want
                 env-var coupling.
         """
+        configure_logging(None)
         if config_path is not None:
             reload_app_config(config_path)
         self._app_config = get_app_config()
+        configure_logging(self._app_config)
         runtime_config = getattr(self._app_config, "subagent_runtime", None)
         if not isinstance(runtime_config, SubagentRuntimeConfig):
             # Preserve compatibility with lightweight embedded/test configs
@@ -901,7 +905,13 @@ class DeerFlowClient:
         # records inside the binding while returning control to the caller
         # with the ContextVar restored.
         disabled_tools = self._validate_disabled_tools(disabled_tools)
+        # 重生成缺少线程时仍由原入口报错，不能生成新 ID 绕过其校验。
+        if not (replay_last_turn and thread_id is None):
+            thread_id = resolve_thread_id(thread_id)
         inner = stream_client_turn(self, message, thread_id=thread_id, replay_last_turn=replay_last_turn, disabled_tools=disabled_tools, **kwargs)
+        inner = LoggedIterator(inner, logger, component="agent", operation="stream",
+                               user_id=kwargs.get("user_id") or get_effective_user_id(),
+                               thread_id=thread_id, replay_last_turn=replay_last_turn)
         _EXHAUSTED = object()
         try:
             while True:

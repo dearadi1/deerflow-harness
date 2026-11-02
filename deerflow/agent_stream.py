@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from collections import deque
 from collections.abc import Iterator
@@ -10,12 +11,15 @@ from contextvars import copy_context
 from typing import TYPE_CHECKING, Any
 
 from deerflow.protocol import ClientStreamEvent
+from deerflow.log_context import OperationLog, log_context, log_operation
 from deerflow.runtime.client_async import DrainingExecutor, StreamCleanupError, _sync_call, stream_managed_turn
 from deerflow.runtime.user_context import CurrentUser, reset_current_user, set_current_user
 from deerflow.trace_context import bind_trace_id, generate_trace_id, get_current_trace_id, reset_trace_id
 
 if TYPE_CHECKING:
     from deerflow.agent_client import DeerFlowClientPool, _ClientSlot
+
+logger = logging.getLogger(__name__)
 
 
 class StreamCloseTimeoutError(TimeoutError):
@@ -95,6 +99,7 @@ class ManagedAgentStream(Iterator[ClientStreamEvent]):
         self._trace_id = get_current_trace_id() or generate_trace_id()
         self._context = copy_context()
         self._worker: ManagedStreamWorker | None = None
+        self._event_failed = False
 
     @property
     def closed(self) -> bool:
@@ -143,13 +148,20 @@ class ManagedAgentStream(Iterator[ClientStreamEvent]):
         timeout = _validate_timeout(timeout)
         if self._worker is not None and threading.current_thread() is self._worker.thread:
             raise RuntimeError("不能在托管执行线程中等待自身关闭")
-        self._request_stop()
-        if not self._done.wait(timeout):
-            raise StreamCloseTimeoutError("等待流关闭超时，执行或清理尚未结束")
-        if self._cleanup_error is not None:
-            raise self._cleanup_error
+        with log_operation(logger, **self._log_fields("close_stream")):
+            self._request_stop()
+            if not self._done.wait(timeout):
+                raise StreamCloseTimeoutError("等待流关闭超时，执行或清理尚未结束")
+            if self._cleanup_error is not None:
+                raise self._cleanup_error
+
+    def _log_fields(self, operation: str) -> dict[str, Any]:
+        return {"component": "agent", "operation": operation, "user_id": str(self._user.id),
+                "thread_id": self._options["thread_id"], "trace_id": self._trace_id,
+                "replay_last_turn": self._options["replay_last_turn"]}
 
     async def _publish(self, event: ClientStreamEvent) -> None:
+        self._event_failed |= event.type == "error"
         space = self._space
         assert space is not None
         while True:
@@ -173,6 +185,18 @@ class ManagedAgentStream(Iterator[ClientStreamEvent]):
             await stream.aclose()
 
     async def _run(self) -> None:
+        with log_context(**self._log_fields("managed_stream")):
+            operation = OperationLog(logger)
+            try:
+                await self._run_bound()
+            finally:
+                status = "failed" if self._error is not None or self._event_failed else "cancelled" if self._stopping else "completed"
+                operation.finish(status, error=self._error)
+                with self._condition:
+                    self._done.set()
+                    self._condition.notify_all()
+
+    async def _run_bound(self) -> None:
         user_token = set_current_user(self._user)
         trace_token = bind_trace_id(self._trace_id)
         try:
@@ -200,9 +224,6 @@ class ManagedAgentStream(Iterator[ClientStreamEvent]):
                 self._task = None
                 self._space = None
             self._pool._release(self._slot, self._owner)
-            with self._condition:
-                self._done.set()
-                self._condition.notify_all()
 
     def __enter__(self) -> ManagedAgentStream:
         return self

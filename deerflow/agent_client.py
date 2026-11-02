@@ -32,6 +32,7 @@ middleware，请通过 client_factory 为每个实例创建独立对象。
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import threading
@@ -48,6 +49,7 @@ from deerflow.agent_stream import ManagedAgentStream, ManagedStreamWorker, Strea
 from deerflow.client import DeerFlowClient
 from deerflow.client_config import load_client_config
 from deerflow.config.app_config import get_app_config
+from deerflow.log_context import LoggedIterator, log_context, log_operation
 from deerflow.runtime.client_async import StreamCleanupError
 from deerflow.runtime.user_context import CurrentUser, get_current_user, reset_current_user, set_current_user
 from deerflow.utils.thread_id import resolve_thread_id
@@ -59,6 +61,7 @@ __all__ = [
 ]
 
 _INITIALIZATION_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 _INVALIDATING_METHODS = frozenset({
     "reset_agent", "update_mcp_config", "update_skill", "install_skill",
     "reload_memory", "import_memory", "clear_memory", "create_memory_fact",
@@ -258,14 +261,15 @@ class DeerFlowClientPool:
         }
         wait_timeout = self._acquire_timeout if acquire_timeout is None else _validate_timeout(acquire_timeout)
         owner = object()
-        slot = self._acquire(wait_timeout, owner=owner)
-        try:
-            stream = ManagedAgentStream(self, slot, owner, user, message, options, buffer_size)
-            stream._start()
-            return stream
-        except BaseException:
-            self._release(slot, owner)
-            raise
+        with log_operation(logger, component="agent", operation="start_stream", user_id=str(user.id), thread_id=options["thread_id"]):
+            slot = self._acquire(wait_timeout, owner=owner)
+            try:
+                stream = ManagedAgentStream(self, slot, owner, user, message, options, buffer_size)
+                stream._start()
+                return stream
+            except BaseException:
+                self._release(slot, owner)
+                raise
 
     def _acquire(self, timeout: float | None, *, owner: object | None = None) -> _ClientSlot:
         owner = threading.get_ident() if owner is None else owner
@@ -424,7 +428,8 @@ class AgentClientSession:
         token = set_current_user(self._user)
         self._in_call = True
         try:
-            yield
+            with log_context(user_id=str(self._user.id), thread_id=None, component="agent"):
+                yield
         finally:
             self._in_call = False
             reset_current_user(token)
@@ -489,17 +494,25 @@ class AgentClientSession:
                 raise RuntimeError("请先消费完或关闭当前流，再调用其他客户端方法")
             if "user_id" in kwargs and kwargs["user_id"] != str(self._user.id):
                 raise ValueError("调用的 user_id 必须与 session 绑定的用户一致")
-            self._pool._refresh(self._slot)
-            try:
-                result = getattr(self._slot.client, name)(*args, **kwargs)
-                if isinstance(result, Iterator):
-                    self._stream = _SessionStream(self, result)
-                    return self._stream
-                return result
-            finally:
-                # 部分写操作可能已提交后才报错，失败路径同样需要使旧缓存失效。
-                if name in _INVALIDATING_METHODS:
-                    self._pool.invalidate_agents()
+            if name in {"chat", "stream"} and not (kwargs.get("replay_last_turn") and kwargs.get("thread_id") is None):
+                kwargs = {**kwargs, "thread_id": resolve_thread_id(kwargs.get("thread_id"))}
+            fields = {"component": "agent", "operation": f"session.{name}", "user_id": str(self._user.id), "thread_id": kwargs.get("thread_id")}
+            call_fields = {**fields, "operation": "session.open_stream" if name == "stream" else fields["operation"]}
+            with log_operation(logger, **call_fields):
+                return self._invoke_bound(name, args, kwargs, fields)
+
+    def _invoke_bound(self, name: str, args: tuple, kwargs: dict, fields: dict) -> Any:
+        self._pool._refresh(self._slot)
+        try:
+            result = getattr(self._slot.client, name)(*args, **kwargs)
+            if isinstance(result, Iterator):
+                self._stream = _SessionStream(self, LoggedIterator(result, logger, **fields))
+                return self._stream
+            return result
+        finally:
+            # 部分写操作可能已提交后才报错，失败路径同样需要使旧缓存失效。
+            if name in _INVALIDATING_METHODS:
+                self._pool.invalidate_agents()
 
     def close(self) -> None:
         self._check_owner()

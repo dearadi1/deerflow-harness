@@ -5,17 +5,22 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from deerflow.config.app_config import apply_logging_level
+from deerflow.log_context import LOG_FIELDS, get_log_context
+from deerflow.log_files import DailyFileHandler, get_log_directory, get_log_level
 from deerflow.trace_context import get_current_trace_id
 
 DEFAULT_LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 TRACE_TEXT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - [trace_id=%(trace_id)s] - %(message)s"
 _TRACE_FILTER_NAME = "deerflow_trace_context_filter"
+_CONFIGURATION_LOCK = threading.RLock()
 
 # httpx logs ``HTTP Request: GET <full URL> HTTP/x.x <status> <duration>`` at
 # INFO before any response handling runs, and urllib3 logs
@@ -473,61 +478,84 @@ class TraceTextFormatter(logging.Formatter):
     _deerflow_trace_formatter = True
 
 
-def _ensure_root_handler() -> None:
-    if logging.root.handlers:
-        return
-    logging.basicConfig(level=logging.INFO, format=DEFAULT_LOG_FORMAT, datefmt=DEFAULT_LOG_DATE_FORMAT)
+class ClientContextFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        context = get_log_context()
+        for name in LOG_FIELDS:
+            if name in context and (name in {"user_id", "thread_id"} or not hasattr(record, name)):
+                setattr(record, name, context[name])
+        record.trace_id = context.get("trace_id") or get_current_trace_id() or "-"
+        return True
 
 
-def _has_trace_filter(handler: logging.Handler) -> bool:
-    return any(getattr(f, "name", None) == _TRACE_FILTER_NAME or isinstance(f, TraceContextFilter) for f in handler.filters)
+class DailyJsonFormatter(JsonTraceFormatter):
+    def __init__(self, *, include_trace: bool) -> None:
+        super().__init__()
+        self.include_trace = include_trace
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = json.loads(super().format(record))
+        payload["timestamp"] = datetime.fromtimestamp(record.created).astimezone().isoformat()
+        payload.update({name: getattr(record, name) for name in LOG_FIELDS if hasattr(record, name)})
+        payload.setdefault("user_id", None)
+        payload.setdefault("thread_id", None)
+        payload.update(process=record.process, thread=record.threadName)
+        if not self.include_trace:
+            payload.pop("trace_id", None)
+        # 异常末行也可能携带签名 URL，沿用已有脱敏规则处理整个异常文本。
+        for name in ("exc_info", "stack_info"):
+            if name in payload:
+                payload[name] = UrlRedactionFilter()._redact_message(payload[name])
+        return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def _install_trace_filter(handler: logging.Handler) -> None:
-    if not _has_trace_filter(handler):
-        handler.addFilter(TraceContextFilter())
+def _configure_file_handler(directory: Path) -> DailyFileHandler:
+    handler = next((item for item in logging.root.handlers if isinstance(item, DailyFileHandler) and item.directory == directory), None)
+    if handler is None:
+        handler = DailyFileHandler(directory)
+    for previous in list(logging.root.handlers):
+        if previous is not handler:
+            logging.root.removeHandler(previous)
+            if isinstance(previous, DailyFileHandler):
+                previous.close()
+    if handler not in logging.root.handlers:
+        logging.root.addHandler(handler)
+    return handler
 
 
-def _remove_trace_filter(handler: logging.Handler) -> None:
-    handler.filters = [f for f in handler.filters if not (getattr(f, "name", None) == _TRACE_FILTER_NAME or isinstance(f, TraceContextFilter))]
-
-
-def _default_formatter() -> logging.Formatter:
-    return logging.Formatter(DEFAULT_LOG_FORMAT, datefmt=DEFAULT_LOG_DATE_FORMAT)
-
-
-def _trace_formatter(format_name: str | None) -> logging.Formatter:
-    if (format_name or "text").strip().lower() == "json":
-        return JsonTraceFormatter()
-    return TraceTextFormatter(TRACE_TEXT_LOG_FORMAT, datefmt=DEFAULT_LOG_DATE_FORMAT)
+def _remove_console_handlers() -> None:
+    # uvicorn 等库会设置独立终端 Handler，必须同步移除才能避免继续实时打印。
+    for target in list(logging.root.manager.loggerDict.values()):
+        if not isinstance(target, logging.Logger):
+            continue
+        removed = False
+        for handler in list(target.handlers):
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                target.removeHandler(handler)
+                removed = True
+        if removed or not target.handlers:
+            target.propagate = True
 
 
 def configure_logging(config: object) -> None:
-    """Configure DeerFlow logging from an AppConfig-like object.
+    """统一写入按天划分的 JSONL 文件，环境变量覆盖目录和日志等级。"""
+    with _CONFIGURATION_LOCK:
+        directory = get_log_directory()
+        if config is None and any(isinstance(item, DailyFileHandler) and item.directory == directory for item in logging.root.handlers):
+            return
+        _configure_logging(config, directory)
 
-    With logging enhancement disabled this preserves the previous
-    ``basicConfig + apply_logging_level`` behavior. With enhancement enabled,
-    root handlers gain a trace-context filter and a formatter that includes
-    only the additional ``trace_id`` field.
-    """
-    _ensure_root_handler()
+
+def _configure_logging(config: object, directory: Path) -> None:
+    level = get_log_level(getattr(config, "log_level", None))
+    handler = _configure_file_handler(directory)
+    _remove_console_handlers()
     install_url_log_redaction()
-
     logging_config = getattr(config, "logging", None)
     enhance = getattr(logging_config, "enhance", None)
-    enhanced = bool(getattr(enhance, "enabled", False))
-
-    for handler in logging.root.handlers:
-        _install_url_redaction_filter(handler)
-        # URL redaction is level-agnostic and applies whether or not the
-        # trace enhancement is on; handler filters see propagated records
-        # from child loggers (urllib3 et al.), which logger filters cannot.
-        if enhanced:
-            _install_trace_filter(handler)
-            handler.setFormatter(_trace_formatter(getattr(enhance, "format", "text")))
-        else:
-            _remove_trace_filter(handler)
-            if getattr(handler.formatter, "_deerflow_trace_formatter", False):
-                handler.setFormatter(_default_formatter())
-
-    apply_logging_level(getattr(config, "log_level", None))
+    if not any(isinstance(item, ClientContextFilter) for item in handler.filters):
+        handler.addFilter(ClientContextFilter())
+    handler.setFormatter(DailyJsonFormatter(include_trace=bool(getattr(enhance, "enabled", False))))
+    handler.setLevel(level)
+    logging.root.setLevel(level)
+    apply_logging_level(logging.getLevelName(level))

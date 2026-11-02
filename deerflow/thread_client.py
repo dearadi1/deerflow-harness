@@ -16,6 +16,7 @@ import stat
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 from threading import RLock
 from typing import Literal
@@ -24,6 +25,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver, empty_checkpoint
 
 from deerflow.client_config import load_client_config
 from deerflow.config.paths import get_paths
+from deerflow.log_context import log_operation, logged_operation
 from deerflow.uploads.companions import invalidate_overwritten_upload, register_companion, resolve_companion
 from deerflow.uploads.manager import (
     UnsafeUploadPathError,
@@ -170,7 +172,7 @@ def _convert_document(source: Path, output: Path) -> Path | None:
     except RuntimeError:
         return convert()
     with ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(convert).result()
+        return executor.submit(copy_context().run, convert).result()
 
 
 class DeerFlowThreadClient:
@@ -226,11 +228,15 @@ class DeerFlowThreadClient:
 
     def create_thread(self, user_id: str) -> str:
         thread_id = str(uuid.uuid4())
+        with log_operation(logger, component="thread", operation="create_thread", user_id=user_id, thread_id=thread_id):
+            self._create_thread(user_id, thread_id)
+        return thread_id
+
+    def _create_thread(self, user_id: str, thread_id: str) -> None:
         directory = self._thread_dir(user_id, thread_id)
         with _thread_lock(user_id, thread_id):
             directory.mkdir(parents=True, exist_ok=False)
             self._initialize_thread(user_id, thread_id)
-        return thread_id
 
     def _initialize_thread(self, user_id: str, thread_id: str) -> None:
         try:
@@ -242,6 +248,7 @@ class DeerFlowThreadClient:
             get_paths().delete_thread_dir(thread_id, user_id=user_id)
             raise
 
+    @logged_operation("thread")
     def delete_thread(self, user_id: str, thread_id: str) -> None:
         """删除所有 checkpoint 命名空间及整个线程目录；不存在时不执行删除。"""
         with _thread_lock(user_id, thread_id):
@@ -263,6 +270,7 @@ class DeerFlowThreadClient:
             if owner is not None and owner != user_id:
                 raise PermissionError("checkpoint 属于其他用户，不能删除")
 
+    @logged_operation("thread")
     def upload_file(self, user_id: str, thread_id: str, file_name: str, file_bytes: bytes) -> None:
         """同名上传覆盖原文件；文档按现有配置转码，失败时保留原文件并记录日志。"""
         file_name = _validate_filename(file_name)
@@ -308,6 +316,7 @@ class DeerFlowThreadClient:
             companion = publish_upload_copy(original.parent, output.name, converted, claim_seed=output.name, seen_names={original.name})
             register_companion(original, companion)
 
+    @logged_operation("thread")
     def download_file(self, user_id: str, thread_id: str, file_path: str, area: FileArea = "outputs") -> bytes:
         _validate_area(area)
         file_parts = _validate_file_path(file_path)
@@ -315,6 +324,7 @@ class DeerFlowThreadClient:
             directory = self._files_dir(user_id, thread_id, area)
             return _read_thread_file(directory, file_parts)
 
+    @logged_operation("thread")
     def delete_file(self, user_id: str, thread_id: str, file_path: str, area: FileArea = "outputs") -> None:
         """仅 uploads 连带删除归属记录验证通过的 Markdown，不按同名猜测删除。"""
         _validate_area(area)
@@ -328,6 +338,7 @@ class DeerFlowThreadClient:
             if area == "uploads" and len(file_parts) == 1:
                 invalidate_overwritten_upload(original)
 
+    @logged_operation("thread")
     def thread_files(self, user_id: str, thread_id: str, area: FileArea = "outputs") -> list[str]:
         _validate_area(area)
         with _thread_lock(user_id, thread_id):

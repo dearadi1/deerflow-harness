@@ -1,5 +1,11 @@
 # DeerFlowClientPool 使用说明
 
+聊天执行及收尾日志自动关联 `user_id` 和 `thread_id`，默认写入
+`${DEER_FLOW_HOME}/logs/deerflow-YYYY-MM-DD.jsonl`。通过 `.env` 的
+`DEER_FLOW_LOG_DIR`、`DEER_FLOW_LOG_LEVEL` 配置，使用
+`uv run deerflow logs 日期 用户ID [线程ID]` 查询或导出，详见
+[日志使用说明](../docs/logging.md)。
+
 实现文件：[agent_client.py](agent_client.py)。原始客户端：[client.py](client.py)。
 
 `DeerFlowClientPool` 管理固定数量的 `DeerFlowClient`，实例不永久绑定用户。通过 `start_stream()` 托管一轮生成，或通过 `session(user_id=...)` 独占借用；两种方式共享容量和 FIFO 等待队列。

@@ -43,11 +43,12 @@ lead_prompt_language: en
 # ============================================================================
 # 日志
 # ============================================================================
-# deerflow 模块的日志级别（debug/info/warning/error）
+# DEER_FLOW_LOG_LEVEL 优先于此级别；日志只保存到按天划分的 JSONL 文件。
+# 默认目录为 DEER_FLOW_HOME/logs，可用 DEER_FLOW_LOG_DIR 覆盖。
 log_level: info
 
 # 始终会生成 Trace ID，并通过响应头 `X-Trace-Id` 返回；此配置块仅控制日志输出，
-# 即日志记录是否包含 `trace_id` 字段以及字段格式。默认关闭，因为启用后会改变日志格式。
+# 即日志记录是否包含 `trace_id` 字段。文件固定为 JSONL；format 保留兼容旧配置。
 # 需要重启才能生效（参见 reload_boundary.py）。
 logging:
   enhance:
