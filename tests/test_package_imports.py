@@ -1,4 +1,4 @@
-"""验证协议轻量导入后，顶层客户端和配置函数仍保持原有公共入口。"""
+"""验证协议轻量导入和当前顶层公共入口的实现归属。"""
 
 import importlib
 import subprocess
@@ -14,8 +14,7 @@ class PackageImportTests(unittest.TestCase):
             "DeerFlowClientPool": "deerflow.agent_client",
             "DeerFlowThreadClient": "deerflow.thread_client",
             "DeerFlowSkillClient": "deerflow.skill_client",
-            "configure_upload_file": "deerflow.callable",
-            "configure_knowledge_search": "deerflow.callable",
+            "configure_knowledge_search": "deerflow.community.hours_knowledge.callable",
         }
         self.assertEqual(set(package.__all__), set(exports))
         for name, module_name in exports.items():

@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .agent_client import DeerFlowClient, DeerFlowClientPool
-    from .callable import configure_knowledge_search, configure_upload_file
+    from .community.hours_knowledge.callable import configure_knowledge_search
     from .skill_client import DeerFlowSkillClient
     from .thread_client import DeerFlowThreadClient
 
@@ -12,7 +12,6 @@ __all__ = [
     "DeerFlowClientPool",
     "DeerFlowThreadClient",
     "DeerFlowSkillClient",
-    "configure_upload_file",
     "configure_knowledge_search",
 ]
 
@@ -21,8 +20,7 @@ _PUBLIC_MODULES = {
     "DeerFlowClientPool": ".agent_client",
     "DeerFlowThreadClient": ".thread_client",
     "DeerFlowSkillClient": ".skill_client",
-    "configure_upload_file": ".callable",
-    "configure_knowledge_search": ".callable",
+    "configure_knowledge_search": ".community.hours_knowledge.callable",
 }
 
 
