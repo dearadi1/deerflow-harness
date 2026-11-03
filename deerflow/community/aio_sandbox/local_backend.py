@@ -551,8 +551,11 @@ _DOCKER_NO_SUCH_CONTAINER_RE = re.compile(
     r"(?:error(?: response from daemon)?: )?no such (?:object|container): (?P<name>.+)",
     re.IGNORECASE,
 )
+# Docker network rm 会附加退出状态；仅允许固定尾行，避免把其他清理错误当成资源缺失。
 _DOCKER_NO_SUCH_NETWORK_RE = re.compile(
-    r"(?:error(?: response from daemon)?: )?(?:no such network: (?P<named>.+)|network (?P<embedded>.+) not found)",
+    r"(?:error(?: response from daemon)?: )?"
+    r"(?:no such network: (?P<named>[^\r\n]+)|network (?P<embedded>[^\r\n]+) not found)"
+    r"(?:\r?\nexit status 1)?",
     re.IGNORECASE,
 )
 
@@ -582,10 +585,9 @@ def _is_no_such_container_error(stderr: str, container_name: str) -> bool:
 
 
 def _is_no_such_network_error(stderr: str, network_name: str) -> bool:
-    """Accept Docker's complete missing-network response for this exact name.
+    """仅将目标网络缺失及可选的 CLI 退出摘要视为已清理。
 
-    Same contract as ``_is_no_such_container_error``: case-insensitive
-    scaffolding, byte-exact network name, full-message match.
+    固定报错格式不区分大小写，资源名称保持精确匹配；额外错误仍须阻断恢复。
     """
     message = (stderr or "").strip()
     match = _DOCKER_NO_SUCH_NETWORK_RE.fullmatch(message)
