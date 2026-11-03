@@ -1,3 +1,4 @@
+import asyncio
 import ctypes
 import errno
 import locale
@@ -9,12 +10,14 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import NamedTuple
 
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
+from deerflow.runtime.turn_cancellation import get_turn_cancellation_event, raise_if_turn_cancelled
 from deerflow.sandbox.download import DEFAULT_DOWNLOAD_LIMIT, download_limit
 from deerflow.sandbox.env_policy import build_sandbox_env
 from deerflow.sandbox.local.list_dir import list_dir
@@ -735,6 +738,23 @@ class LocalSandbox(Sandbox):
         return self._reverse_resolve_paths_in_output(final_output)
 
     @staticmethod
+    def _wait_for_command(process: subprocess.Popen, timeout: float) -> None:
+        cancellation = get_turn_cancellation_event()
+        if cancellation is None:
+            process.wait(timeout=timeout)
+            return
+        deadline = time.monotonic() + timeout
+        while True:
+            raise_if_turn_cancelled()
+            remaining = deadline - time.monotonic()
+            try:
+                process.wait(timeout=max(0, min(0.05, remaining)))
+                return
+            except subprocess.TimeoutExpired:
+                if remaining <= 0:
+                    raise
+
+    @staticmethod
     def _run_windows_command(
         args: list[str],
         timeout: float,
@@ -744,7 +764,9 @@ class LocalSandbox(Sandbox):
         fallback_encoding: str | None = None,
     ) -> tuple[str, str, int, bool]:
         """Run with bounded capture, a process-tree timeout, and locale decoding unless overridden."""
+        raise_if_turn_cancelled()
         timed_out = False
+        cancelled = False
         stdout_read_fd, stdout_write_fd = os.pipe()
         stderr_read_fd, stderr_write_fd = os.pipe()
         try:
@@ -792,7 +814,11 @@ class LocalSandbox(Sandbox):
 
         try:
             try:
-                process.wait(timeout=timeout)
+                LocalSandbox._wait_for_command(process, timeout)
+            except asyncio.CancelledError:
+                cancelled = True
+                LocalSandbox._terminate_windows_process_tree(process)
+                raise
             except subprocess.TimeoutExpired:
                 timed_out = True
                 LocalSandbox._terminate_windows_process_tree(process)
@@ -803,7 +829,7 @@ class LocalSandbox(Sandbox):
                 stderr_capture.mark_split_tail()
             returncode = process.returncode if process.returncode is not None else 0
         finally:
-            join_timeout = 10 if timed_out else _PIPE_DRAIN_JOIN_TIMEOUT_SECONDS
+            join_timeout = 10 if timed_out or cancelled else _PIPE_DRAIN_JOIN_TIMEOUT_SECONDS
             for thread in (stdout_thread, stderr_thread):
                 thread.join(timeout=join_timeout)
                 if thread.is_alive():
@@ -868,7 +894,9 @@ class LocalSandbox(Sandbox):
 
         Returns ``(stdout, stderr, returncode, timed_out)``.
         """
+        raise_if_turn_cancelled()
         timed_out = False
+        cancelled = False
         stdout_read_fd, stdout_write_fd = os.pipe()
         stderr_read_fd, stderr_write_fd = os.pipe()
         try:
@@ -906,13 +934,17 @@ class LocalSandbox(Sandbox):
 
         try:
             try:
-                process.wait(timeout=timeout)
+                LocalSandbox._wait_for_command(process, timeout)
+            except asyncio.CancelledError:
+                cancelled = True
+                LocalSandbox._terminate_process_group(process)
+                raise
             except subprocess.TimeoutExpired:
                 timed_out = True
                 LocalSandbox._terminate_process_group(process)
             returncode = process.returncode if process.returncode is not None else 0
         finally:
-            join_timeout = 10 if timed_out or not LocalSandbox._process_group_exists(process_group_id) else _PIPE_DRAIN_JOIN_TIMEOUT_SECONDS
+            join_timeout = 10 if timed_out or cancelled or not LocalSandbox._process_group_exists(process_group_id) else _PIPE_DRAIN_JOIN_TIMEOUT_SECONDS
             for thread in (stdout_thread, stderr_thread):
                 thread.join(timeout=join_timeout)
                 if thread.is_alive():

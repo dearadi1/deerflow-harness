@@ -13,6 +13,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from deerflow.protocol import ClientStreamEvent
 from deerflow.runtime.client_replay import ClientTurnReplay, _reserve_turn
+from deerflow.runtime.turn_cancellation import get_turn_cancellation_event, turn_cancellation_scope
 
 
 class StreamCleanupError(RuntimeError):
@@ -107,8 +108,11 @@ async def _drain_run_tasks(parent: asyncio.Task) -> list[BaseException]:
     excluded = {parent, asyncio.current_task()}
     errors: list[BaseException] = []
     while pending := asyncio.all_tasks() - excluded:
+        cancellation = get_turn_cancellation_event()
         for task in pending:
-            task.cancel()
+            # AIO 已收到停止并正在终止远端会话，不能在收拢派生任务时打断它的收尾。
+            if cancellation is None or task not in cancellation.cleanup_tasks:
+                task.cancel()
         results = await asyncio.gather(*pending, return_exceptions=True)
         errors.extend(result for result in results if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError))
     return errors
@@ -123,6 +127,15 @@ async def _finish_turn(stream, turn, replay, completed, executor, parent) -> Non
             errors.append(error)
     errors.extend(await _drain_run_tasks(parent))
     await executor.drain()
+    # 工具退出后解除停止标记，状态恢复和租约清理不能被同一信号再次中断。
+    with turn_cancellation_scope(None):
+        errors.extend(await _finish_turn_state(turn, replay, completed))
+    if errors:
+        raise StreamCleanupError("托管流收尾失败，实例池已停止分配") from BaseExceptionGroup("流收尾错误", errors)
+
+
+async def _finish_turn_state(turn, replay, completed) -> list[BaseException]:
+    errors: list[BaseException] = []
     try:
         await _sync_call(
             replay.finish_managed_turn,
@@ -138,8 +151,7 @@ async def _finish_turn(stream, turn, replay, completed, executor, parent) -> Non
             await _sync_call(release_sandbox_execution_lease, turn.context)
         except BaseException as error:
             errors.append(error)
-    if errors:
-        raise StreamCleanupError("托管流收尾失败，实例池已停止分配") from BaseExceptionGroup("流收尾错误", errors)
+    return errors
 
 
 async def stream_managed_turn(
