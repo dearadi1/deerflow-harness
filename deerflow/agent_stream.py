@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from deerflow.protocol import ClientStreamEvent
 from deerflow.runtime.client_async import DrainingExecutor, StreamCleanupError, _sync_call, stream_managed_turn
+from deerflow.runtime.turn_cancellation import TurnCancellation, turn_cancellation_scope
 from deerflow.runtime.user_context import CurrentUser, reset_current_user, set_current_user
 from deerflow.trace_context import bind_trace_id, generate_trace_id, get_current_trace_id, reset_trace_id
 
@@ -86,6 +87,7 @@ class ManagedAgentStream(Iterator[ClientStreamEvent]):
         self._events: deque[ClientStreamEvent] = deque()
         self._condition = threading.Condition()
         self._done = threading.Event()
+        self._cancellation = TurnCancellation()
         self._stopping = False
         self._error: BaseException | None = None
         self._cleanup_error: BaseException | None = None
@@ -131,6 +133,8 @@ class ManagedAgentStream(Iterator[ClientStreamEvent]):
             if self._stopping:
                 return
             self._stopping = True
+            # 同步工具必须先收到停止请求，不能等事件循环执行 task.cancel 回调。
+            self._cancellation.set()
             self._events.clear()
             self._condition.notify_all()
             if not self.closed and self._loop is not None and self._task is not None:
@@ -183,7 +187,8 @@ class ManagedAgentStream(Iterator[ClientStreamEvent]):
                 stopping = self._stopping
             if not stopping:
                 assert self._worker is not None
-                await self._produce(self._worker.executor)
+                with turn_cancellation_scope(self._cancellation):
+                    await self._produce(self._worker.executor)
         except asyncio.CancelledError:
             if not self._stopping:
                 self._error = RuntimeError("托管执行被意外取消")
@@ -193,6 +198,10 @@ class ManagedAgentStream(Iterator[ClientStreamEvent]):
                 self._cleanup_error = error
                 self._pool._mark_failed(self._slot, error)
         finally:
+            if self._cancellation.failure is not None and self._cleanup_error is None:
+                self._cleanup_error = self._cancellation.failure
+                self._error = self._cleanup_error
+                self._pool._mark_failed(self._slot, self._cleanup_error)
             reset_trace_id(trace_token)
             reset_current_user(user_token)
             with self._condition:

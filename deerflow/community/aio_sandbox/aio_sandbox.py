@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 import math
@@ -6,11 +7,13 @@ import uuid
 from dataclasses import dataclass, field
 
 import httpx
+from agent_sandbox import AsyncSandbox as AsyncAioSandboxClient
 from agent_sandbox import Sandbox as AioSandboxClient
 from agent_sandbox.core.api_error import ApiError
 from pydantic import ValidationError
 
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
+from deerflow.runtime.turn_cancellation import get_turn_cancellation_event, raise_if_turn_cancelled, run_cancellable_async
 from deerflow.sandbox.download import DEFAULT_DOWNLOAD_LIMIT as _MAX_DOWNLOAD_SIZE
 from deerflow.sandbox.download import download_limit, read_download_stream
 from deerflow.sandbox.remote_list_dir import parse_remote_list_dir_output, remote_list_dir_command
@@ -106,13 +109,15 @@ class AioSandbox(Sandbox):
                 raise ValueError("default_command_timeout must be positive")
             self._default_command_timeout = resolved_default_timeout
         self._base_url = base_url
+        self._request_headers = dict(request_headers or {})
+        self._http_trust_env = sandbox_http_trust_env(base_url)
         client_kwargs = {
             "base_url": base_url,
             "timeout": 600,
         }
         if request_headers:
             client_kwargs["headers"] = dict(request_headers)
-        if sandbox_http_trust_env(base_url):
+        if self._http_trust_env:
             self._client = AioSandboxClient(**client_kwargs)
         else:
             direct_client = httpx.Client(timeout=600, follow_redirects=True, trust_env=False)
@@ -406,7 +411,9 @@ class AioSandbox(Sandbox):
 
         Caller must hold ``self._lock``.
         """
-        if self._default_shell_corrupted and self._recovery_session_id is None:
+        # 托管轮次使用可定向终止的显式会话，不能对共享隐式 shell 发无归属的停止请求。
+        needs_explicit_session = self._default_shell_corrupted or get_turn_cancellation_event() is not None
+        if needs_explicit_session and self._recovery_session_id is None:
             self._recovery_session_id = self._create_shell_session(client)
         return self._recovery_session_id
 
@@ -428,7 +435,62 @@ class AioSandbox(Sandbox):
         }
         if session_id is not None:
             kwargs["id"] = session_id
-        return self._format_shell_result(client.shell.exec_command(**kwargs))
+        if get_turn_cancellation_event() is None:
+            return self._format_shell_result(client.shell.exec_command(**kwargs))
+        result = run_cancellable_async(lambda: self._execute_managed_request("shell", session_id, kwargs))
+        return self._format_shell_result(result)
+
+    async def _execute_managed_request(self, plane, session_id, kwargs):
+        cancellation = get_turn_cancellation_event()
+        assert cancellation is not None and session_id is not None
+        request_timeout = kwargs["request_options"]["timeout_in_seconds"]
+        async with httpx.AsyncClient(
+            timeout=request_timeout, follow_redirects=True,
+            trust_env=self._http_trust_env,
+        ) as transport:
+            client = AsyncAioSandboxClient(
+                base_url=self._base_url, headers=self._request_headers,
+                httpx_client=transport, timeout=request_timeout,
+            )
+            try:
+                if plane == "shell":
+                    result = await client.shell.exec_command(**kwargs)
+                    if getattr(getattr(result, "data", None), "status", None) == "hard_timeout":
+                        await self._finish_managed_session(client, plane, session_id)
+                    return result
+                return await client.bash.exec(**kwargs)
+            except asyncio.CancelledError:
+                # 先取消本地长请求，再关闭已知会话；确认远端退出后才能归还实例和对话锁。
+                await self._finish_managed_session(client, plane, session_id)
+                raise
+
+    async def _finish_managed_session(self, client, plane, session_id):
+        from deerflow.runtime.client_async import StreamCleanupError, _settle
+
+        cancellation = get_turn_cancellation_event()
+        parent = asyncio.current_task()
+        assert cancellation is not None and parent is not None
+        cancellation.protect_cleanup(parent)
+        cleanup = asyncio.create_task(self._close_cancelled_session(client, plane, session_id))
+        cancellation.protect_cleanup(cleanup)
+        try:
+            await _settle(cleanup)
+        except BaseException as error:
+            failure = StreamCleanupError("无法确认 AIO 命令已终止，实例池已停止分配")
+            failure.__cause__ = error
+            cancellation.failure = failure
+
+    async def _close_cancelled_session(self, client, plane, session_id):
+        try:
+            if plane == "shell":
+                result = await client.shell.cleanup_session(session_id, request_options=self._bounded_cleanup_request_options())
+            else:
+                result = await client.bash.close_session(session_id, request_options=self._bounded_cleanup_request_options())
+            if getattr(result, "success", None) is False:
+                raise OSError("AIO 未确认会话终止")
+        except ApiError as error:
+            if error.status_code != 404:
+                raise
 
     def _rotate_and_retry_shell(
         self,
@@ -535,6 +597,15 @@ class AioSandbox(Sandbox):
                         session_id=scoped.session_id,
                         timeout=effective_timeout,
                     )
+                except asyncio.CancelledError:
+                    session_id = scoped.session_id
+                    scoped.session_id = None
+                    if session_id is not None:
+                        self._cleanup_session_best_effort(
+                            client, session_id, context="cancelled execution scope",
+                            request_options=self._bounded_cleanup_request_options(),
+                        )
+                    raise
                 except httpx.TransportError as exc:
                     session_id = scoped.session_id
                     scoped.session_id = None
@@ -657,7 +728,8 @@ class AioSandbox(Sandbox):
 
     @classmethod
     def _is_session_invalidating_shell_status(cls, status: str | None) -> bool:
-        return status in ("terminated", "no_change_timeout") or cls._is_unexpected_shell_status(status)
+        managed_timeout = status == "hard_timeout" and get_turn_cancellation_event() is not None
+        return managed_timeout or status in ("terminated", "no_change_timeout") or cls._is_unexpected_shell_status(status)
 
     @classmethod
     def _unexpected_status_notice(cls, status: str) -> str:
@@ -788,6 +860,7 @@ class AioSandbox(Sandbox):
         # consistent with the local and e2b sandboxes and catches unsafe keys
         # early. ``_validate_extra_env`` is a no-op when ``env`` is None or empty.
         _validate_extra_env(env)
+        raise_if_turn_cancelled()
         effective_timeout = self._effective_command_timeout(timeout)
         if env:
             return self._execute_with_env(command, env, effective_timeout)
@@ -805,6 +878,15 @@ class AioSandbox(Sandbox):
                         session_id=session_id,
                         timeout=effective_timeout,
                     )
+                except asyncio.CancelledError:
+                    session_id = self._recovery_session_id
+                    self._recovery_session_id = None
+                    if session_id is not None:
+                        self._cleanup_session_best_effort(
+                            client, session_id, context="cancelled default shell",
+                            request_options=self._bounded_cleanup_request_options(),
+                        )
+                    raise
                 except httpx.TransportError as exc:
                     session_id = self._recovery_session_id
                     self._recovery_session_id = None
@@ -937,20 +1019,7 @@ class AioSandbox(Sandbox):
                 session_id: str | None = None
                 try:
                     session_id = self._create_bash_session(self._client)
-                    result = self._client.bash.exec(
-                        # /v1/bash keeps a subprocess stdin pipe open for writes.
-                        # This fresh, released session is non-interactive, so close
-                        # its default input before running the original script.
-                        # Explicit pipes/heredocs/files still override fd0. A plain
-                        # prefix keeps top-level parsing (aliases/extglob) and never
-                        # appends a delimiter that a trailing backslash can consume.
-                        # Do not apply exec to the persistent PTY transport above.
-                        command=f"exec < /dev/null\n{command}",
-                        session_id=session_id,
-                        env=env,
-                        hard_timeout=timeout,
-                        request_options=self._command_request_options(timeout),
-                    )
+                    result = self._exec_cancellable_bash(command, env, timeout, session_id)
                     data = result.data if result else None
                     stdout = (data.stdout or "") if data else ""
                     stderr = (data.stderr or "") if data else ""
@@ -1007,6 +1076,16 @@ class AioSandbox(Sandbox):
                     if session_id is not None:
                         self._cleanup_bash_session_best_effort(self._client, session_id)
             return "Error: bash.exec session disappeared after retry", None
+
+    def _exec_cancellable_bash(self, command, env, timeout, session_id):
+        kwargs = {
+            # 临时 bash 会话仍保留原有 stdin 和环境变量语义，远端按原同步方式执行。
+            "command": f"exec < /dev/null\n{command}", "session_id": session_id, "env": env,
+            "hard_timeout": timeout, "request_options": self._command_request_options(timeout),
+        }
+        if get_turn_cancellation_event() is None:
+            return self._client.bash.exec(**kwargs)
+        return run_cancellable_async(lambda: self._execute_managed_request("bash", session_id, kwargs))
 
     def read_file(
         self,

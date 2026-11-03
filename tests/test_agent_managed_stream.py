@@ -1,13 +1,18 @@
 """用真实 LangGraph 与内存/SQLite 存储验证跨线程停止及资源归还。"""
 
 import asyncio
+import os
+import shlex
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
@@ -15,16 +20,20 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
 
 from deerflow.agent_client import DeerFlowClientPool, PoolClosedError, PoolTimeoutError, StreamCleanupError, StreamCloseTimeoutError
 from deerflow.agents.thread_state import get_thread_state_schema
 from deerflow.client import DeerFlowClient
+from deerflow.community.aio_sandbox.aio_sandbox import AioSandbox
 from deerflow.protocol import parse_stream_event
 from deerflow.runtime.checkpoint_state import CheckpointStateAccessor
 from deerflow.runtime.checkpoint_cache.memory import MemoryCheckpointHistoryCache
 from deerflow.runtime.checkpointer.cached_saver import CachedHistorySaver
 from deerflow.runtime.client_replay import ReplayConflictError
 from deerflow.runtime.user_context import get_current_user
+from deerflow.sandbox import tools as sandbox_tools
+from deerflow.sandbox.local.local_sandbox import LocalSandbox
 from deerflow.trace_context import get_current_trace_id
 
 
@@ -154,6 +163,151 @@ class ManagedStreamTests(unittest.TestCase):
         self.streams.append(stream)
         return stream
 
+    def tool_harness(self, tool, arguments, mode="full", *, backend="memory"):
+        graph, pool = self.harness(mode, backend=backend)
+        builder = StateGraph(get_thread_state_schema(mode, 10))
+        builder.add_node("choose", lambda state: {"messages": [AIMessage(
+            content="", tool_calls=[{"name": tool.name, "args": arguments, "id": "tool_1", "type": "tool_call"}],
+        )]})
+        builder.add_node("tools", ToolNode([tool]))
+        builder.add_edge(START, "choose")
+        builder.add_edge("choose", "tools")
+        builder.add_edge("tools", END)
+        graph.graph = builder.compile(checkpointer=graph.saver)
+        for slot in pool._available:
+            slot.client._agent = graph.graph
+        return graph, pool
+
+    def wait_until(self, predicate):
+        deadline = time.monotonic() + 5
+        while not predicate():
+            if time.monotonic() >= deadline:
+                self.fail("等待工具进入耗时操作超时")
+            time.sleep(0.01)
+
+    def assert_prompt_close(self, stream):
+        started = time.monotonic()
+        stream.close(timeout=1.5)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertTrue(stream.closed)
+        self.assertFalse(any(event.type == "end" for event in stream))
+
+    def assert_process_stopped(self, process_id):
+        try:
+            os.kill(int(process_id), 0)
+        except ProcessLookupError:
+            return
+        try:
+            status = Path(f"/proc/{process_id}/stat").read_text().rsplit(") ", 1)[1].split()[0]
+        except FileNotFoundError:
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(process_id), 0)
+        else:
+            # Linux 容器的 PID 1 可能尚未回收孤儿僵尸；它已退出，不会再执行脚本。
+            self.assertEqual(status, "Z")
+
+    def test_close_interrupts_aio_shell_env_and_scoped_commands(self):
+        for variant in ("shell", "bash_env", "scoped_shell", "stop_failure"):
+            with self.subTest(variant=variant):
+                entered = threading.Event()
+                request_cancelled = threading.Event()
+                killed = threading.Event()
+                sandbox = AioSandbox("test", "http://127.0.0.1:1", home_dir="/home/test")
+                self.addCleanup(sandbox.close)
+                client = Mock()
+                self.enterContext(patch.object(sandbox, "_client", client))
+                self.enterContext(patch.object(sandbox, "_create_shell_session", return_value="shell-owned"))
+                self.enterContext(patch.object(sandbox, "_create_bash_session", return_value="bash-owned"))
+
+                async def execute(**kwargs):
+                    entered.set()
+                    try:
+                        await asyncio.sleep(60)
+                    finally:
+                        request_cancelled.set()
+
+                async def close_session(*args, **kwargs):
+                    self.assertTrue(request_cancelled.is_set())
+                    await asyncio.sleep(0.05)
+                    if variant == "stop_failure":
+                        raise OSError("无法连接 AIO")
+                    killed.set()
+                    return SimpleNamespace(success=True)
+
+                async_client = SimpleNamespace(
+                    shell=SimpleNamespace(exec_command=AsyncMock(side_effect=execute), cleanup_session=AsyncMock(side_effect=close_session)),
+                    bash=SimpleNamespace(exec=AsyncMock(side_effect=execute), close_session=AsyncMock(side_effect=close_session)),
+                )
+                self.enterContext(patch("deerflow.community.aio_sandbox.aio_sandbox.AsyncAioSandboxClient", return_value=async_client))
+                graph, pool = self.harness()
+
+                def answer(state):
+                    return {"messages": [AIMessage(content=sandbox.execute_command_in_scope(
+                        "sleep 60", env={"TEST": "1"} if variant == "bash_env" else None,
+                        scope_id="scope_1" if variant == "scoped_shell" else None,
+                    ))]}
+
+                builder = StateGraph(get_thread_state_schema("full", 10))
+                builder.add_node("answer", answer)
+                builder.add_edge(START, "answer")
+                builder.add_edge("answer", END)
+                graph.graph = builder.compile(checkpointer=graph.saver)
+                pool._available[0].client._agent = graph.graph
+                stream = self.start(pool)
+                self.assertTrue(entered.wait(5))
+                if variant == "stop_failure":
+                    with self.assertRaises(StreamCleanupError):
+                        stream.close(timeout=3)
+                    self.assertTrue(pool.stats["failed"])
+                    with self.assertRaises(PoolClosedError):
+                        self.start(pool)
+                    continue
+                self.assert_prompt_close(stream)
+                self.assertTrue(killed.is_set())
+                if variant == "bash_env":
+                    self.assertNotIn("async_mode", async_client.bash.exec.call_args.kwargs)
+                    async_client.bash.close_session.assert_awaited_once_with("bash-owned", request_options=sandbox._bounded_cleanup_request_options())
+                else:
+                    self.assertNotIn("async_mode", async_client.shell.exec_command.call_args.kwargs)
+                    async_client.shell.cleanup_session.assert_awaited_once_with("shell-owned", request_options=sandbox._bounded_cleanup_request_options())
+                self.assertFalse(graph.snapshot().next)
+                self.assertEqual(pool.stats["available"], 1)
+
+    @unittest.skipIf(os.name == "nt", "真实进程组终止在 POSIX 验证")
+    def test_close_kills_local_bash_and_children_before_returning_slot(self):
+        sandbox = LocalSandbox("local")
+        self.enterContext(patch.object(sandbox_tools, "ensure_sandbox_initialized_async", new_callable=AsyncMock))
+        self.enterContext(patch.object(sandbox_tools, "ensure_sandbox_initialized", return_value=sandbox))
+        self.enterContext(patch.object(sandbox_tools, "ensure_thread_directories_exist"))
+        self.enterContext(patch.object(sandbox_tools, "is_local_sandbox", return_value=True))
+        self.enterContext(patch.object(sandbox_tools, "is_host_bash_allowed", return_value=True))
+        self.enterContext(patch.object(sandbox_tools, "validate_local_bash_command_paths"))
+        self.enterContext(patch.object(sandbox_tools, "get_thread_data", return_value={"workspace_path": self.directory}))
+        self.enterContext(patch("deerflow.config.app_config.get_app_config", return_value=SimpleNamespace(sandbox=None)))
+        for mode in ("full", "delta"):
+            for backend in ("memory", "sqlite"):
+                with self.subTest(mode=mode, backend=backend):
+                    marker = Path(self.directory) / f"{mode}_{backend}.pid"
+                    script = (
+                        "import os, subprocess, sys, time; from pathlib import Path; "
+                        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                        f"Path({str(marker)!r}).write_text(str(os.getpid()) + ' ' + str(child.pid)); time.sleep(60)"
+                    )
+                    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+                    graph, pool = self.tool_harness(sandbox_tools.bash_tool, {"command": command}, mode, backend=backend)
+                    stream = self.start(pool)
+                    self.wait_until(marker.exists)
+                    process_ids = marker.read_text().split()
+                    self.assert_prompt_close(stream)
+                    for process_id in process_ids:
+                        self.assert_process_stopped(process_id)
+                    self.assertFalse(graph.snapshot().next)
+                    self.assertEqual(pool.stats["available"], 1)
+                    retry = ControlledGraph(graph.saver, mode)
+                    retry.release.set()
+                    pool._available[0].client._agent = retry.graph
+                    self.assertEqual(list(self.start(pool, "停止后继续"))[-1].type, "end")
+
     def test_cross_thread_close_without_next_frame_and_immediate_retry(self):
         for mode in ("full", "delta"):
             for backend in ("memory", "sqlite"):
@@ -221,6 +375,16 @@ class ManagedStreamTests(unittest.TestCase):
         graph.cleanup_release.set()
         stream.close(timeout=3)
         stream.close(timeout=0)
+        self.assertEqual(pool.stats["available"], 1)
+
+    def test_close_allows_required_sandbox_cleanup_commands_to_finish(self):
+        graph, pool = self.harness()
+        outputs = []
+        self.sandbox_release.side_effect = lambda context: outputs.append(LocalSandbox("local").execute_command("printf cleaned"))
+        stream = self.start(pool)
+        self.assertTrue(graph.entered.wait(5))
+        stream.close(timeout=3)
+        self.assertEqual(outputs, ["cleaned"])
         self.assertEqual(pool.stats["available"], 1)
 
     def test_bounded_buffer_can_close_without_any_consumer(self):
