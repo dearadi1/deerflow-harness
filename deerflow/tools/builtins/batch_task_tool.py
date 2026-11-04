@@ -32,6 +32,7 @@ from deerflow.subagents.batch_runtime import (
     get_subagent_batch_submitter,
 )
 from deerflow.subagents.registry import get_available_subagent_names, get_subagent_config
+from deerflow.tools.builtins.acceptance_criteria import AcceptanceCriteria
 from deerflow.tools.sync import make_sync_tool_wrapper
 from deerflow.tools.types import Runtime
 
@@ -39,7 +40,10 @@ from deerflow.tools.types import Runtime
 class BatchTaskItem(BaseModel):
     key: str = Field(min_length=1, max_length=128)
     prompt: str = Field(min_length=1, max_length=100_000)
-    acceptance_criteria: list[str] | None = Field(default=None, description="Optional completion requirements checked separately from execution status, using the same bounded checklist as task.")
+    acceptance_criteria: AcceptanceCriteria = Field(
+        default=None,
+        description="可选验收条件，必须传 JSON 字符串数组，不要把整个数组序列化为字符串；不需要时省略或传 null。使用与 task 相同的有界清单，验收结果与执行状态分别记录。",
+    )
 
 
 _NO_EXPLICIT_BATCH_SUBMITTER = object()
