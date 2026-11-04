@@ -115,15 +115,6 @@ _DEFAULT_GREP_MAX_RESULTS = 100
 _MAX_GREP_MAX_RESULTS = 500
 _DEFAULT_WRITE_FILE_ERROR_MAX_CHARS = 2000
 
-# Maximum bytes accepted in a single non-append write_file call (issue #3189).
-# Oversized single-shot writes correlate with LLM streaming chunk-gap timeouts
-# because the tool-call JSON payload (which the model must emit as one
-# continuous stream) grows past the safe window. 80 KB ≈ 20K tokens, a
-# comfortable headroom under the factory-default 240s stream_chunk_timeout.
-# Deployments can override via env var DEERFLOW_WRITE_FILE_MAX_BYTES; set to
-# 0 (or negative) to disable the guard entirely.
-_WRITE_FILE_CONTENT_MAX_BYTES = 80 * 1024
-_WRITE_FILE_MAX_BYTES_ENV = "DEERFLOW_WRITE_FILE_MAX_BYTES"
 _LOCAL_BASH_CWD_COMMANDS = {"cd", "pushd"}
 _LOCAL_BASH_COMMAND_WRAPPERS = {"command", "builtin"}
 _LOCAL_BASH_COMMAND_PREFIX_KEYWORDS = {"!", "{", "case", "do", "elif", "else", "for", "if", "select", "then", "time", "until", "while"}
@@ -2962,23 +2953,6 @@ async def _read_file_tool_async(
 read_file_tool.coroutine = _read_file_tool_async
 
 
-def _effective_write_file_max_bytes() -> int:
-    """Return the active size cap for non-append write_file calls.
-
-    Reads ``DEERFLOW_WRITE_FILE_MAX_BYTES`` at call time (not import time)
-    so tests and runtime tweaks take effect without restart. Falls back to
-    the default on missing/malformed values. A non-positive value disables
-    the guard.
-    """
-    raw = os.environ.get(_WRITE_FILE_MAX_BYTES_ENV)
-    if raw is None:
-        return _WRITE_FILE_CONTENT_MAX_BYTES
-    try:
-        return int(raw)
-    except ValueError:
-        return _WRITE_FILE_CONTENT_MAX_BYTES
-
-
 @tool("write_file", parse_docstring=True)
 def write_file_tool(
     runtime: Runtime,
@@ -3001,8 +2975,7 @@ def write_file_tool(
     Oversized single-shot writes correlate with LLM streaming chunk-gap
     timeouts because the tool-call JSON payload — which the model must emit as
     one continuous stream — grows past the safe window. For larger documents,
-    use ONE of these strategies (write_file rejects oversized payloads with an
-    actionable error):
+    use ONE of these strategies:
 
       1. INCREMENTAL EDIT (preferred for revisions): after the initial write,
          use `str_replace` to surgically update sections. This is the same
@@ -3010,11 +2983,7 @@ def write_file_tool(
          and keeps each tool call's payload small.
       2. APPEND-IN-CHUNKS (for new long-form content): split the document into
          sections, each well under 80 KB. First call uses append=False to
-         create the file; subsequent calls use append=True. The 80 KB cap does
-         NOT apply to append=True calls.
-
-    Operators can override the cap via env var `DEERFLOW_WRITE_FILE_MAX_BYTES`
-    (0 disables the guard entirely). Raising it risks streaming timeouts.
+         create the file; subsequent calls use append=True.
 
     Args:
         description: Briefly explain why you are writing to this path. This is optional; when provided, output it as the first tool argument.
@@ -3022,19 +2991,7 @@ def write_file_tool(
         content: The content to write to the file.
         append: Whether to append content to the end of the file instead of overwriting it. Defaults to False.
     """
-    if not append:
-        max_bytes = _effective_write_file_max_bytes()
-        if max_bytes > 0:
-            content_bytes = len(content.encode("utf-8"))
-            if content_bytes > max_bytes:
-                return (
-                    f"Error: write_file content ({content_bytes} bytes) exceeds the "
-                    f"{max_bytes}-byte single-call limit. Split the content into smaller "
-                    "pieces: either (a) write the first section now, then use `str_replace` "
-                    "for further edits, or (b) call write_file again with append=True "
-                    "carrying the next section. See SIZE POLICY in the tool docstring "
-                    "or issue #3189 for the rationale."
-                )
+    # 80 KB 仅用于提示模型分段生成，避免拒绝已生成的完整内容后重复消耗模型调用。
     try:
         requested_path = path
         sandbox = ensure_sandbox_initialized(runtime)

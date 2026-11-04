@@ -355,19 +355,14 @@ Found 1 matches under /mnt/user-data/workspace
 | 情况 | 实际输出 |
 |---|---|
 | 创建／覆盖／追加成功 | `OK`，没有文件路径或字节数 JSON。 |
-| 非追加调用超过大小限制 | 以 `Error: write_file content (<实际字节数> bytes) exceeds the <上限>-byte single-call limit.` 开头，后接下方固定拆分建议。 |
 | 写入目录 | `Error: Path is a directory, not a file: <path>` |
 | 权限不足 | `Error: Permission denied writing to file: <path>` |
 | 沙箱／OS／其他写入异常 | `Error: Failed to write file '<path>': <异常类名>: <detail>` |
 | 已存在文件未读取当前版本 | 中间件拒绝，见文末读后写保护；工具本体尚未执行。 |
 
-非追加内容默认上限为 **80×1024 字节（UTF-8）**；`DEERFLOW_WRITE_FILE_MAX_BYTES` 可覆盖，≤0 关闭限制；追加不受这个工具层限制。错误详情也可能被中间截断，并带 `... [write_file error truncated: <N> chars skipped] ...` 标记。内容是否完整还受模型输出限制影响，不能把 80 KiB 当成每次都能生成的保证。
+工具提示词保留单次非追加写入不超过 **80 KB UTF-8 内容**的要求，并引导长文分段生成；工具执行时不按内容大小拒绝或截断写入，首次写入、覆盖和追加均将完整内容交给沙箱。内容能否完整生成仍受模型输出限制影响，80 KB 不是生成成功的保证。
 
-超限错误后接的完整建议：
-
-```text
-Split the content into smaller pieces: either (a) write the first section now, then use `str_replace` for further edits, or (b) call write_file again with append=True carrying the next section. See SIZE POLICY in the tool docstring or issue #3189 for the rationale.
-```
+错误详情可能被中间截断，并带 `... [write_file error truncated: <N> chars skipped] ...` 标记；这只限制错误信息长度，不限制文件内容。
 
 ## 9. str_replace
 
