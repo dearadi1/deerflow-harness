@@ -127,6 +127,9 @@ async def _finish_turn(stream, turn, replay, completed, executor, parent) -> Non
             errors.append(error)
     errors.extend(await _drain_run_tasks(parent))
     await executor.drain()
+    cancellation = get_turn_cancellation_event()
+    if cancellation is not None:
+        await cancellation.tasks.drain()
     # 工具退出后解除停止标记，状态恢复和租约清理不能被同一信号再次中断。
     with turn_cancellation_scope(None):
         errors.extend(await _finish_turn_state(turn, replay, completed))
