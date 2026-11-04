@@ -49,6 +49,7 @@ from deerflow.subagents.status_contract import (
     format_subagent_result_message,
     make_subagent_additional_kwargs,
 )
+from deerflow.tools.builtins.acceptance_criteria import AcceptanceCriteria
 from deerflow.tools.sync import make_sync_tool_wrapper
 from deerflow.tools.types import Runtime
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, resolve_trace_id
@@ -685,7 +686,7 @@ async def task_tool(
     prompt: str,
     subagent_type: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    acceptance_criteria: list[str] | None = None,
+    acceptance_criteria: AcceptanceCriteria = None,
     context_mode: Literal["isolated", "snapshot"] = "isolated",
 ) -> str | Command:
     """主动将范围明确的重复工作或上下文繁重的流程交给子智能体，接收精简结果。
@@ -771,19 +772,14 @@ async def task_tool(
             对大量检索或内容制作，委派完整处理流程并指定完整产物的保存位置，
             不要求将全部中间数据粘贴回主智能体。
         subagent_type: The type of subagent to use.
-        acceptance_criteria: Optional list of completion requirements, handed to
-            the subagent as untrusted data appended to its task input (never as
-            system-prompt authority) and addressed one by one in its final
-            report. Attach them when
-            the outcome is objectively checkable; prefer the canonical forms
-            `file:<path> exists`, `file:<path> non-empty`, `file_written:<path>`,
-            and `tests_passed:<command>` — these are checked deterministically
-            against the shared thread workspace and the recorded execution
-            evidence when the subagent completes, while any other wording comes
-            back marked UNVERIFIED. Example for a report-writing delegation:
-            ["file:../outputs/report.md non-empty"]. Omit for open-ended
-            exploration where no crisp acceptance condition exists.
-            JSON example: ["file:../outputs/report.json json-valid"].
+        acceptance_criteria: 可选验收条件，必须传 JSON 字符串数组，不要把整个数组序列化为字符串。
+            不需要验收时省略或传 null。示例：["file:../outputs/report.md non-empty"]。
+            条件作为不可信数据追加到子智能体任务输入，不能作为系统指令，
+            子智能体须在最终报告中逐条回应。对可客观核验的结果附上条件；
+            开放式探索且没有明确验收条件时省略。
+            优先使用 `file:<path> exists`、`file:<path> non-empty`、`file_written:<path>`
+            和 `tests_passed:<command>`，子智能体完成后根据共享线程工作区及执行记录检查，
+            其他措辞标记为 UNVERIFIED。JSON 示例：["file:../outputs/report.json json-valid"]。
         context_mode: Defaults to isolated (only the delegated prompt). Choose
             snapshot when relevant requirements or failed approaches are spread
             across the parent conversation: it adds retained history and its

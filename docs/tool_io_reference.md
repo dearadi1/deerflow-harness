@@ -638,6 +638,8 @@ Successfully read image
 | `description` | string，默认 `""` | 日志／展示用简短描述，工具建议 3–5 个词；不是独立的任务内容。 |
 | `context_mode` | enum string，默认 `"isolated"` | `isolated` 只带委派输入；`snapshot` 额外带派发时父会话保留历史及摘要。之后的父会话不持续同步。 |
 
+`acceptance_criteria` 应传 JSON 字符串数组，不要将整个数组序列化为字符串。`task` 与 `batch_task` 的每项验收条件兼容多序列化一层的 JSON 数组字符串，解码后仍按字符串数组校验；普通文本、JSON 对象、非字符串元素及损坏的 JSON 仍会报错。
+
 验收条件的可识别形式：`file:<path> exists`、`file:<path> non-empty`、`file_written:<path>`、`tests_passed:<command>`、`file:<path> json-valid`、`file:<path> csv-columns:["id","name"]`。任意其他文字也可输入，但可能只能标为 UNVERIFIED。JSON 校验预算 50000 字节且只校验语法；CSV 只校验首条表头，允许额外列，表头读取预算 50000 字节，不校验数据行。
 
 **result：正常与各终态**

@@ -116,6 +116,22 @@ class SyncUpstreamTests(unittest.TestCase):
         self.assertEqual(git(self.target, "rev-parse", "HEAD"), previous)
         self.assertIn("无需创建提交", result.stdout)
 
+    def test_no_checkout_cache_prepares_only_module_and_preserves_existing_files(self):
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cached_module = self.cache / PREFIX
+        self.assertTrue(cached_module.is_dir())
+        self.assertFalse((self.cache / "LICENSE").exists())
+        cached_file = cached_module / "deerflow/core.py"
+        cached_file.write_text("local_cache = True\n", encoding="utf-8")
+        self.update_source("deerflow/core.py", "value = 2\n")
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.target / "deerflow/core.py").read_text(), "value = 2\n")
+        self.assertEqual(cached_file.read_text(), "local_cache = True\n")
+        expected_snapshot = git(self.source, "subtree", "split", f"--prefix={PREFIX}", "HEAD")
+        self.assertEqual(git(self.target, "rev-parse", "chore/upstream_module"), expected_snapshot)
+
     def test_unrelated_update_creates_no_commit(self):
         previous = git(self.target, "rev-parse", "HEAD")
         write_file(self.source, "frontend/index.js", "export default {};\n")

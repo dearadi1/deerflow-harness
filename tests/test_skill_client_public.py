@@ -237,6 +237,7 @@ class SkillClientPublicTests(unittest.TestCase):
                 ("zeta", "folder"),
                 ("中文", "folder"),
                 ("apple.txt", "file"),
+                ("SKILL.md", "file"),
                 ("zeta.txt", "file"),
                 ("中文.txt", "file"),
             ],
