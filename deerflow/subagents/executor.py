@@ -655,10 +655,6 @@ def _run_isolated_subagent_loop(
 ) -> None:
     """Run the persistent isolated subagent loop in a dedicated daemon thread."""
     asyncio.set_event_loop(loop)
-    from deerflow.runtime.turn_tasks import TurnTrackingExecutor, isolated_task_factory
-
-    loop.set_task_factory(isolated_task_factory)
-    loop.set_default_executor(TurnTrackingExecutor(thread_name_prefix="deerflow-subagent-io"))
     loop.call_soon(started_event.set)
     try:
         loop.run_forever()
@@ -793,13 +789,8 @@ def _submit_to_isolated_loop_in_context(
     """
 
     def _submit() -> Future[SubagentResult]:
-        from deerflow.runtime.turn_cancellation import get_turn_cancellation_event
-
         loop = _get_isolated_subagent_loop()
         coroutine = coro_factory()
-        cancellation = get_turn_cancellation_event()
-        if cancellation is not None:
-            return cancellation.tasks.submit(coroutine, loop)
         try:
             return asyncio.run_coroutine_threadsafe(coroutine, loop)
         except BaseException:
@@ -822,13 +813,7 @@ def run_on_isolated_subagent_loop[T](coro: Coroutine[Any, Any, T]) -> Future[T]:
     so registry cleanup scheduled from a failing poller still runs after the
     caller loop is gone.
     """
-    from deerflow.runtime.turn_cancellation import get_turn_cancellation_event
-
-    loop = _get_isolated_subagent_loop()
-    cancellation = get_turn_cancellation_event()
-    if cancellation is not None:
-        return cancellation.tasks.submit(coro, loop, cancel_on_drain=False)
-    return asyncio.run_coroutine_threadsafe(coro, loop)
+    return asyncio.run_coroutine_threadsafe(coro, _get_isolated_subagent_loop())
 
 
 def _copy_isolated_subagent_context() -> Context:
@@ -1934,9 +1919,6 @@ class SubagentExecutor:
                 except asyncio.CancelledError as exc:
                     close_failure = exc.__cause__
                     if isinstance(close_failure, Exception):
-                        from deerflow.runtime.turn_cancellation import record_turn_cleanup_failure
-
-                        record_turn_cleanup_failure(close_failure)
                         logger.warning(
                             "[trace=%s] Could not close interrupted subagent stream %s",
                             self.trace_id,
@@ -1944,10 +1926,7 @@ class SubagentExecutor:
                             exc_info=(type(close_failure), close_failure, close_failure.__traceback__),
                         )
                     raise
-                except Exception as close_failure:
-                    from deerflow.runtime.turn_cancellation import record_turn_cleanup_failure
-
-                    record_turn_cleanup_failure(close_failure)
+                except Exception:
                     cancel_requested = cancel_requested or result.cancel_event.is_set()
                     if active_error is None and not cancel_requested:
                         raise
@@ -2103,10 +2082,7 @@ class SubagentExecutor:
 
                     provider = get_sandbox_provider()
                     await get_sandbox_lease_manager(provider).release_async(sandbox_lease_owner_id)
-                except Exception as lease_failure:
-                    from deerflow.runtime.turn_cancellation import record_turn_cleanup_failure
-
-                    record_turn_cleanup_failure(lease_failure)
+                except Exception:
                     logger.warning(
                         "[trace=%s] Failed to release sandbox execution lease for subagent %s",
                         self.trace_id,

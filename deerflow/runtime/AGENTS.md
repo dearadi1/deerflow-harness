@@ -13,11 +13,6 @@ Memory/Redis bridges keep startup-only `stream_bridge.heartbeat_interval_seconds
 
 ### Checkpoint Channel Modes (`full` / `delta`)
 
-托管流的独立子任务必须通过 `turn_tasks.py` 记录真实退出，不能用已取消的
-`run_coroutine_threadsafe` Future 或子任务终态替代完成确认。先排空主循环任务和
-执行器，再排空本轮独立子任务及同步工作，最后恢复状态和释放租约；关闭等待超时
-不能释放槽位。隔离循环的任务工厂与执行器按轮次记录，禁止全局取消共享循环任务。
-
 嵌入式托管流在 `client_async.py` 中运行，复用同步 saver 的异步适配器必须保留
 `get_delta_channel_history` 与 serializer allowlist 语义。所有同步存储操作都排空后
 才传播取消；对话锁在派生任务、默认执行器、checkpoint 收尾和沙盒租约全部结束后
