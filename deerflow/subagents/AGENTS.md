@@ -1,10 +1,5 @@
 ### Subagent System (`packages/harness/deerflow/subagents/`)
 
-托管客户端的子任务继承本轮 `TurnCancellation`；独立循环的任务工厂、默认执行器
-和提交入口须保留 `turn_tasks.py` 的真实完成记账，取消跨线程 Future 不代表退出。
-延迟清理也须登记但不随主轮次取消，保证最终用量上报先于父轮次完成。流关闭和
-沙盒租约释放失败须通知托管轮次，不能只记日志后允许池复用。非托管调用保持原行为。
-
 Accumulate validated ToolMessage knowledge across values frames in
 `SubagentResult.knowledge_sources`: at most 100 sources, deduplicated by evidence ID.
 Publish before terminal state; retain through compaction. Ordinary `task` forwards

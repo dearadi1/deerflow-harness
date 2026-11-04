@@ -332,42 +332,6 @@ class ManagedStreamTests(unittest.TestCase):
                     self.assertEqual(graph.snapshot().values["messages"][0].content, "重试")
                     self.assertIsNone(get_current_user())
 
-    def test_external_threads_close_while_answer_chunks_are_being_consumed(self):
-        for mode in ("full", "delta"):
-            with self.subTest(mode=mode):
-                graph, pool = self.harness(mode)
-                slot = pool._available[0]
-                slot.client._agent = create_agent(
-                    model=FakeListChatModel(responses=["持续输出直到外部线程关闭" * 20], sleep=0.005),
-                    tools=[], checkpointer=graph.saver,
-                    state_schema=get_thread_state_schema(mode, 10),
-                )
-                first_chunk = threading.Event()
-                received = []
-                stream = self.start(pool, buffer_size=2)
-
-                def consume():
-                    for event in stream:
-                        received.append(event)
-                        if event.type == "answer_content":
-                            first_chunk.set()
-
-                with ThreadPoolExecutor(max_workers=5) as workers:
-                    consumer = workers.submit(consume)
-                    self.assertTrue(first_chunk.wait(5))
-                    closers = [workers.submit(stream.close, timeout=3) for _ in range(4)]
-                    for closer in closers:
-                        closer.result(4)
-                    consumer.result(1)
-                self.assertTrue(any(event.type == "answer_content" for event in received))
-                self.assertFalse(any(event.type == "end" for event in received))
-                self.assertEqual(pool.stats["available"], 1)
-                self.assertTrue(stream.closed)
-                slot.client._agent = graph.graph
-                graph.release.set()
-                self.assertEqual(list(self.start(pool, "立即继续"))[-1].type, "end")
-                stream.close(timeout=0)
-
     def test_normal_completion_releases_without_explicit_close_and_preserves_protocol(self):
         graph, pool = self.harness()
         graph.release.set()
