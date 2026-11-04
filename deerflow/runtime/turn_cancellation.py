@@ -7,6 +7,8 @@ from concurrent.futures import CancelledError as FutureCancelledError
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from deerflow.runtime.turn_tasks import TurnTasks
+
 
 class TurnCancellation(threading.Event):
     """直接通知正在等待的操作，取消不依赖工具输出或定时检查。"""
@@ -17,6 +19,7 @@ class TurnCancellation(threading.Event):
         self._callbacks_lock = threading.Lock()
         self.cleanup_tasks: set[asyncio.Task] = set()
         self.failure: BaseException | None = None
+        self.tasks = TurnTasks(self)
 
     def set(self) -> None:
         with self._callbacks_lock:
@@ -50,6 +53,17 @@ _TURN_LOOP: ContextVar[asyncio.AbstractEventLoop | None] = ContextVar("turn_canc
 
 def get_turn_cancellation_event() -> TurnCancellation | None:
     return _TURN_CANCELLATION.get()
+
+
+def record_turn_cleanup_failure(error: BaseException) -> None:
+    """子任务不能只记录清理失败日志后让托管池继续分配实例。"""
+    cancellation = get_turn_cancellation_event()
+    if cancellation is not None:
+        from deerflow.runtime.client_async import StreamCleanupError
+
+        failure = StreamCleanupError("子任务资源收尾失败，实例池已停止分配")
+        failure.__cause__ = error
+        cancellation.failure = failure
 
 
 def raise_if_turn_cancelled() -> None:

@@ -53,13 +53,24 @@ events.close(timeout=10)
 
 `close()` 成功返回前必须完成会话终止、所有本轮任务退出、checkpoint 收尾和租约释放；随后相同 `thread_id` 可以立即重入。不会丢弃仍在执行的旧任务后提前复用实例。终止会话的收尾任务受到保护，图清理不能再次取消它；终止请求使用原有 5 秒网络等待上限且不自动重试。无法确认终止时报告 `StreamCleanupError`，停止池分配，不能伪装成功并允许旧任务与新轮次并发。
 
+内置子任务在共享的独立事件循环上运行，托管轮次通过 `runtime/turn_tasks.py`
+记录其真实协程退出和默认执行器中的同步工作。子任务的状态变成终态、轮询宽限期
+结束、跨线程 Future 被取消，都不能视为清理完成。主流必须等这些工作及延迟清理
+全部退出，才恢复 checkpoint、释放沙盒租约和归还实例；不会取消其他会话的子任务。
+子任务流或沙盒租约清理失败同样让池停止分配。回归见
+`tests/test_agent_managed_subagents.py` 与 `tests/test_agent_managed_stream.py`。
+
 本地 bash 每 50 毫秒检查停止信号，停止时终止整个进程组（Windows 终止进程树）。这里只停止本轮正在执行的操作，不撤销已完成的外部副作用，也不保证终止脚本自行脱离会话启动的后台服务。
 
 停止信号的交付与 `close()` 成功返回不同：后者仍等待工具退出、checkpoint 和沙盒清理。正常网络下取消通常无需等到命令超时，但服务器断网、数据库阻塞等故障下没有整个关闭过程的固定时间上限；`timeout` 仅限制调用方等待。任意同步 Python/第三方 SDK 调用仍不能安全地强制杀死，默认执行器会等待它退出。同步自定义工具可通过 `deerflow.runtime.turn_cancellation.get_turn_cancellation_event()` 取得本轮停止事件，并在可中断处检查，或调用 `raise_if_turn_cancelled()`。同步接口还应配置自身网络超时。自行创建线程、独立执行器或远端后台作业的工具，必须自行实现取消和清理。
 
 身份和 trace 上下文在启动时捕获，并传到执行及清理任务；池仍不负责宿主鉴权。自定义 `client_factory` 需返回支持现有同步存储协议的 `DeerFlowClient`；仅有异步方法的 saver 不适用。跨进程停止由宿主把停止请求路由到持有本轮对象的进程。
 
-异步 HTTP 后端应在工作线程创建和消费该同步流；停止处理器可 `await asyncio.to_thread(events.close, timeout=10)`。请求断连本身不会自动通知池，后端必须把停止、断连和请求异常都接到本轮 `close()`。若关闭等待协程也被取消，已发出的停止请求和后台清理仍继续进行。
+异步 HTTP 后端应在工作线程创建和消费该同步流，并设置有限的 `acquire_timeout`
+和等待人数上限。停止处理器必须使用独立的关闭线程，不能与等待池实例和阻塞消费
+共用可能被占满的默认执行器，否则停止请求本身也会排队。请求断连本身不会自动
+通知池，后端必须把停止、断连和请求异常都接到本轮 `close()`。若关闭等待协程也被
+取消，已发出的停止请求和后台清理仍继续进行；宿主应保留清理任务并等待最终结果。
 
 ## 1. 最小使用示例
 
@@ -531,3 +542,26 @@ DEER_FLOW_RUN_LIVE_TESTS=1 DEER_FLOW_LIVE_CHECKPOINT_MODE=delta \
 测试使用生产池、模型适配器、LangGraph、事件解析和 SQLite；未覆盖进程被强杀后的恢复。
 
 2026-11-02 使用 `doubao-seed-2-1-pro-260915` 验证 full、delta 各 28 项，共 56 项全部通过；最终双模式验收各发出 68 次真实模型请求，共 136 次。两项参数校验场景不发模型请求。池与客户端离线回归另有 119 项全部通过。本次汇总报告为 `/private/tmp/deerflow_agent_pool_acceptance_20261102.json`。
+
+2026-11-04 针对跨线程关闭修复重新验收：full、delta 各 34 项，共 68 项通过，
+发出 166 次真实模型请求（其中两项入口校验不发模型请求）；另有 2 项真实 AIO
+测试通过，覆盖六种模式/会话停止组合及正常输出、超时、复用。负向对照仅在测试
+进程禁用 `TurnTasks.drain`，另发 2 次模型请求，成功触发“子任务清理未结束但
+主流已关闭”的断言，证明新增回归能检出本次缺陷。报告：
+`/private/tmp/deerflow_live_acceptance_20261104.json`。
+
+新增脚本 `tests/test_agent_subagent_close_live.py` 需要同时设置
+`DEER_FLOW_RUN_LIVE_TESTS=1` 与 `DEER_FLOW_TEST_AIO_URL`。它让真实主模型调用
+生产 `task`，真实子模型执行固定 AIO 命令，验证并发外部关闭、轮询异常超过五秒
+宽限期、后台命令返回后继续调用另一个工具，以及清理后同会话立即继续。能力装配
+固定为合成测试图，容器由显式测试地址提供；`SubagentExecutor._aexecute`、轮询、
+租约和命令终止使用生产代码。此脚本不验证 Docker warm pool 的容器驱逐或 K8s
+创建/销毁流程。
+
+`tests/test_agent_host_close_live.py` 还需要 `DEER_FLOW_TEST_VORIS_ROOT` 指向本次
+Voris 修复工作区，并将其 `api` 加入 `PYTHONPATH`，使用安装了宿主依赖的环境。
+设置 `DEER_FLOW_TEST_REDIS_URL` 后，验证真实 Redis 租约过期、独立 Python 进程
+接手、旧模型流恢复输出后被拒绝发布。另覆盖默认执行器被消费与排队占满时仍能
+关闭、取消尚未取得实例的启动请求后不遗留后台轮次。测试会核对导入的宿主代码
+路径，避免误测原开发分支。2026-11-04 本地验收的私有 `trace-utils` 无法获取，
+仅日志埋点使用替身；未验证生产部署、进程强杀和 Redis/SQL 跨存储原子性。
