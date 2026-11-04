@@ -98,8 +98,9 @@ class ThreadClientFilesTests(unittest.TestCase):
                 self.assertEqual(self.client.thread_files("user_001", "thread_001", area), ["report.md", "report.pdf"])
                 with self.assertRaises(UnsafeUploadPathError):
                     self.client.download_file("user_001", "thread_001", "link", area)
-                with self.assertRaises(ValueError):
-                    self.client.download_file("user_001", "thread_001", "nested/hidden.txt", area)
+                self.assertEqual(self.client.download_file("user_001", "thread_001", "nested/hidden.txt", area), b"nested")
+                self.client.delete_file("user_001", "thread_001", "nested/hidden.txt", area)
+                self.assertFalse((directory / "nested/hidden.txt").exists())
                 self.client.delete_file("user_001", "thread_001", "report.pdf", area)
                 self.assertEqual((directory / "report.md").read_bytes(), b"document")
 
@@ -114,8 +115,8 @@ class ThreadClientFilesTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.client.download_file("user_001", "thread_001", "资料.txt", area="uploads")
 
-    def test_all_file_operations_reject_paths(self):
-        names = ["uploads/test.txt", "data/test.txt", "/tmp/test.txt", "../test.txt", "./test.txt", "data\\test.txt", "C:\\test.txt", "test.txt/", ".", "..", "", None, Path("test.txt")]
+    def test_all_file_operations_reject_unsafe_paths(self):
+        names = ["/tmp/test.txt", "../test.txt", "nested/../test.txt", "data//test.txt", "./test.txt", "data\\test.txt", "C:\\test.txt", "test.txt/", ".", "..", "", None, Path("test.txt")]
         (self.uploads / "test.txt").write_bytes(b"original")
         for name in names:
             for operation in (self.client.upload_file, self.client.download_file, self.client.delete_file):
@@ -123,6 +124,36 @@ class ThreadClientFilesTests(unittest.TestCase):
                 with self.subTest(name=name, operation=operation.__name__), self.assertRaises(ValueError):
                     operation("user_001", "thread_001", name, *arguments)
         self.assertEqual((self.uploads / "test.txt").read_bytes(), b"original")
+
+    def test_upload_rejects_directory_paths(self):
+        for file_name in ("uploads/test.txt", "data/test.txt"):
+            with self.subTest(file_name=file_name), self.assertRaises(ValueError):
+                self.client.upload_file("user_001", "thread_001", file_name, b"content")
+        self.assertEqual(list(self.uploads.iterdir()), [])
+
+    def test_relative_file_paths_are_scoped_to_each_area(self):
+        for area in ("uploads", "workspace", "outputs"):
+            directory = self._area_directory(area) / "data"
+            directory.mkdir(parents=True)
+            (directory / "test.txt").write_bytes(area.encode())
+        for area in ("uploads", "workspace", "outputs"):
+            with self.subTest(area=area):
+                self.assertEqual(self.client.download_file("user_001", "thread_001", "data/test.txt", area), area.encode())
+                self.client.delete_file("user_001", "thread_001", "data/test.txt", area)
+                self.assertFalse((self._area_directory(area) / "data/test.txt").exists())
+
+    def test_nested_paths_reject_symlink_directories(self):
+        outside = self.paths.base_dir / "outside"
+        outside.mkdir()
+        (outside / "private.txt").write_bytes(b"private")
+        for area in ("uploads", "workspace", "outputs"):
+            directory = self._area_directory(area)
+            directory.mkdir(exist_ok=True)
+            (directory / "nested").symlink_to(outside, target_is_directory=True)
+            for operation in (self.client.download_file, self.client.delete_file):
+                with self.subTest(area=area, operation=operation.__name__), self.assertRaises(UnsafeUploadPathError):
+                    operation("user_001", "thread_001", "nested/private.txt", area)
+        self.assertEqual((outside / "private.txt").read_bytes(), b"private")
 
     def test_listing_excludes_nested_files_and_converted_companions(self):
         (self.uploads / "data").mkdir()
@@ -180,13 +211,16 @@ class ThreadClientFilesTests(unittest.TestCase):
         replacement.write_bytes(b"replacement")
         original_open = os.open
 
-        def replace_and_open(path, flags):
-            replacement.replace(target)
-            return original_open(path, flags)
+        def replace_and_open(path, flags, **kwargs):
+            # 在目标文件已完成 stat 后替换，避免目录打开阶段提前触发而失去竞态覆盖。
+            if path == target.name and kwargs.get("dir_fd") is not None:
+                replacement.replace(target)
+            return original_open(path, flags, **kwargs)
 
         with patch("deerflow.thread_client.os.open", side_effect=replace_and_open):
             with self.assertRaises(UnsafeUploadPathError):
                 self.client.download_file("user_001", "thread_001", "test.txt", area="uploads")
+        self.assertEqual(target.read_bytes(), b"replacement")
 
 
 if __name__ == "__main__":

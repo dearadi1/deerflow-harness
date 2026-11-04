@@ -81,7 +81,15 @@ def is_ancestor(root, older, newer):
     return result.returncode == 0
 
 
+def prepare_split_directory(cache, settings, source_commit):
+    if (cache / settings["prefix"]).exists():
+        return
+    # subtree 会检查工作目录，只检出模块以避免下载上游其他文件或覆盖已有缓存内容。
+    git(cache, "restore", f"--source={source_commit}", "--worktree", "--", settings["prefix"])
+
+
 def import_snapshot(root, cache, settings, source_commit):
+    prepare_split_directory(cache, settings, source_commit)
     print("正在拆分模块历史；大型上游首次处理可能需要数分钟。", flush=True)
     snapshot = git(cache, "subtree", "split", f"--prefix={settings['prefix']}",
                    source_commit).stdout.strip().splitlines()[-1]
