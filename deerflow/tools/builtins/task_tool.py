@@ -3,6 +3,8 @@
 import asyncio
 import concurrent.futures
 import logging
+import math
+import os
 import threading
 import time
 import uuid
@@ -61,9 +63,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Poll cadence for terminal-state waits in both the interrupted unwind and the
-# deferred registry cleaner.
-_SUBAGENT_POLL_INTERVAL_SECONDS = 5.0
+
+def _load_subagent_poll_interval_seconds() -> float:
+    raw_value = os.environ.get("DEER_FLOW_SUBAGENT_POLL_INTERVAL_SECONDS", "").strip()
+    if not raw_value:
+        return 0.1
+    error_message = "环境变量 DEER_FLOW_SUBAGENT_POLL_INTERVAL_SECONDS 必须是有限正数（秒）"
+    try:
+        interval_seconds = float(raw_value)
+    except ValueError as error:
+        raise ValueError(error_message) from error
+    if not math.isfinite(interval_seconds) or interval_seconds <= 0:
+        raise ValueError(error_message)
+    return interval_seconds
+
+
+# 启动时固定间隔，避免运行中配置变化使正常轮询与取消收尾的时间预算不一致。
+_SUBAGENT_POLL_INTERVAL_SECONDS = _load_subagent_poll_interval_seconds()
 
 # How long the generic-error unwind waits for a terminal result before
 # re-raising. This is deliberately a short grace period, not the full
@@ -1008,8 +1024,8 @@ async def task_tool(
     poll_count = 0
     last_status = None
     last_message_count = 0  # Track how many AI messages we've already sent
-    # Polling timeout: execution timeout + 60s buffer, checked every 5s
-    max_poll_count = (config.timeout_seconds + 60) // 5
+    # 按间隔换算次数，缩短轮询不能缩短执行超时与额外 60 秒缓冲。
+    max_poll_count = math.ceil((config.timeout_seconds + 60) / _SUBAGENT_POLL_INTERVAL_SECONDS)
 
     logger.info(f"[trace={trace_id}] Started background task {tool_call_id} (execution_id={execution_id}, subagent={subagent_type}, timeout={config.timeout_seconds}s, polling_limit={max_poll_count} polls)")
 
@@ -1213,12 +1229,10 @@ async def task_tool(
                 )
 
             # Still running, wait before next poll
-            await asyncio.sleep(5)
+            await asyncio.sleep(_SUBAGENT_POLL_INTERVAL_SECONDS)
             poll_count += 1
 
-            # Polling timeout as a safety net (in case thread pool timeout doesn't work)
-            # Set to execution timeout + 60s buffer, in 5s poll intervals
-            # This catches edge cases where the background task gets stuck
+            # 后台执行超时失效时，仍保留执行时限加 60 秒缓冲的轮询兜底。
             if poll_count > max_poll_count:
                 timeout_minutes = config.timeout_seconds // 60
                 logger.error(f"[trace={trace_id}] Task {tool_call_id} polling timed out after {poll_count} polls (should have been caught by thread pool timeout)")
