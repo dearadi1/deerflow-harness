@@ -229,6 +229,23 @@ class ContextUsedData(ProtocolModel):
 Payload = TypeVar("Payload")
 
 
+class AgentSetting(ProtocolModel):
+    """本轮主智能体的实际配置；三个开关由弱到强逐级包含。"""
+
+    model: Identifier
+    thinking_enabled: bool
+    is_plan_mode: bool
+    subagent_enabled: bool
+
+    @model_validator(mode="after")
+    def validate_progressive_modes(self):
+        if self.subagent_enabled and not self.is_plan_mode:
+            raise ValueError("子代理模式必须同时启用规划模式")
+        if self.is_plan_mode and not self.thinking_enabled:
+            raise ValueError("规划模式必须同时启用思考")
+        return self
+
+
 class StreamEvent(ProtocolModel, Generic[Payload]):
     """所有流事件的公共封装；按 type 解析时使用具体事件或联合适配器。"""
 
@@ -236,6 +253,7 @@ class StreamEvent(ProtocolModel, Generic[Payload]):
     agent_id: Identifier
     data: Payload
     thread_id: Identifier
+    agent_setting: AgentSetting | None = None
     seq: Annotated[int, Field(ge=1)]
 
 

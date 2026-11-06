@@ -1,5 +1,9 @@
 ## 按轮禁用工具
 
+每个新流事件均携带与 `thread_id` 同级的 `agent_setting`，表示本轮主 Agent
+的实际模型、思考、规划及子代理设置。自动路由调用通过标准 `token_usage`
+按分析模型价格计费，并计入主 `end` 汇总。完整语义见[自动路由](auto_routing.md)。
+
 `DeerFlowClient.stream()` 新增显式关键字参数 `disabled_tools: list[str] | None = None`：
 
 ```python

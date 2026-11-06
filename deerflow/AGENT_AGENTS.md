@@ -2,6 +2,13 @@
 
 实现文件：[agent_client.py](agent_client.py)。原始客户端：[client.py](client.py)。
 
+`start_stream()`、session 的 `stream()` / `chat()` 均支持显式参数
+`auto_routing_enabled: bool = False`。与 `config.yaml -> auto_routing.enabled`
+同时开启后，在创建 Agent 前自动选择模型和模式，覆盖手动模型及模式参数。
+流事件通过与 `thread_id` 同级的 `agent_setting` 返回实际配置；分析调用按自己的
+模型价格发送 `token_usage`，并计入主 `end` 的 Token 和成本汇总。
+配置、兼容回退与长对话预算见[自动路由说明](../docs/auto_routing.md)。
+
 `DeerFlowClientPool` 管理固定数量的 `DeerFlowClient`，实例不永久绑定用户。通过 `start_stream()` 托管一轮生成，或通过 `session(user_id=...)` 独占借用；两种方式共享容量和 FIFO 等待队列。
 
 **推荐用法：每个服务进程启动时创建一个池；需要停止/断连取消的流式对话使用 `start_stream()`；管理操作及原有同步调用继续使用 `session()`。原 session 的借用、调用、消费和关闭仍必须在同一线程；新托管流支持跨线程 `close()`。**
@@ -37,8 +44,8 @@ events.close(timeout=10)
 
 | 接口 | 约定 |
 | --- | --- |
-| `pool.start_stream(message, *, user_id=None, thread_id=None, replay_last_turn=False, disabled_tools=None, acquire_timeout=None, buffer_size=64, **kwargs)` | 同步等待实例，成功后立即启动本轮；无需先 `next()`，参数规则沿用原 stream |
-| `for event in events` | 单消费者同步迭代；输出仍为原 `ClientStreamEvent`，字段和事件类型不变 |
+| `pool.start_stream(message, *, user_id=None, thread_id=None, replay_last_turn=False, disabled_tools=None, auto_routing_enabled=False, acquire_timeout=None, buffer_size=64, **kwargs)` | 同步等待实例，成功后立即启动本轮；无需先 `next()`，参数规则沿用原 stream |
+| `for event in events` | 单消费者同步迭代；共用 `ClientStreamEvent`，包含本轮 `agent_setting` |
 | `events.close(timeout=None)` | 可跨线程、幂等；默认等待清理完成；显式超时只限制本次等待 |
 | `events.closed` | 实例已归还时为 `True`；收到停止请求但清理未完成时仍为 `False` |
 | `with pool.start_stream(...) as events` | 退出时关闭，适合保证提前 break 或消费异常后的收尾 |

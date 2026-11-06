@@ -182,6 +182,8 @@ async def stream_managed_turn(
             except asyncio.CancelledError:
                 turn = await _settle(preparation)
                 raise
+            for event in turn.parser.start():
+                yield event
             # 保留客户端缓存图及同步 accessor 的 saver，适配只作用于本轮图副本。
             graph = copy.copy(turn.agent)
             if graph.checkpointer is not None:

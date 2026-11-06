@@ -35,6 +35,7 @@ from langchain_core.runnables import RunnableConfig
 
 from deerflow.protocol import ClientStreamEvent
 
+from deerflow.agents.agent_settings import compatible_agent_setting, setting_mode, setting_overrides
 from deerflow.agents.lead_agent.agent import _authorize_model_name, build_middlewares
 from deerflow.agents.lead_agent.prompt import get_enabled_skills_for_config, has_bash_tool
 from deerflow.agents.lead_agent.prompt_selector import apply_prompt_template
@@ -300,6 +301,7 @@ class DeerFlowClient:
         self._agent = None
         self._agent_config_key: tuple | None = None
         self._effective_model_name: str | None = None
+        self._effective_agent_setting = None
         self._loaded_agent_config_key: tuple[str, str] | None = None
         self._loaded_agent_config = None
 
@@ -313,6 +315,7 @@ class DeerFlowClient:
         self._agent = None
         self._agent_config_key = None
         self._effective_model_name = None
+        self._effective_agent_setting = None
         self._loaded_agent_config_key = None
         self._loaded_agent_config = None
 
@@ -344,8 +347,9 @@ class DeerFlowClient:
             "thread_id": thread_id,
             "model_name": overrides.get("model_name", self._model_name),
             "thinking_enabled": overrides.get("thinking_enabled", self._thinking_enabled),
-            "is_plan_mode": overrides.get("plan_mode", self._plan_mode),
+            "is_plan_mode": overrides.get("plan_mode", overrides.get("is_plan_mode", self._plan_mode)),
             "subagent_enabled": overrides.get("subagent_enabled", self._subagent_enabled),
+            "auto_routing_enabled": overrides.get("auto_routing_enabled", False),
         }
         return RunnableConfig(
             configurable=configurable,
@@ -400,6 +404,23 @@ class DeerFlowClient:
                 principal.is_internal,
                 copy.deepcopy(principal.attributes),
             )
+        model_name = cfg.get("model_name")
+        if self._app_config.models and self._app_config.get_model_config(model_name) is None:
+            model_name = self._app_config.models[0].name
+        model_name = _authorize_model_name(model_name, context=cfg, app_config=self._app_config)
+        model_config = self._app_config.get_model_config(model_name) if model_name else None
+        effective_setting = None
+        if model_config is not None:
+            effective_setting = compatible_agent_setting(
+                model_config, thinking_enabled=bool(cfg.get("thinking_enabled", True)),
+                is_plan_mode=bool(cfg.get("is_plan_mode", False)),
+                subagent_enabled=bool(cfg.get("subagent_enabled", False)),
+            )
+            if getattr(agent_config, "allowed_subagents", None) == []:
+                effective_setting.subagent_enabled = False
+            cfg.update(setting_overrides(effective_setting))
+            config["configurable"].update(setting_overrides(effective_setting))
+
         key = (
             cfg.get("model_name"),
             cfg.get("thinking_enabled"),
@@ -419,20 +440,11 @@ class DeerFlowClient:
         )
 
         if self._agent is not None and self._agent_config_key == key:
+            if self._effective_agent_setting is not None:
+                config["configurable"].update(setting_overrides(self._effective_agent_setting))
             return
 
         thinking_enabled = cfg.get("thinking_enabled", True)
-        model_name = cfg.get("model_name")
-        # Phase 3: enforce model:use authorization on the embedded/library path
-        # too, mirroring the Gateway runtime path in ``_make_lead_agent`` so the
-        # role-scoped model policy cannot be bypassed by constructing the agent
-        # through ``DeerFlowClient``. Resolve the ``None`` default to a concrete
-        # name first (what ``create_chat_model(name=None)`` would pick) so the
-        # policy covers the implicit default model. ``cfg`` already carries the
-        # identity that ``apply_tool_authorization`` reads below.
-        if model_name is None and self._app_config.models:
-            model_name = self._app_config.models[0].name
-        model_name = _authorize_model_name(model_name, context=cfg, app_config=self._app_config)
         # Phase 3: enforce skill authorization (Layer 1) on the embedded path
         # too, mirroring ``_make_lead_agent`` (agent.py:675). Without this, a
         # caller building the agent via ``DeerFlowClient(available_skills=...)``
@@ -538,6 +550,13 @@ class DeerFlowClient:
         )
         mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(authorized_tools, deferred_names=deferred_setup.deferred_names)
 
+        if effective_setting is not None and subagent_enabled and not any(tool.name in {"task", "batch_task"} for tool in final_tools):
+            # 禁用或鉴权过滤后的真实委派能力必须与回传设置、提示词保持一致。
+            subagent_enabled = False
+            effective_setting.subagent_enabled = False
+            cfg["subagent_enabled"] = False
+            config["configurable"]["subagent_enabled"] = False
+
         middlewares, declared_authorized = narrow_declared_tools(
             build_middlewares(
                 config,
@@ -572,7 +591,7 @@ class DeerFlowClient:
             # callbacks at the graph invocation root so a single embedded run
             # produces one trace with correct session_id / user_id propagation.
             # Attaching them again on the model would emit duplicate spans.
-            "model": create_chat_model(name=model_name, thinking_enabled=thinking_enabled, attach_tracing=False),
+            "model": create_chat_model(name=model_name, thinking_enabled=thinking_enabled, attach_tracing=False, app_config=self._app_config),
             "tools": final_tools,
             "middleware": bound_middlewares,
             "system_prompt": apply_prompt_template(
@@ -603,6 +622,7 @@ class DeerFlowClient:
         self._agent = create_agent(**kwargs)
         self._agent_config_key = key
         self._effective_model_name = model_name
+        self._effective_agent_setting = effective_setting
         logger.info("Agent created: agent_name=%s, model=%s, thinking=%s", self._agent_name, model_name, thinking_enabled)
 
     @staticmethod
@@ -866,6 +886,7 @@ class DeerFlowClient:
         thread_id: str | None = None,
         replay_last_turn: bool = False,
         disabled_tools: list[str] | None = None,
+        auto_routing_enabled: bool = False,
         **kwargs,
     ) -> Generator[ClientStreamEvent, None, None]:
         """Stream a conversation turn with a DeerFlow request trace context.
@@ -884,6 +905,8 @@ class DeerFlowClient:
         非空的 DEER_FLOW_RECURSION_LIMIT 环境变量优先于 kwargs.recursion_limit，
         两者均未设置时使用 100；环境变量必须是正整数。
         推荐追问统一由应用配置 suggestions.enabled 控制，默认生成 3 个。
+        auto_routing_enabled 与应用配置 auto_routing.enabled 同时开启后，忽略手动
+        模型和模式参数；分析用量按分析模型计费，agent_setting 返回最终生效配置。
         临时约定：knowledge_search_kwargs={"kb_ids": [...]} 经 runtime.context 透传给
         注册的知识库检索函数，也可包含 dense_weight、sparse_weight 等宿主参数。
         模型仅提供 description、query、top_k；后续将改为正式的知识库上下文接口。
@@ -901,7 +924,8 @@ class DeerFlowClient:
         # records inside the binding while returning control to the caller
         # with the ContextVar restored.
         disabled_tools = self._validate_disabled_tools(disabled_tools)
-        inner = stream_client_turn(self, message, thread_id=thread_id, replay_last_turn=replay_last_turn, disabled_tools=disabled_tools, **kwargs)
+        self._validate_auto_routing(auto_routing_enabled)
+        inner = stream_client_turn(self, message, thread_id=thread_id, replay_last_turn=replay_last_turn, disabled_tools=disabled_tools, auto_routing_enabled=auto_routing_enabled, **kwargs)
         _EXHAUSTED = object()
         try:
             while True:
@@ -955,6 +979,7 @@ class DeerFlowClient:
         items = _stream_with_sandbox_lease_cleanup(agent_items, turn.context)
         active_error = None
         try:
+            yield from turn.parser.start()
             for item in items:
                 yield from turn.parser.parse(item)
             yield from turn.parser.finish()
@@ -1033,7 +1058,16 @@ class DeerFlowClient:
         # survives worker/isolated-loop boundaries and matches the identity
         # used by prompt assembly and the agent cache.
         context["user_id"] = effective_user_id
+        if self._agent_name:
+            context["agent_name"] = self._agent_name
+        files = kwargs.get("files")
+        message_metadata = {"run_id": run_id, **({"files": files} if files is not None else {})}
+        state: dict[str, Any] = {"messages": [HumanMessage(content=message, additional_kwargs=message_metadata)], "auto_routing": None}
+        routing_usage = self._prepare_auto_routing(state, config, context, checkpointer, _turn_replay)
         self._ensure_agent(config, context=context)
+        actual_setting = getattr(self, "_effective_agent_setting", None)
+        if state["auto_routing"] is not None and actual_setting is not None:
+            state["auto_routing"]["mode"] = setting_mode(actual_setting)
         configurable = config.get("configurable") or {}
         effective_model_name = getattr(self, "_effective_model_name", None)
         inject_langfuse_metadata(
@@ -1046,12 +1080,7 @@ class DeerFlowClient:
             deerflow_trace_id=deerflow_trace_id,
         )
 
-        files = kwargs.get("files")
-        message_metadata = {"run_id": run_id, **({"files": files} if files is not None else {})}
-        state: dict[str, Any] = {"messages": [HumanMessage(content=message, additional_kwargs=message_metadata)]}
         context[DEERFLOW_TRACE_METADATA_KEY] = deerflow_trace_id
-        if self._agent_name:
-            context["agent_name"] = self._agent_name
 
         # 将重放外挂在图执行前，复用后续事件格式化与沙箱清理，不侵入上游 Agent。
         if _turn_replay is not None:
@@ -1061,8 +1090,43 @@ class DeerFlowClient:
             getattr(getattr(self, "_app_config", None), "models", ()),
             default_model=effective_model_name or configurable.get("model_name") or self._model_name,
         )
-        parser = ClientStreamParser(thread_id, run_id, pricing=pricing)
+        parser = ClientStreamParser(thread_id, run_id, pricing=pricing, agent_setting=getattr(self, "_effective_agent_setting", None), routing_usage=routing_usage)
         return _ClientTurn(self._agent, state, config, context, parser)
+
+    def _prepare_auto_routing(self, state, config, context, checkpointer, replay) -> list[dict]:
+        from deerflow.agents.auto_routing import resolve_auto_routing
+        from deerflow.runtime.checkpoint_state import build_state_mutation_graph
+        from deerflow.runtime.turn_cancellation import get_turn_cancellation_event, raise_if_turn_cancelled, run_cancellable_async
+
+        requested = config["configurable"].get("auto_routing_enabled", False)
+        self._validate_auto_routing(requested)
+        settings = getattr(getattr(self, "_app_config", None), "auto_routing", None)
+        if not requested or settings is None or not settings.enabled:
+            return []
+        raise_if_turn_cancelled()
+        # 首轮仅编译用于读取内置状态通道的空图，不创建模型、工具或沙盒。
+        graph = self._agent
+        if graph is None:
+            schema = get_thread_state_schema(self._checkpoint_channel_mode, getattr(self, "_checkpoint_snapshot_frequency", None))
+            graph = build_state_mutation_graph("routing_read", self._checkpoint_channel_mode, schema)
+        history = (replay or ClientTurnReplay(enabled=False)).routing_state(graph, checkpointer, state, context, self._checkpoint_channel_mode)
+
+        def operation():
+            return resolve_auto_routing(
+                state["messages"][-1], history, app_config=self._app_config, config=config,
+                authorize=lambda name: _authorize_model_name(name, context=context, app_config=self._app_config),
+            )
+
+        result = run_cancellable_async(operation) if get_turn_cancellation_event() is not None else _run_async_from_sync(operation())
+        raise_if_turn_cancelled()
+        config["configurable"].update(setting_overrides(result.setting))
+        state["auto_routing"] = result.memory
+        return result.usage
+
+    @staticmethod
+    def _validate_auto_routing(value: object) -> None:
+        if not isinstance(value, bool):
+            raise TypeError("auto_routing_enabled 必须是布尔值")
 
     @staticmethod
     def _validate_disabled_tools(disabled_tools: list[str] | None) -> list[str]:
@@ -1076,7 +1140,7 @@ class DeerFlowClient:
             raise ValueError("disabled_tools 中的工具名称不能为空")
         return list(dict.fromkeys(disabled_tools))
 
-    def chat(self, message: str, *, thread_id: str | None = None, disabled_tools: list[str] | None = None, **kwargs) -> str:
+    def chat(self, message: str, *, thread_id: str | None = None, disabled_tools: list[str] | None = None, auto_routing_enabled: bool = False, **kwargs) -> str:
         """Send a message and return the final text response.
 
         按消息 ID 累积主智能体的 answer_content，返回最后一条有正文的消息。
@@ -1093,7 +1157,7 @@ class DeerFlowClient:
             if no AI text was produced.
         """
         answer = _AIMessageAccumulator()
-        for event in self.stream(message, thread_id=thread_id, disabled_tools=disabled_tools, **kwargs):
+        for event in self.stream(message, thread_id=thread_id, disabled_tools=disabled_tools, auto_routing_enabled=auto_routing_enabled, **kwargs):
             if event.type == "error":
                 raise RuntimeError(event.data.error)
             answer.observe(event)

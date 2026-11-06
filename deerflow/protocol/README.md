@@ -1,5 +1,11 @@
 # DeerFlow 客户端流协议
 
+所有新流事件增加与 `thread_id` 同级的 `agent_setting: AgentSetting | None`，
+字段为 `model`、`thinking_enabled`、`is_plan_mode`、`subagent_enabled`。
+它表示本轮主 Agent 实际配置，并满足子代理 ⇒ 规划 ⇒ 思考。旧事件缺少该字段
+仍可解析。自动路由按实际分析模型发布 `token_usage` 并计入主 `end` 的用量和
+费用；不要用外层主模型给分析调用计价。详见[自动路由](../../docs/auto_routing.md)。
+
 公共入口统一为 `deerflow.protocol`，随 Harness 一起安装，原顶层包 `deerflow_protocol` 已迁入此处。协议模块只依赖 Pydantic 2 和标准库；`deerflow` 顶层采用按需导出，导入协议不会加载客户端、LangChain、LangGraph、配置、模型服务或沙箱。下游代码请将 `from deerflow_protocol import ...` 更新为 `from deerflow.protocol import ...`。
 
 十二类事件都有具体模型：`ReasoningContentEvent`、`AnswerContentEvent`、`TitleEvent`、`SuggestionsEvent`、`ToolChunkEvent`、`ToolCallsEvent`、`ToolResultEvent`、`TokenUsageEvent`、`ContextCompactionStartEvent`、`ContextCompactionEndEvent`、`ContextUsedEvent`、`EndEvent`。公共基类是 `StreamEvent`，判别联合类型是 `ClientStreamEvent`。`present_files` 的工具结果 `content` 是 `PresentedFileResult` 对象数组，每个文件独立携带 `path` 和 `msg`。

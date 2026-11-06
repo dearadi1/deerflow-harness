@@ -1,5 +1,9 @@
 # DeerFlowClient.stream 输入与输出
 
+`stream()` / `chat()` 支持 `auto_routing_enabled: bool = False`；与配置双开关
+同时开启后自动选择模型和执行模式。模式参数按能力兼容归一化，流事件增加
+`agent_setting`。详见[自动路由与用量说明](../docs/auto_routing.md)。
+
 本文依据 [deerflow/client.py](client.py) 中 `stream()`、`_stream_turn()` 及其实际调用的辅助函数，说明同步 Python 客户端的调用约定。输出字段以 [deerflow/protocol/models.py](protocol/models.py) 为准。
 
 ## 1. 方法签名与执行方式
@@ -12,6 +16,7 @@ def stream(
     thread_id: str | None = None,
     replay_last_turn: bool = False,
     disabled_tools: list[str] | None = None,
+    auto_routing_enabled: bool = False,
     **kwargs,
 ) -> Generator[ClientStreamEvent, None, None]:
     ...

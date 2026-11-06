@@ -1,6 +1,7 @@
 """客户端流协议公共入口，导入时只依赖 Pydantic 和标准库。"""
 
 from .models import (
+    AgentSetting,
     STREAM_EVENT_ADAPTER,
     AnswerContentEvent,
     ClientStreamEvent,
@@ -46,6 +47,7 @@ from .models import (
 )
 
 __all__ = [
+    "AgentSetting",
     "ErrorData", "ErrorEvent",
     "STREAM_EVENT_ADAPTER", "AnswerContentEvent", "ClientStreamEvent", "ContentData", "EndData", "EndEvent",
     "ModelPrice", "TokenCost", "InputTokenDetails", "MessageMetadata", "OutputTokenDetails", "PresentedFileResult", "ProtocolModel", "ReasoningContentEvent",

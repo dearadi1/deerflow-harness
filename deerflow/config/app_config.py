@@ -14,6 +14,7 @@ from deerflow.config.acp_config import ACPAgentConfig, load_acp_config_from_dict
 from deerflow.config.agent_storage_config import AgentStorageConfig
 from deerflow.config.agents_api_config import AgentsApiConfig, load_agents_api_config_from_dict
 from deerflow.config.auth_config import AuthAppConfig
+from deerflow.config.auto_routing_config import AutoRoutingConfig
 from deerflow.config.authorization_config import AuthorizationConfig, load_authorization_config_from_dict
 from deerflow.config.blob_storage_config import BlobStorageConfig, load_blob_storage_config_from_dict
 from deerflow.config.channel_connections_config import ChannelConnectionsConfig
@@ -222,6 +223,8 @@ def apply_logging_level(name: str | None) -> None:
 
 class AppConfig(BaseModel):
     """Config for the DeerFlow application"""
+
+    auto_routing: AutoRoutingConfig = Field(default_factory=AutoRoutingConfig, description="请求显式开启后，在创建 Agent 前自动选择模型和执行档位")
 
     lead_prompt_language: Literal["en", "zh"] = Field(default="en", description="主代理提示词语言：en 使用 prompt.py，zh 使用 prompt_zh.py")
     lead_prompt_overlay: PromptOverlay = Field(default_factory=PromptOverlay, description="Operator-owned literal prepend/append around the assembled lead-agent system prompt")

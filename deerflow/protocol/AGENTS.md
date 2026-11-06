@@ -18,9 +18,15 @@ data: {"type":"answer_content","agent_id":"main","data":{"id":"msg_1","content":
 | `agent_id` | string | 智能体身份；主智能体为 `main`，普通子任务为父级 `tool_call_id`。 |
 | `data` | object / array | 事件载荷；只有 `tool_chunk`、`tool_calls` 为数组。 |
 | `thread_id` | string | 所属会话，主子智能体共享。 |
+| `agent_setting` | object / null | 本轮主 Agent 实际配置；与 `thread_id` 同级，解析器兼容旧事件缺省。 |
 | `seq` | integer | 本轮发布序号，从 1 递增，主子智能体共用；新一轮重新计数。 |
 
-以上字段均必填，身份字符串非空。下文未标注“可选”的字段均必填；可选字段默认 `null`，有其他默认值时单独注明。字段缺失、`null` 和零含义不同。除元数据、Token 扩展明细及工具原始内容外，协议结构不接受未知字段。
+除兼容旧事件时可省略的 `agent_setting` 外，以上字段均必填，身份字符串非空。下文未标注“可选”的字段均必填；可选字段默认 `null`，有其他默认值时单独注明。字段缺失、`null` 和零含义不同。除元数据、Token 扩展明细及工具原始内容外，协议结构不接受未知字段。
+
+`agent_setting` 的 `model` 是配置模型名，另有布尔字段 `thinking_enabled`、
+`is_plan_mode`、`subagent_enabled`，满足子代理 ⇒ 规划 ⇒ 思考；同轮所有事件携带
+同一主 Agent 设置。早期设置解析失败可为 null。分析调用按自己的
+`token_usage.data.model_name` 计费，纳入主 `end`；详情见[自动路由](../../docs/auto_routing.md)。
 
 ## 1. 思考块 `reasoning_content`
 

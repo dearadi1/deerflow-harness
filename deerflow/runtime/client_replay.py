@@ -83,16 +83,18 @@ def stream_client_turn(client: Any, message: str, *, thread_id: str | None, repl
     thread_id = resolve_thread_id(thread_id)
     with _reserve_turn(client, thread_id):
         last_seq = 0
+        agent_setting = None
         try:
             with closing(_stream_completed_turn(client, message, thread_id, replay_last_turn, kwargs)) as events:
                 for event in events:
                     last_seq = event.seq
+                    agent_setting = copy.deepcopy(event.agent_setting)
                     yield event
         except (GraphBubbleUp, ReplayUnavailableError, ReplayConflictError, ReplayAccessError, CheckpointModeMismatchError, CheckpointModeReconfigurationError):
             raise
         except Exception:
             logger.exception("客户端运行失败：thread_id=%s", thread_id)
-            yield ErrorEvent(type="error", agent_id="main", thread_id=thread_id, seq=last_seq + 1, data=ErrorData(error="智能体执行失败，当前任务无法继续"))
+            yield ErrorEvent(type="error", agent_id="main", thread_id=thread_id, agent_setting=agent_setting, seq=last_seq + 1, data=ErrorData(error="智能体执行失败，当前任务无法继续"))
 
 
 def _stream_completed_turn(client: Any, message: str, thread_id: str, replay_last_turn: bool, kwargs: dict) -> Iterator[ClientStreamEvent]:
@@ -171,6 +173,44 @@ class ClientTurnReplay:
     pending_writes: tuple = ()
     read_config: dict[str, Any] = field(default_factory=dict)
 
+    def routing_state(self, graph: Any, checkpointer: Any, state: dict, context: dict, mode: str) -> dict:
+        """路由只读正确的轮次基线，分析失败或取消时不提前替换 checkpoint。"""
+        if checkpointer is None:
+            if self.enabled:
+                raise ReplayUnavailableError("重新生成需要 checkpointer")
+            return {}
+        reader = ClientTurnReplay(enabled=self.enabled)
+        reader.accessor = CheckpointStateAccessor.bind(graph, checkpointer, mode=mode)
+        reader.read_config = {"configurable": {"thread_id": context["thread_id"], "checkpoint_ns": ""}}
+        checkpoint = reader.accessor.get_tuple(reader.read_config)
+        persisted_metadata = getattr(checkpoint, "metadata", None) or {}
+        self._validate_owner(persisted_metadata, context)
+        snapshot = reader.accessor.get(reader.read_config)
+        if not self.enabled:
+            return dict(snapshot.values or {})
+        if checkpoint is None:
+            raise ReplayUnavailableError("线程尚无可重新生成的对话")
+        if snapshot.next or snapshot.tasks:
+            raise ReplayConflictError("线程仍有待执行节点，不能重新生成")
+        expected_agent = context.get("agent_name") or DEFAULT_AGENT_NAME_METADATA_VALUE
+        recorded_agent = persisted_metadata.get(CHECKPOINT_AGENT_NAME_METADATA_KEY)
+        if recorded_agent is not None and recorded_agent != expected_agent:
+            raise ReplayUnavailableError("请使用上一轮对应的智能体重新生成")
+        message = _last_user(snapshot.values or {})
+        if message is None:
+            raise ReplayUnavailableError("线程没有可重新生成的用户输入")
+        values, _ = reader._find_base(snapshot, message)
+        reader._inherit_files(state["messages"][-1], message)
+        if "goal" in snapshot.values:
+            values["goal"] = copy.deepcopy(snapshot.values["goal"])
+        return values
+
+    @staticmethod
+    def _validate_owner(metadata: dict, context: dict) -> None:
+        owner = metadata.get(_OWNER_KEY)
+        if owner is not None and owner != context["user_id"]:
+            raise ReplayAccessError("当前用户不能访问该线程")
+
     def prepare(self, agent: Any, checkpointer: Any, state: dict, config: dict, context: dict, mode: str) -> None:
         """在首次执行前固定基线，避免压缩、注入和连续重生成改变轮次边界。"""
         if checkpointer is None:
@@ -181,9 +221,7 @@ class ClientTurnReplay:
         self.read_config = {"configurable": {"thread_id": context["thread_id"], "checkpoint_ns": ""}}
         checkpoint = self.accessor.get_tuple(self.read_config)
         persisted_metadata = getattr(checkpoint, "metadata", None) or {}
-        owner = persisted_metadata.get(_OWNER_KEY)
-        if owner is not None and owner != context["user_id"]:
-            raise ReplayAccessError("当前用户不能访问该线程")
+        self._validate_owner(persisted_metadata, context)
         metadata = config.setdefault("metadata", {})
         metadata.update({
             _OWNER_KEY: context["user_id"],

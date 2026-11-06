@@ -11,7 +11,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage, messages_from_dict
 
-from deerflow.protocol import ClientStreamEvent, ContextUsedData, SuggestionsData, TokenCost, parse_stream_event
+from deerflow.protocol import AgentSetting, ClientStreamEvent, ContextUsedData, SuggestionsData, TokenCost, parse_stream_event
 
 from deerflow.client_stream_pricing import ClientStreamPricing, exclude_attributed_child_usage, sum_costs, unpriced_cost
 
@@ -62,10 +62,12 @@ def _content_parts(message: AIMessage) -> dict[str, str]:
 class ClientStreamParser:
     """来源处理器可按 mode 扩展；状态键包含 agent 和消息身份，隔离并行调用。"""
 
-    def __init__(self, thread_id: str, run_id: str, *, pricing: ClientStreamPricing | None = None) -> None:
+    def __init__(self, thread_id: str, run_id: str, *, pricing: ClientStreamPricing | None = None, agent_setting: AgentSetting | None = None, routing_usage: list[dict] | None = None) -> None:
         self.thread_id = thread_id
         self.run_id = run_id
         self.seq = 0
+        self.agent_setting = copy.deepcopy(agent_setting)
+        self._routing_usage = copy.deepcopy(routing_usage or [])
         self._pricing = pricing or ClientStreamPricing()
         self._agent_models: dict[str, str | None] = {"main": self._pricing.default_model}
         self._message_models: dict[tuple[str, str], str | None] = {}
@@ -101,7 +103,15 @@ class ClientStreamParser:
     def event(self, kind: str, agent_id: str, data: Any) -> ClientStreamEvent:
         # LangGraph 没有统一 seq；在事件实际生成处编号，主子智能体共享发布顺序。
         self.seq += 1
-        return parse_stream_event({"type": kind, "agent_id": agent_id, "data": copy.deepcopy(data), "thread_id": self.thread_id, "seq": self.seq})
+        return parse_stream_event({"type": kind, "agent_id": agent_id, "data": copy.deepcopy(data), "thread_id": self.thread_id, "agent_setting": copy.deepcopy(self.agent_setting), "seq": self.seq})
+
+    def start(self) -> Iterator[ClientStreamEvent]:
+        """分析调用只发布用量，不让分类 JSON 混入正文或对话历史。"""
+        records, self._routing_usage = self._routing_usage, []
+        for record in records:
+            key = ("main", record["id"])
+            self._message_models[key] = self._pricing.resolve_model(record["model_name"])
+            yield from self._account_usage(key, record.get("usage_metadata"), incremental=False)
 
     def parse(self, item: Any) -> Iterator[ClientStreamEvent]:
         namespace: tuple = ()

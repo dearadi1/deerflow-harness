@@ -240,12 +240,18 @@ class DeerFlowClientPool:
         thread_id: str | None = None,
         replay_last_turn: bool = False,
         disabled_tools: list[str] | None = None,
+        auto_routing_enabled: bool = False,
         acquire_timeout: float | None = None,
         buffer_size: int = 64,
         **kwargs: Any,
     ) -> ManagedAgentStream:
-        """托管整轮生成，返回支持跨线程 close 的同步流；执行结束后自动归还实例。"""
+        """托管整轮生成，支持跨线程 close，结束后自动归还实例。
+
+        auto_routing_enabled 与服务端开关同时开启时，在 Agent 创建前完成路由；
+        分析阶段同样受本轮取消控制，分析用量和费用通过标准流事件统计。
+        """
         user = _resolve_user(user_id)
+        DeerFlowClient._validate_auto_routing(auto_routing_enabled)
         if not isinstance(replay_last_turn, bool):
             raise TypeError("replay_last_turn 必须为布尔值")
         if replay_last_turn and thread_id is None:
@@ -256,6 +262,7 @@ class DeerFlowClientPool:
             **kwargs, "thread_id": resolve_thread_id(thread_id),
             "replay_last_turn": replay_last_turn,
             "disabled_tools": DeerFlowClient._validate_disabled_tools(disabled_tools),
+            "auto_routing_enabled": auto_routing_enabled,
         }
         wait_timeout = self._acquire_timeout if acquire_timeout is None else _validate_timeout(acquire_timeout)
         owner = object()
@@ -437,6 +444,7 @@ class AgentClientSession:
         thread_id: str | None = None,
         replay_last_turn: bool = False,
         disabled_tools: list[str] | None = None,
+        auto_routing_enabled: bool = False,
         **kwargs: Any,
     ) -> Iterator[Any]:
         """流式调用底层客户端，并在整个流期间保持 session 租约。
@@ -451,6 +459,7 @@ class AgentClientSession:
                 "thread_id": thread_id,
                 "replay_last_turn": replay_last_turn,
                 "disabled_tools": disabled_tools,
+                "auto_routing_enabled": auto_routing_enabled,
                 **kwargs,
             },
         )
@@ -461,13 +470,14 @@ class AgentClientSession:
         *,
         thread_id: str | None = None,
         disabled_tools: list[str] | None = None,
+        auto_routing_enabled: bool = False,
         **kwargs: Any,
     ) -> str:
         """调用底层客户端并支持按轮禁用工具。"""
         return self._invoke(
             "chat",
             (message,),
-            {"thread_id": thread_id, "disabled_tools": disabled_tools, **kwargs},
+            {"thread_id": thread_id, "disabled_tools": disabled_tools, "auto_routing_enabled": auto_routing_enabled, **kwargs},
         )
 
     def __getattr__(self, name: str) -> Any:

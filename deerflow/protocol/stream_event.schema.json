@@ -1,5 +1,36 @@
 {
   "$defs": {
+    "AgentSetting": {
+      "additionalProperties": false,
+      "description": "本轮主智能体的实际配置；三个开关由弱到强逐级包含。",
+      "properties": {
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "thinking_enabled": {
+          "title": "Thinking Enabled",
+          "type": "boolean"
+        },
+        "is_plan_mode": {
+          "title": "Is Plan Mode",
+          "type": "boolean"
+        },
+        "subagent_enabled": {
+          "title": "Subagent Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "model",
+        "thinking_enabled",
+        "is_plan_mode",
+        "subagent_enabled"
+      ],
+      "title": "AgentSetting",
+      "type": "object"
+    },
     "AnswerContentEvent": {
       "additionalProperties": false,
       "properties": {
@@ -21,6 +52,17 @@
           "minLength": 1,
           "title": "Thread Id",
           "type": "string"
+        },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "seq": {
           "minimum": 1,
@@ -169,6 +211,17 @@
           "title": "Thread Id",
           "type": "string"
         },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "seq": {
           "minimum": 1,
           "title": "Seq",
@@ -238,6 +291,17 @@
           "minLength": 1,
           "title": "Thread Id",
           "type": "string"
+        },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "seq": {
           "minimum": 1,
@@ -332,6 +396,17 @@
           "title": "Thread Id",
           "type": "string"
         },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "seq": {
           "minimum": 1,
           "title": "Seq",
@@ -423,6 +498,17 @@
           "title": "Thread Id",
           "type": "string"
         },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "seq": {
           "minimum": 1,
           "title": "Seq",
@@ -475,6 +561,17 @@
           "minLength": 1,
           "title": "Thread Id",
           "type": "string"
+        },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "seq": {
           "minimum": 1,
@@ -729,6 +826,17 @@
           "title": "Thread Id",
           "type": "string"
         },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "seq": {
           "minimum": 1,
           "title": "Seq",
@@ -793,6 +901,17 @@
           "title": "Thread Id",
           "type": "string"
         },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "seq": {
           "minimum": 1,
           "title": "Seq",
@@ -849,6 +968,17 @@
           "minLength": 1,
           "title": "Thread Id",
           "type": "string"
+        },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "seq": {
           "minimum": 1,
@@ -1102,6 +1232,17 @@
           "title": "Thread Id",
           "type": "string"
         },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "seq": {
           "minimum": 1,
           "title": "Seq",
@@ -1180,6 +1321,17 @@
           "title": "Thread Id",
           "type": "string"
         },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "seq": {
           "minimum": 1,
           "title": "Seq",
@@ -1257,6 +1409,17 @@
           "minLength": 1,
           "title": "Thread Id",
           "type": "string"
+        },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "seq": {
           "minimum": 1,
@@ -1415,6 +1578,17 @@
           "minLength": 1,
           "title": "Thread Id",
           "type": "string"
+        },
+        "agent_setting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSetting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "seq": {
           "minimum": 1,

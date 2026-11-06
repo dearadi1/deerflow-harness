@@ -386,6 +386,7 @@ class ThreadState(AgentState):
     task_notes: Annotated[dict | None, TaskNotesChannel(dict | None, merge_task_notes)]
     task_history: NotRequired[dict | None]
     summary_text: NotRequired[str | None]
+    auto_routing: NotRequired[dict | None]
     background_tasks: NotRequired[list[BackgroundTaskState]]
 
 
