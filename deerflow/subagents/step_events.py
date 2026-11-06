@@ -70,6 +70,12 @@ def capture_step_message(
     if not isinstance(message, (AIMessage, ToolMessage)):
         return False
 
+    from deerflow.agents.middlewares.model_length_recovery import awaiting_write_recovery
+
+    # 同 ID 的修复快照随后到达，不能提前用宽松解析的半成品占据去重位置。
+    if isinstance(message, AIMessage) and awaiting_write_recovery(message):
+        return False
+
     message_dict = message.model_dump()
     message_id = message_dict.get("id")
     if message_id:
