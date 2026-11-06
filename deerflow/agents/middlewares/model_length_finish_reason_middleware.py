@@ -1,27 +1,26 @@
-"""Surface provider length-capped responses and block truncated tool calls.
-
-Background — see issue bytedance/deer-flow#4271.
-
-Some providers stop generation because the output budget is exhausted and
-surface that through ``finish_reason='length'`` while still returning assistant
-content. DeerFlow preserves visible content, adds a deterministic notice
-whenever tool calls were suppressed (even when partial text survived), and
-drops tool calls that may have been truncated at the output boundary before
-they can execute. The stamped ``model_length_termination`` marker tells
-downstream guards (notably ``TodoMiddleware``) to stand down rather than
-re-engage a capped turn.
-"""
+"""恢复长度截断的 write_file；其他无法恢复的调用保留终止保护。"""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, override
 
 from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage
 from langgraph.runtime import Runtime
 
+from deerflow.agents.middlewares.model_length_recovery import (
+    CONTINUATION_PROMPT,
+    RECOVERY_ADAPTERS,
+    RawToolCallCapture,
+    continuation_request,
+    recover_tool_call,
+    recovery_event,
+    recovery_marker,
+)
 from deerflow.agents.middlewares.model_length_termination_detectors import (
     ModelLengthTermination,
     ModelLengthTerminationDetector,
@@ -29,6 +28,7 @@ from deerflow.agents.middlewares.model_length_termination_detectors import (
 )
 from deerflow.agents.middlewares.model_response import append_visible_text, has_tool_call_intent, has_visible_content
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
+from deerflow.utils.custom_events import aemit_custom_event, emit_custom_event
 
 MODEL_LENGTH_CAPPED_STOP_REASON = "model_length_capped"
 _MODEL_LENGTH_CAPPED_CONTENT = "模型在生成完整最终回复前已达到输出上限，请继续对话以恢复生成。"
@@ -67,7 +67,7 @@ def _tool_call_summary(message: AIMessage, cleaned_content: Any) -> tuple[int, l
 
 
 class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
-    """Record provider length termination and block truncated tool calls."""
+    """放行可恢复的文件调用，其余长度截断仍终止本轮工具执行。"""
 
     def __init__(self, detectors: list[ModelLengthTerminationDetector] | None = None) -> None:
         super().__init__()
@@ -79,6 +79,8 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
         return {
             "suppress_truncated_tool_calls": True,
             "length_notice_hash": canonical_hash(_MODEL_LENGTH_CAPPED_CONTENT),
+            "recovery_tools": sorted(RECOVERY_ADAPTERS),
+            "continuation_prompt_hash": canonical_hash(CONTINUATION_PROMPT),
         }
 
     def _detect(self, message: AIMessage) -> ModelLengthTermination | None:
@@ -101,6 +103,13 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
         termination = self._detect(last)
         if termination is None:
             return None
+
+        if recovery_marker(last) is not None:
+            return None
+        recovered = recover_tool_call(last, messages)
+        if recovered is not None:
+            # 保留可执行调用让图正常经过 tools -> model，长度触顶不再提前结束该轮。
+            return {"messages": [recovered]}
 
         ctx = getattr(runtime, "context", None)
         thread_id = ctx.get("thread_id") if isinstance(ctx, dict) else None
@@ -159,8 +168,32 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
 
     @override
     def after_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
-        return self._apply(state, runtime)
+        update = self._apply(state, runtime)
+        if (payload := self._recovery_payload(update)) is not None:
+            emit_custom_event(payload, writer=runtime.stream_writer)
+        return update
 
     @override
     async def aafter_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
-        return self._apply(state, runtime)
+        update = self._apply(state, runtime)
+        if (payload := self._recovery_payload(update)) is not None:
+            await aemit_custom_event(payload, writer=runtime.stream_writer)
+        return update
+
+    @staticmethod
+    def _recovery_payload(update: dict[str, Any] | None) -> dict[str, Any] | None:
+        if update is None or recovery_marker(update["messages"][0]) is None:
+            return None
+        return recovery_event(update["messages"][0])
+
+    @override
+    def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelCallResult:
+        capture = RawToolCallCapture()
+        response = handler(capture.bind(continuation_request(request)))
+        return capture.attach(response, self._detect)
+
+    @override
+    async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelCallResult:
+        capture = RawToolCallCapture()
+        response = await handler(capture.bind(continuation_request(request)))
+        return capture.attach(response, self._detect)

@@ -259,7 +259,11 @@ class ClientStreamParser:
         call["pending"].clear()
 
     def _complete_tools(self, message: AIMessage, agent_id: str, message_id: str) -> Iterator[ClientStreamEvent]:
+        from deerflow.agents.middlewares.model_length_recovery import awaiting_write_recovery
+
         key = (agent_id, message_id)
+        if awaiting_write_recovery(message):
+            return
         calls = self._tools.setdefault(key, {})
         for position, complete in enumerate(message.tool_calls):
             # 完整快照可能重排调用列表；有 ID 时以调用身份为准，不能按位置覆盖。
@@ -355,6 +359,13 @@ class ClientStreamParser:
             return
         kind = payload.get("type", "")
         if not isinstance(kind, str):
+            return
+        if kind == "tool_call_recovered":
+            message = _message(payload.get("message"))
+            if isinstance(message, AIMessage):
+                agent_id = self._agent(payload, namespace)
+                message_id = self._message_id(message, agent_id, payload)
+                yield from self._complete_tools(message, agent_id, message_id)
             return
         if kind in {"context_compaction_start", "context_compaction_end", "context_used"}:
             agent_id = self._agent(payload, namespace)

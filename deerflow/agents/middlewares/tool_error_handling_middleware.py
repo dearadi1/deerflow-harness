@@ -712,6 +712,11 @@ def build_subagent_runtime_middlewares(
 
     middlewares.extend(load_configured_extension_middlewares(app_config))
 
+    # 子代理也需要先恢复可续写的文件片段，再对其他截断调用执行原有保护。
+    from deerflow.agents.middlewares.model_length_finish_reason_middleware import ModelLengthFinishReasonMiddleware
+
+    middlewares.append(ModelLengthFinishReasonMiddleware())
+
     # Same provider safety-termination guard the lead agent uses — subagents
     # are equally exposed to truncated tool_calls returned with
     # finish_reason=content_filter (and friends), and the bad call would then
