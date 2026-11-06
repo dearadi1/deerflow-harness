@@ -16,6 +16,7 @@ from langgraph.types import Command
 
 from deerflow.agents.middlewares.model_length_recovery import (
     CONTINUATION_PROMPT,
+    FALLBACK_CONTINUATION_PROMPT,
     RECOVERY_ADAPTERS,
     RawToolCallCapture,
     continue_write_result,
@@ -85,6 +86,8 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
             "continuation_channel": "tool_result",
             "preserve_complete_sibling_calls": True,
             "continuation_prompt_hash": canonical_hash(CONTINUATION_PROMPT),
+            "missing_write_path": "workspace_recovery_file",
+            "fallback_continuation_prompt_hash": canonical_hash(FALLBACK_CONTINUATION_PROMPT),
         }
 
     def _detect(self, message: AIMessage) -> ModelLengthTermination | None:

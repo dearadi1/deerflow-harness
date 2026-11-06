@@ -87,6 +87,8 @@ AI 正文增量，字段与思考块相同：`id`、`content`、可选的 `addit
 
 `write_file` 达到模型输出上限且参数可以恢复时，先前的 `tool_chunk` 允许保持不完整；恢复通道发送同一调用 ID 的完整 `tool_calls`，并保留同批其他参数完整的调用，随后才发送真实执行的 `tool_result`。消费者以完整汇总替换缓存参数，不自行执行分片或补造结果。恢复写入成功后，该调用的 `tool_result.content` 为 `OK` 加读取文件末尾并追加续写的提示；普通完整写入仍返回 `OK`，失败结果不附加成功续写提示。同轮通过工具结果驱动续写，不追加 user 消息、不输出长度终止提示，中途不发送主 `end`；最终收尾仍只发一次。内部 `tool_call_recovered` 不属于公共 SSE 类型。
 
+若截断发生在 `content` 且原始 `path` 尚未生成、为 null 或空白，完整 call 使用 `/mnt/user-data/workspace/recovered_write_<hash>.txt` 暂存正文。成功 result 明确标注实际暂存路径、文件尚未完成且并非最终目标，提示模型按需移动到正确位置，再读取当前路径末尾并追加续写；`additional_kwargs.model_length_recovery.fallback_path` 同时记录暂存路径。未实际写入成功时不宣称已暂存。已有完整路径保持原样，已经开始但尚未闭合的路径仍不猜测补全。
+
 ## 7. 工具结果块 `tool_result`
 
 一次工具执行的返回消息。

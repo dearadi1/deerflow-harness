@@ -22,12 +22,13 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deerflow.agents.middlewares.model_length_finish_reason_middleware import ModelLengthFinishReasonMiddleware, _MODEL_LENGTH_CAPPED_CONTENT
-from deerflow.agents.middlewares.model_length_recovery import CONTINUATION_PROMPT, RECOVERY_MARKER, RawToolCallCapture, continue_write_result, pending_write_recovery, recover_tool_call
+from deerflow.agents.middlewares.model_length_recovery import CONTINUATION_PROMPT, FALLBACK_CONTINUATION_PROMPT, RECOVERY_MARKER, RawToolCallCapture, continue_write_result, pending_write_recovery, recover_tool_call
 from deerflow.agents.middlewares.read_before_write_middleware import ReadBeforeWriteMiddleware
 from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
 from deerflow.agents.middlewares.tool_receipt_middleware import ToolReceiptMiddleware
 from deerflow.agents.middlewares.write_file_length_recovery import recover_write_file_arguments
 from deerflow.client_stream import ClientStreamParser
+from deerflow.config.paths import VIRTUAL_PATH_PREFIX
 from deerflow.subagents.step_events import capture_new_step_messages, capture_step_message
 
 
@@ -41,6 +42,38 @@ def truncated_message(arguments, *, name="write_file", call_id="write_1", reason
 
 
 class ArgumentRecoveryTests(unittest.TestCase):
+    def test_missing_path_uses_isolated_workspace_file_and_reports_actual_location(self):
+        original = truncated_message('{"content":"第一段\\n未完')
+        recovered = recover_tool_call(original, [original])
+        arguments = recovered.tool_calls[0]["args"]
+        path = arguments["path"]
+        self.assertTrue(path.startswith(f"{VIRTUAL_PATH_PREFIX}/workspace/recovered_write_"))
+        self.assertEqual(arguments["content"], "第一段\n未完")
+        self.assertFalse(arguments["append"])
+        self.assertEqual(recovered.additional_kwargs[RECOVERY_MARKER]["fallback_path"], path)
+        self.assertEqual(recover_tool_call(original, [original]).tool_calls[0]["args"]["path"], path)
+        other = truncated_message('{"content":"另一个片段', call_id="../other")
+        other_path = recover_tool_call(other, [other]).tool_calls[0]["args"]["path"]
+        self.assertNotEqual(other_path, path)
+        self.assertNotIn("..", other_path)
+        request = ToolCallRequest(tool_call=recovered.tool_calls[0], tool=None, state={"messages": [recovered]}, runtime=None)
+        result = continue_write_result(request, ToolMessage(content="OK", tool_call_id="write_1"))
+        self.assertEqual(result.content, f"OK\n\n{FALLBACK_CONTINUATION_PROMPT.format(path=path)}")
+        self.assertEqual(result.additional_kwargs[RECOVERY_MARKER]["fallback_path"], path)
+        self.assertIsNotNone(pending_write_recovery([recovered, result]))
+
+    def test_fallback_is_limited_to_missing_paths_and_generated_content(self):
+        fallback = f"{VIRTUAL_PATH_PREFIX}/workspace/recovered.txt"
+        for raw in ['{"content":"part', '{"path":"","append":true,"content":"part', '{"path":null,"content":"part']:
+            recovered = recover_write_file_arguments(raw, fallback_path=fallback)
+            self.assertEqual(recovered["path"], fallback)
+            self.assertFalse(recovered["append"])
+        original = recover_write_file_arguments('{"path":"/tmp/original","append":true,"content":"part', fallback_path=fallback)
+        self.assertEqual(original["path"], "/tmp/original")
+        self.assertTrue(original["append"])
+        for raw in ['{"content":"', '{"content":"part","path":"/tmp/incomplete', '{"content":"bad\\q', '{"path":42,"content":"part', '{"content":"part","append":"true"}']:
+            self.assertIsNone(recover_write_file_arguments(raw, fallback_path=fallback))
+
     def test_content_boundaries_preserve_only_complete_characters(self):
         cases = [
             ('{"path":"/tmp/a","content":"第一行', "第一行"),
@@ -182,6 +215,8 @@ class ModelServer:
     def handle(self, request):
         self.requests.append(json.loads(request.content))
         response = self.responses[len(self.requests) - 1]
+        if callable(response):
+            response = response(self.requests[-1])
         return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=self.encode(response, len(self.requests)))
 
     @staticmethod
@@ -206,11 +241,26 @@ class ModelServer:
         return "".join(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n" for chunk in chunks).encode() + b"data: [DONE]\n\n"
 
 
+def mapped_file_path(directory, path):
+    target = Path(path)
+    if target.is_absolute():
+        target = target.relative_to(f"{VIRTUAL_PATH_PREFIX}/workspace")
+    return directory / target
+
+
+def last_write_path(request):
+    for message in reversed(request["messages"]):
+        for call in message.get("tool_calls", []):
+            if call["function"]["name"] == "write_file":
+                return json.loads(call["function"]["arguments"])["path"]
+    raise AssertionError("缺少已恢复的写入调用")
+
+
 def file_tools(directory, writes):
     @tool("write_file")
     def write_file(path: str, content: str, append: bool = False, description: str = "") -> str:
         """写入测试文件以验证实际执行顺序。"""
-        target = directory / path
+        target = mapped_file_path(directory, path)
         with target.open("a" if append else "w") as output:
             output.write(content)
         writes.append((path, content, append))
@@ -219,14 +269,20 @@ def file_tools(directory, writes):
     @tool("read_file")
     def read_file(path: str) -> str:
         """读取已落盘内容，供续写确认边界。"""
-        return (directory / path).read_text()
+        return mapped_file_path(directory, path).read_text()
 
     @tool("write_todos")
     def write_todos(todos: list[str]) -> str:
         """验证完整的同批工具仍能正常执行。"""
         return "todos saved"
 
-    return [write_file, read_file, write_todos]
+    @tool("move_file")
+    def move_file(source: str, destination: str) -> str:
+        """在测试目录内移动已保存的正文，验证随后使用新路径续写。"""
+        mapped_file_path(directory, source).rename(mapped_file_path(directory, destination))
+        return "moved"
+
+    return [write_file, read_file, write_todos, move_file]
 
 
 class DenyWrites(AgentMiddleware):
@@ -245,7 +301,7 @@ class RecoveryGraphTests(unittest.TestCase):
         async_client = httpx.AsyncClient(transport=transport)
         model = ChatOpenAI(model="test-model", api_key="test", streaming=True, max_retries=0, http_client=sync_client, http_async_client=async_client)
         writes = []
-        read_gate = ReadBeforeWriteMiddleware(content_reader=lambda runtime, path: (directory / path).read_text())
+        read_gate = ReadBeforeWriteMiddleware(content_reader=lambda runtime, path: mapped_file_path(directory, path).read_text())
         middlewares = [ToolReceiptMiddleware(render_mode="delegation_only"), *([DenyWrites()] if deny else []), read_gate, ModelLengthFinishReasonMiddleware(), SafetyFinishReasonMiddleware()]
         for name in ("sandbox_authorization_scope", "sandbox_authorization_scope_async"):
             mocked = patch(f"deerflow.agents.middlewares.read_before_write_middleware.{name}", side_effect=lambda runtime: nullcontext())
@@ -333,6 +389,63 @@ class RecoveryGraphTests(unittest.TestCase):
                 self.assertEqual(sum(event.type == "end" for event in events), 1)
                 self.assert_tool_result_continuation(server, events, expected=1)
                 self.assert_call_result_order(events)
+
+    def test_content_first_stream_is_saved_then_moved_and_continued(self):
+        responses = [
+            ("write_file", '{"content":"第一段\\n未完', "length"),
+            lambda request: ("read_file", json.dumps({"path": last_write_path(request)}), "tool_calls"),
+            lambda request: ("move_file", json.dumps({"source": last_write_path(request), "destination": "final.txt"}), "tool_calls"),
+            ("read_file", '{"path":"final.txt"}', "tool_calls"),
+            ("write_file", '{"path":"final.txt","append":true,"content":"的句子"}', "tool_calls"),
+            (None, "已完成", "stop"),
+        ]
+        for asynchronous in [False, True]:
+            with self.subTest(asynchronous=asynchronous), tempfile.TemporaryDirectory() as directory:
+                graph, server, writes = self.build_graph(Path(directory), responses)
+                events = self.collect(graph, asynchronous=asynchronous)
+                self.assertEqual((Path(directory) / "final.txt").read_text(), "第一段\n未完的句子")
+                self.assertEqual(len(writes), 2)
+                path = writes[0][0]
+                self.assertTrue(path.startswith(f"{VIRTUAL_PATH_PREFIX}/workspace/recovered_write_"))
+                self.assertEqual(writes[0][1:], ("第一段\n未完", False))
+                self.assertFalse(mapped_file_path(Path(directory), path).exists())
+                self.assertEqual(len(server.requests), 6)
+                self.assertEqual(sum(event.type == "end" for event in events), 1)
+                self.assertEqual(events[-1].type, "end")
+                self.assert_call_result_order(events)
+                result = next(event.data for event in events if event.type == "tool_result")
+                self.assertEqual(result.content, f"OK\n\n{FALLBACK_CONTINUATION_PROMPT.format(path=path)}")
+                metadata = result.additional_kwargs.model_dump()
+                self.assertEqual(metadata[RECOVERY_MARKER]["fallback_path"], path)
+                self.assertEqual(metadata["deerflow_tool_receipt"]["output_sha256"], hashlib.sha256(result.content.encode()).hexdigest()[:16])
+                state = graph.get_state({"configurable": {"thread_id": "thread"}}).values
+                stored_result = next(message for message in state["messages"] if isinstance(message, ToolMessage))
+                self.assertEqual(stored_result.content, result.content)
+                for request in server.requests:
+                    self.assertEqual([message["content"] for message in request["messages"] if message["role"] == "user"], ["完整写入文件"])
+                    self.assertNotIn(_MODEL_LENGTH_CAPPED_CONTENT, json.dumps(request, ensure_ascii=False))
+                self.assertTrue(any(message["role"] == "tool" and message["content"] == result.content for message in server.requests[1]["messages"]))
+
+    def test_denied_workspace_fallback_never_claims_the_fragment_was_saved(self):
+        responses = [("write_file", '{"content":"第一段', "length"), (None, "写入被拒绝", "stop")]
+        for asynchronous in [False, True]:
+            with self.subTest(asynchronous=asynchronous), tempfile.TemporaryDirectory() as directory:
+                graph, server, writes = self.build_graph(Path(directory), responses, deny=True)
+                events = self.collect(graph, asynchronous=asynchronous)
+                self.assertEqual(writes, [])
+                self.assertEqual(list(Path(directory).iterdir()), [])
+                self.assertNotIn("已成功暂存", json.dumps(server.requests, ensure_ascii=False))
+                self.assertTrue(any(event.type == "tool_result" and event.data.status == "error" for event in events))
+                self.assert_call_result_order(events)
+
+    def test_missing_path_without_length_signal_does_not_create_a_recovery_file(self):
+        responses = [("write_file", '{"content":"正文"}', "tool_calls"), (None, "路径缺失", "stop")]
+        with tempfile.TemporaryDirectory() as directory:
+            graph, _, writes = self.build_graph(Path(directory), responses)
+            events = self.collect(graph)
+            self.assertEqual(writes, [])
+            self.assertTrue(any(event.type == "tool_result" and event.data.status == "error" for event in events))
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def assert_call_result_order(self, events):
         for position, event in enumerate(events):
