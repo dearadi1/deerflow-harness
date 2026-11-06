@@ -2959,10 +2959,14 @@ def write_file_tool(
     description: str = "",
     *,
     path: str,
-    content: str,
     append: bool = False,
+    content: str,
 ) -> str:
     """Write text content to a file. By default this overwrites the target file; set append=True to add content to the end without replacing existing content.
+
+    请按 description、path、append、content 的顺序输出参数，content 必须放在最后；
+    省略可选的 description 时，从 path 开始。先明确路径和追加方式，再生成较长的正文，
+    以便输出触顶时仍可恢复写入。文件正文应全部放在 content 中，不要作为普通回答输出。
 
     READ-BEFORE-WRITE (issue #3857): if the target file already exists (including
     append=True), you must have read its CURRENT version with read_file first.
@@ -2986,10 +2990,10 @@ def write_file_tool(
          create the file; subsequent calls use append=True.
 
     Args:
-        description: Briefly explain why you are writing to this path. This is optional; when provided, output it as the first tool argument.
-        path: The **absolute** path to the file to write to.
-        content: The content to write to the file.
-        append: Whether to append content to the end of the file instead of overwriting it. Defaults to False.
+        description: 简要说明写入意图，可省略；提供时必须作为第一个参数输出。
+        path: 目标文件的绝对路径，在 description 之后、append 和 content 之前输出。
+        append: 是否追加到文件末尾，默认为 False（覆盖）；在 path 之后、content 之前输出。
+        content: 要写入文件的完整正文片段，必须作为最后一个参数输出。
     """
     # 80 KB 仅用于提示模型分段生成，避免拒绝已生成的完整内容后重复消耗模型调用。
     try:
@@ -3028,16 +3032,16 @@ async def _write_file_tool_async(
     description: str = "",
     *,
     path: str,
-    content: str,
     append: bool = False,
+    content: str,
 ) -> str:
     return await _run_sync_tool_after_async_sandbox_init(
         write_file_tool.func,
         runtime,
         description=description,
         path=path,
-        content=content,
         append=append,
+        content=content,
     )
 
 
