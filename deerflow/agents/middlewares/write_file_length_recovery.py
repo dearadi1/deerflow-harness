@@ -10,7 +10,7 @@ _ARGUMENT_NAMES = frozenset({"description", "path", "content", "append"})
 _INCOMPLETE_ESCAPE = re.compile(r"\\(?:u[0-9a-fA-F]{0,3})?$")
 
 
-def _decode_content_prefix(value: str) -> str | None:
+def _decode_string_prefix(value: str) -> str | None:
     if not value.startswith('"'):
         return None
     # 只丢弃无法构成字符的末尾转义；中间的坏 JSON 不能伪装成正常截断。
@@ -52,7 +52,7 @@ def _read_argument(value: str, position: int, decoder: json.JSONDecoder) -> tupl
         parsed, end = decoder.raw_decode(value, position)
         return key, parsed, end
     except ValueError:
-        parsed = _decode_content_prefix(value[position:]) if key == "content" else None
+        parsed = _decode_string_prefix(value[position:]) if key in {"content", "description"} else None
         return (key, parsed, len(value)) if parsed is not None else None
 
 
@@ -76,8 +76,8 @@ def _parse_arguments(value: str) -> dict[str, Any] | None:
             return arguments if not value[position + 1 :].strip() else None
         if value[position] != ",":
             return None
-        position += 1
-    return None
+        position = _skip_whitespace(value, position + 1)
+    return arguments
 
 
 def recover_write_file_arguments(value: object, *, continue_append: bool = False) -> dict[str, Any] | None:

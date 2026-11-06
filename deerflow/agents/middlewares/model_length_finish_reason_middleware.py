@@ -9,14 +9,16 @@ from typing import Any, override
 from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
+from langgraph.types import Command
 
 from deerflow.agents.middlewares.model_length_recovery import (
     CONTINUATION_PROMPT,
     RECOVERY_ADAPTERS,
     RawToolCallCapture,
-    continuation_request,
+    continue_write_result,
     recover_tool_call,
     recovery_event,
     recovery_marker,
@@ -80,6 +82,8 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
             "suppress_truncated_tool_calls": True,
             "length_notice_hash": canonical_hash(_MODEL_LENGTH_CAPPED_CONTENT),
             "recovery_tools": sorted(RECOVERY_ADAPTERS),
+            "continuation_channel": "tool_result",
+            "preserve_complete_sibling_calls": True,
             "continuation_prompt_hash": canonical_hash(CONTINUATION_PROMPT),
         }
 
@@ -189,11 +193,19 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
     @override
     def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelCallResult:
         capture = RawToolCallCapture()
-        response = handler(capture.bind(continuation_request(request)))
+        response = handler(capture.bind(request))
         return capture.attach(response, self._detect)
 
     @override
     async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelCallResult:
         capture = RawToolCallCapture()
-        response = await handler(capture.bind(continuation_request(request)))
+        response = await handler(capture.bind(request))
         return capture.attach(response, self._detect)
+
+    @override
+    def wrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolMessage | Command]) -> ToolMessage | Command:
+        return continue_write_result(request, handler(request))
+
+    @override
+    async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]) -> ToolMessage | Command:
+        return continue_write_result(request, await handler(request))
