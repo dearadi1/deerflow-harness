@@ -2964,9 +2964,11 @@ def write_file_tool(
 ) -> str:
     """Write text content to a file. By default this overwrites the target file; set append=True to add content to the end without replacing existing content.
 
-    请按 description、path、append、content 的顺序输出参数，content 必须放在最后；
-    省略可选的 description 时，从 path 开始。先明确路径和追加方式，再生成较长的正文，
-    以便输出触顶时仍可恢复写入。文件正文应全部放在 content 中，不要作为普通回答输出。
+    Emit arguments in this order: description, path, append, content. Always
+    emit content last; if the optional description is omitted, start with path.
+    Specify the path and append mode before generating a long body so the write
+    can still be recovered if the output limit is reached. Put all file text
+    in content, not in the assistant's ordinary response.
 
     READ-BEFORE-WRITE (issue #3857): if the target file already exists (including
     append=True), you must have read its CURRENT version with read_file first.
@@ -2990,10 +2992,10 @@ def write_file_tool(
          create the file; subsequent calls use append=True.
 
     Args:
-        description: 简要说明写入意图，可省略；提供时必须作为第一个参数输出。
-        path: 目标文件的绝对路径，在 description 之后、append 和 content 之前输出。
-        append: 是否追加到文件末尾，默认为 False（覆盖）；在 path 之后、content 之前输出。
-        content: 要写入文件的完整正文片段，必须作为最后一个参数输出。
+        description: Briefly explain the intent of this write. Optional; when provided, emit it as the first argument.
+        path: The absolute path to the target file. Emit after description and before append and content.
+        append: Whether to append to the file instead of overwriting it. Defaults to False. Emit after path and before content.
+        content: The complete text fragment to write to the file. Always emit this as the last argument.
     """
     # 80 KB 仅用于提示模型分段生成，避免拒绝已生成的完整内容后重复消耗模型调用。
     try:
