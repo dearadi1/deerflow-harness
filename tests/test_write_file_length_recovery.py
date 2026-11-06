@@ -1,6 +1,7 @@
 """验证真实流解析、文件落盘和同轮续写，避免只覆盖补括号函数。"""
 
 import asyncio
+import hashlib
 import json
 import tempfile
 import unittest
@@ -16,12 +17,15 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
+from langgraph.types import Command
 
-from deerflow.agents.middlewares.model_length_finish_reason_middleware import ModelLengthFinishReasonMiddleware
-from deerflow.agents.middlewares.model_length_recovery import CONTINUATION_PROMPT, RawToolCallCapture, pending_write_recovery, recover_tool_call
+from deerflow.agents.middlewares.model_length_finish_reason_middleware import ModelLengthFinishReasonMiddleware, _MODEL_LENGTH_CAPPED_CONTENT
+from deerflow.agents.middlewares.model_length_recovery import CONTINUATION_PROMPT, RECOVERY_MARKER, RawToolCallCapture, continue_write_result, pending_write_recovery, recover_tool_call
 from deerflow.agents.middlewares.read_before_write_middleware import ReadBeforeWriteMiddleware
 from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
+from deerflow.agents.middlewares.tool_receipt_middleware import ToolReceiptMiddleware
 from deerflow.agents.middlewares.write_file_length_recovery import recover_write_file_arguments
 from deerflow.client_stream import ClientStreamParser
 from deerflow.subagents.step_events import capture_new_step_messages, capture_step_message
@@ -47,6 +51,8 @@ class ArgumentRecoveryTests(unittest.TestCase):
             ('{"path":"/tmp/a","content":"abc\\\\', "abc\\"),
             ('{"path":"/tmp/a","content":"abc"', "abc"),
             ('{"path":"/tmp/a","append":true,"content":"abc', "abc"),
+            ('{"path":"/tmp/a","content":"abc", ', "abc"),
+            ('{"path":"/tmp/a","content":"abc","description":"未完成', "abc"),
         ]
         for raw, expected in cases:
             with self.subTest(raw=raw):
@@ -70,7 +76,7 @@ class ArgumentRecoveryTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertIsNone(recover_write_file_arguments(raw))
 
-    def test_other_tools_safety_and_multiple_calls_keep_length_fallback(self):
+    def test_other_tools_safety_and_duplicate_calls_keep_length_fallback(self):
         middleware = ModelLengthFinishReasonMiddleware()
         for name in ["bash", "str_replace"]:
             message = truncated_message('{"command":"partial', name=name)
@@ -84,6 +90,17 @@ class ArgumentRecoveryTests(unittest.TestCase):
         self.assertIsNone(middleware.after_model({"messages": [message]}, Runtime(context={})))
         self.assertIsNone(recover_tool_call(message, [message]))
 
+    def test_complete_sibling_calls_survive_but_other_truncated_tools_are_not_repaired(self):
+        message = truncated_message('{"path":"/tmp/a","content":"partial')
+        sibling = {"id": "todo_1", "type": "function", "function": {"name": "write_todos", "arguments": '{"todos":[]}'}}
+        message.additional_kwargs["tool_calls"].insert(0, sibling)
+        recovered = recover_tool_call(message, [message])
+        self.assertEqual([call["id"] for call in recovered.tool_calls], ["todo_1", "write_1"])
+        self.assertEqual(recovered.tool_calls[0]["args"], {"todos": []})
+        self.assertEqual(recovered.tool_calls[1]["args"]["content"], "partial")
+        sibling["function"]["arguments"] = '{"todos":['
+        self.assertIsNone(recover_tool_call(message, [message]))
+
     def test_success_boundary_and_new_turn_do_not_invent_completed_writes(self):
         original = truncated_message('{"path":"/tmp/a","content":"partial')
         recovered = recover_tool_call(original, [original])
@@ -93,6 +110,36 @@ class ArgumentRecoveryTests(unittest.TestCase):
         self.assertIsNone(pending_write_recovery([user, recovered, failed]))
         self.assertIsNotNone(pending_write_recovery([user, recovered, succeeded]))
         self.assertIsNone(pending_write_recovery([user, recovered, succeeded, HumanMessage(content="新任务")]))
+
+    def test_continuation_result_requires_matching_success_and_preserves_command(self):
+        original = truncated_message('{"path":"/tmp/a","content":"partial')
+        recovered = recover_tool_call(original, [original])
+        request = ToolCallRequest(tool_call=recovered.tool_calls[0], tool=None, state={"messages": [recovered]}, runtime=None)
+        succeeded = ToolMessage(content="OK", tool_call_id="write_1", id="result_1", name="write_file", artifact={"path": "/tmp/a"})
+        result = continue_write_result(request, succeeded)
+        self.assertEqual(result.content, f"OK\n\n{CONTINUATION_PROMPT}")
+        self.assertEqual((result.id, result.name, result.artifact), (succeeded.id, succeeded.name, succeeded.artifact))
+        self.assertEqual(succeeded.content, "OK")
+        self.assertEqual(result.additional_kwargs["deerflow_tool_transforms"][0]["kind"], "write_file_continuation")
+        self.assertEqual(result.additional_kwargs[RECOVERY_MARKER]["tool_call_id"], "write_1")
+        self.assertIsNotNone(pending_write_recovery([recovered, result]))
+        self.assertIs(continue_write_result(request, result), result)
+        failures = [
+            succeeded.model_copy(update={"status": "error"}),
+            succeeded.model_copy(update={"additional_kwargs": {"deerflow_tool_meta": {"status": "error"}}}),
+            succeeded.model_copy(update={"content": "Error: failed"}),
+            succeeded.model_copy(update={"tool_call_id": "another_call"}),
+        ]
+        for failure in failures:
+            self.assertIs(continue_write_result(request, failure), failure)
+        for messages in [succeeded, [failures[-1], succeeded], (failures[-1], succeeded)]:
+            command = Command(update={"messages": messages, "extra": 42}, goto="next")
+            patched = continue_write_result(request, command)
+            self.assertEqual(patched.goto, "next")
+            self.assertEqual(patched.update["extra"], 42)
+            self.assertIsInstance(patched.update["messages"], type(messages))
+            target = patched.update["messages"] if isinstance(messages, ToolMessage) else patched.update["messages"][-1]
+            self.assertEqual(target.content, result.content)
 
     def test_child_step_capture_waits_for_repaired_call(self):
         original = truncated_message('{"path":"/tmp/a","content":"partial')
@@ -138,16 +185,22 @@ class ModelServer:
         return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=self.encode(response, len(self.requests)))
 
     @staticmethod
+    def call_deltas(name, arguments, call_id, position):
+        midpoint = max(1, len(arguments) // 2)
+        return [
+            {"tool_calls": [{"index": position, "id": call_id, "type": "function", "function": {"name": name, "arguments": arguments[:midpoint]}}]},
+            {"tool_calls": [{"index": position, "function": {"arguments": arguments[midpoint:]}}]},
+        ]
+
+    @staticmethod
     def encode(response, index):
         name, arguments, reason = response
         if name is None:
             deltas = [{"content": arguments}]
+        elif isinstance(name, list):
+            deltas = [delta for position, (tool_name, raw) in enumerate(name) for delta in ModelServer.call_deltas(tool_name, raw, f"call_{index}_{position}", position)]
         else:
-            midpoint = max(1, len(arguments) // 2)
-            deltas = [
-                {"tool_calls": [{"index": 0, "id": f"call_{index}", "type": "function", "function": {"name": name, "arguments": arguments[:midpoint]}}]},
-                {"tool_calls": [{"index": 0, "function": {"arguments": arguments[midpoint:]}}]},
-            ]
+            deltas = ModelServer.call_deltas(name, arguments, f"call_{index}", 0)
         chunks = [{"id": f"msg_{index}", "object": "chat.completion.chunk", "model": "test-model", "choices": [{"index": 0, "delta": delta, "finish_reason": None}]} for delta in deltas]
         chunks.append({"id": f"msg_{index}", "object": "chat.completion.chunk", "model": "test-model", "choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
         return "".join(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n" for chunk in chunks).encode() + b"data: [DONE]\n\n"
@@ -168,7 +221,12 @@ def file_tools(directory, writes):
         """读取已落盘内容，供续写确认边界。"""
         return (directory / path).read_text()
 
-    return [write_file, read_file]
+    @tool("write_todos")
+    def write_todos(todos: list[str]) -> str:
+        """验证完整的同批工具仍能正常执行。"""
+        return "todos saved"
+
+    return [write_file, read_file, write_todos]
 
 
 class DenyWrites(AgentMiddleware):
@@ -188,7 +246,7 @@ class RecoveryGraphTests(unittest.TestCase):
         model = ChatOpenAI(model="test-model", api_key="test", streaming=True, max_retries=0, http_client=sync_client, http_async_client=async_client)
         writes = []
         read_gate = ReadBeforeWriteMiddleware(content_reader=lambda runtime, path: (directory / path).read_text())
-        middlewares = ([DenyWrites()] if deny else []) + [read_gate, ModelLengthFinishReasonMiddleware(), SafetyFinishReasonMiddleware()]
+        middlewares = [ToolReceiptMiddleware(render_mode="delegation_only"), *([DenyWrites()] if deny else []), read_gate, ModelLengthFinishReasonMiddleware(), SafetyFinishReasonMiddleware()]
         for name in ("sandbox_authorization_scope", "sandbox_authorization_scope_async"):
             mocked = patch(f"deerflow.agents.middlewares.read_before_write_middleware.{name}", side_effect=lambda runtime: nullcontext())
             mocked.start()
@@ -232,12 +290,49 @@ class RecoveryGraphTests(unittest.TestCase):
                 self.assertEqual([event.type for event in events].count("end"), 1)
                 self.assertEqual(events[-1].type, "end")
                 self.assertEqual(len(server.requests), 6)
-                for request in server.requests[1:5]:
-                    self.assertIn(CONTINUATION_PROMPT, [message.get("content") for message in request["messages"]])
-                self.assertNotIn(CONTINUATION_PROMPT, [message.get("content") for message in server.requests[-1]["messages"]])
+                self.assert_tool_result_continuation(server, events, expected=2)
                 self.assert_call_result_order(events)
                 state = graph.get_state({"configurable": {"thread_id": "thread"}}).values
                 self.assertFalse(any(message.name == "write_file_continuation" for message in state["messages"]))
+                self.assertEqual(sum(isinstance(message, HumanMessage) for message in state["messages"]), 1)
+                stored_results = [message for message in state["messages"] if isinstance(message, ToolMessage) and message.name == "write_file"]
+                self.assertEqual([message.content for message in stored_results], [f"OK\n\n{CONTINUATION_PROMPT}", f"OK\n\n{CONTINUATION_PROMPT}", "OK"])
+                self.assertIsNone(pending_write_recovery(state["messages"]))
+
+    def assert_tool_result_continuation(self, server, events, *, expected):
+        for request in server.requests:
+            users = [message for message in request["messages"] if message["role"] == "user"]
+            self.assertEqual([message["content"] for message in users], ["完整写入文件"])
+            self.assertNotIn(_MODEL_LENGTH_CAPPED_CONTENT, json.dumps(request, ensure_ascii=False))
+        results = [event.data for event in events if event.type == "tool_result" and CONTINUATION_PROMPT in str(event.data.content)]
+        self.assertEqual(len(results), expected)
+        for result in results:
+            self.assertEqual(result.content, f"OK\n\n{CONTINUATION_PROMPT}")
+            receipt = result.additional_kwargs.model_dump()["deerflow_tool_receipt"]
+            self.assertEqual(receipt["output_sha256"], hashlib.sha256(result.content.encode()).hexdigest()[:16])
+            self.assertTrue(any(message.get("role") == "tool" and message.get("tool_call_id") == result.tool_call_id and message["content"] == result.content for request in server.requests for message in request["messages"]))
+            raw_arguments = "".join(call.function.arguments for event in events if event.type == "tool_chunk" for call in event.data if call.tool_call_id == result.tool_call_id)
+            with self.assertRaises(ValueError):
+                json.loads(raw_arguments)
+        self.assertFalse(any(event.type == "answer_content" and _MODEL_LENGTH_CAPPED_CONTENT in event.data.content for event in events))
+
+    def test_parallel_complete_todos_and_truncated_write_continue_without_user_messages(self):
+        responses = [
+            ([("write_todos", '{"todos":["write report"]}'), ("write_file", '{"path":"output.txt","content":"第一段')], None, "length"),
+            ("read_file", '{"path":"output.txt"}', "tool_calls"),
+            ("write_file", '{"path":"output.txt","append":true,"content":"第二段"}', "tool_calls"),
+            (None, "已完成", "stop"),
+        ]
+        for asynchronous in [False, True]:
+            with self.subTest(asynchronous=asynchronous), tempfile.TemporaryDirectory() as directory:
+                graph, server, writes = self.build_graph(Path(directory), responses)
+                events = self.collect(graph, asynchronous=asynchronous)
+                self.assertEqual((Path(directory) / "output.txt").read_text(), "第一段第二段")
+                self.assertEqual(len(writes), 2)
+                self.assertEqual(sum(event.type == "tool_result" and event.data.name == "write_todos" for event in events), 1)
+                self.assertEqual(sum(event.type == "end" for event in events), 1)
+                self.assert_tool_result_continuation(server, events, expected=1)
+                self.assert_call_result_order(events)
 
     def assert_call_result_order(self, events):
         for position, event in enumerate(events):
@@ -255,7 +350,7 @@ class RecoveryGraphTests(unittest.TestCase):
             events = self.collect(graph)
             self.assertEqual(writes, [])
             self.assertFalse((Path(directory) / "output.txt").exists())
-            self.assertNotIn(CONTINUATION_PROMPT, [message.get("content") for message in server.requests[1]["messages"]])
+            self.assertNotIn(CONTINUATION_PROMPT, json.dumps(server.requests[1], ensure_ascii=False))
             self.assert_call_result_order(events)
 
     def test_stream_truncated_path_is_not_guessed_by_lenient_json_parser(self):
@@ -279,6 +374,7 @@ class RecoveryGraphTests(unittest.TestCase):
             self.assertEqual(len(writes), 1)
             self.assertEqual((Path(directory) / "output.txt").read_text(), "第一段")
             self.assertTrue(any(event.type == "tool_result" and event.data.status == "error" for event in events))
+            self.assertFalse(any(event.type == "tool_result" and event.data.status == "error" and CONTINUATION_PROMPT in str(event.data.content) for event in events))
             self.assert_call_result_order(events)
 
     def test_provider_safety_stop_never_recovers_the_file(self):
