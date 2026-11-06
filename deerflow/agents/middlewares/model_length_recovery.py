@@ -29,7 +29,7 @@ CONTINUATION_PROMPT = (
     "上一轮 write_file 因模型单次输出达到上限而被截断，已恢复的正文片段已成功写入，但文件尚未完成。"
     "请自动继续原任务，不要停下来等待用户追问。先用 read_file 读取该文件当前末尾，"
     "从实际落盘的末尾接着生成剩余内容，使用相同 path 和 append=true；不要重复或覆盖已写入正文。"
-    "请把 path、append、description 放在 content 之前，分成较短的片段写入；"
+    "请按 description、path、append、content 的顺序输出参数，将 content 放在最后，分成较短的片段写入；"
     "若末尾是半句或半行，先续完它。完成文件并核验后再给最终答复。"
 )
 FALLBACK_CONTINUATION_PROMPT = (
@@ -40,7 +40,7 @@ FALLBACK_CONTINUATION_PROMPT = (
     "如需调整位置，使用可用工具移动该文件，避免覆盖已有目标文件；确认移动成功后读取新路径的最后几行。"
     "如无需移动，直接读取暂存文件末尾。从实际文件末尾继续生成，使用当前实际路径和 append=true；"
     "不要重新生成、重复追加或覆盖已保存的正文。若末尾是半句或半行，先续完它。"
-    "请把 path、append、description 放在 content 之前，分成较短的片段写入。完成文件并核验后再给最终答复。"
+    "请按 description、path、append、content 的顺序输出参数，将 content 放在最后，分成较短的片段写入。完成文件并核验后再给最终答复。"
 )
 
 
