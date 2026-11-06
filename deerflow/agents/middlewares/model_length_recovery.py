@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from typing import Any
@@ -19,6 +20,7 @@ from deerflow.agents.middlewares.tool_call_args import pair_tool_call_results
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
 from deerflow.agents.middlewares.tool_transform_meta import append_tool_transform
 from deerflow.agents.middlewares.write_file_length_recovery import recover_write_file_arguments
+from deerflow.config.paths import VIRTUAL_PATH_PREFIX
 
 RECOVERY_MARKER = "model_length_recovery"
 RECOVERY_EVENT = "tool_call_recovered"
@@ -29,6 +31,16 @@ CONTINUATION_PROMPT = (
     "从实际落盘的末尾接着生成剩余内容，使用相同 path 和 append=true；不要重复或覆盖已写入正文。"
     "请把 path、append、description 放在 content 之前，分成较短的片段写入；"
     "若末尾是半句或半行，先续完它。完成文件并核验后再给最终答复。"
+)
+FALLBACK_CONTINUATION_PROMPT = (
+    "本次 write_file 因模型单次输出达到上限而被截断，原始调用缺少有效的 path。\n"
+    "已生成的正文片段已成功暂存到工作区文件：{path}\n"
+    "这是临时恢复文件，不代表原任务要求的最终位置；文件尚未完成，未写入任何推测的目标路径。\n"
+    "请自动继续原任务，不要等待用户追问。先用 read_file 检查暂存文件，根据原任务确定最终路径；"
+    "如需调整位置，使用可用工具移动该文件，避免覆盖已有目标文件；确认移动成功后读取新路径的最后几行。"
+    "如无需移动，直接读取暂存文件末尾。从实际文件末尾继续生成，使用当前实际路径和 append=true；"
+    "不要重新生成、重复追加或覆盖已保存的正文。若末尾是半句或半行，先续完它。"
+    "请把 path、append、description 放在 content 之前，分成较短的片段写入。完成文件并核验后再给最终答复。"
 )
 
 
@@ -124,7 +136,9 @@ def _continue_after_write(message: ToolMessage, marker: dict[str, Any]) -> ToolM
         return message
     additional_kwargs = {**message.additional_kwargs, RECOVERY_MARKER: marker}
     append_tool_transform(additional_kwargs, "write_file_continuation", by="ModelLengthFinishReasonMiddleware")
-    return message.model_copy(update={"content": f"OK\n\n{CONTINUATION_PROMPT}", "additional_kwargs": additional_kwargs})
+    fallback_path = marker.get("fallback_path")
+    prompt = FALLBACK_CONTINUATION_PROMPT.format(path=fallback_path) if isinstance(fallback_path, str) else CONTINUATION_PROMPT
+    return message.model_copy(update={"content": f"OK\n\n{prompt}", "additional_kwargs": additional_kwargs})
 
 
 def continue_write_result(request: ToolCallRequest, result: ToolMessage | Command) -> ToolMessage | Command:
@@ -195,6 +209,25 @@ def _prepare_calls(calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], d
     return (prepared, candidates[0]) if len(candidates) == 1 else None
 
 
+def _workspace_recovery_path(message: AIMessage, call: dict[str, Any]) -> str:
+    # 同一调用重放保持路径稳定，不同调用隔离；供应商 ID 不直接参与路径拼接。
+    identity = json.dumps([message.id, call["id"]], ensure_ascii=True).encode()
+    digest = hashlib.sha256(identity).hexdigest()[:32]
+    return f"{VIRTUAL_PATH_PREFIX}/workspace/recovered_write_{digest}.txt"
+
+
+def _recover_arguments(message: AIMessage, call: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    name = call.get("name")
+    adapter = RECOVERY_ADAPTERS.get(name) if isinstance(name, str) else None
+    if adapter is None:
+        return None, None
+    arguments = adapter(call.get("args"))
+    if arguments is not None or name != "write_file":
+        return arguments, None
+    fallback_path = _workspace_recovery_path(message, call)
+    return adapter(call.get("args"), fallback_path=fallback_path), fallback_path
+
+
 def recover_tool_call(message: AIMessage, messages: list[Any]) -> AIMessage | None:
     if message.additional_kwargs.get("safety_termination") or any(detector.detect(message) for detector in safety_detectors()):
         return None
@@ -203,14 +236,13 @@ def recover_tool_call(message: AIMessage, messages: list[Any]) -> AIMessage | No
         return None
     calls, call = prepared
     name = call.get("name")
-    adapter = RECOVERY_ADAPTERS.get(name) if isinstance(name, str) else None
-    arguments = adapter(call.get("args")) if adapter is not None else None
+    arguments, fallback_path = _recover_arguments(message, call)
     if arguments is None:
         return None
     pending = pending_write_recovery(messages[:-1])
-    if pending is not None and pending.get("path") == arguments["path"]:
+    if fallback_path is None and pending is not None and pending.get("path") == arguments["path"]:
         # 续写的 append 若排在截断正文之后，则继承已明确下达的追加语义。
-        arguments = adapter(call.get("args"), continue_append=True)
+        arguments = RECOVERY_ADAPTERS[name](call.get("args"), continue_append=True)
     for candidate in calls:
         if candidate["id"] == call["id"]:
             candidate["args"] = arguments
@@ -219,6 +251,8 @@ def recover_tool_call(message: AIMessage, messages: list[Any]) -> AIMessage | No
     if isinstance(metadata.get("id"), str) and metadata["id"].startswith("resp_"):
         metadata.pop("id")
     marker = {"version": 1, "tool_name": name, "tool_call_id": call["id"]}
+    if fallback_path is not None:
+        marker["fallback_path"] = fallback_path
     return cleaned.model_copy(update={"tool_calls": calls, "response_metadata": metadata, "additional_kwargs": {**cleaned.additional_kwargs, RECOVERY_MARKER: marker}})
 
 
