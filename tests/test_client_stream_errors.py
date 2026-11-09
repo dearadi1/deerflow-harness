@@ -40,15 +40,38 @@ class ClientStreamErrorTests(unittest.TestCase):
         with patch.object(self.client, "_stream_turn", side_effect=implementation):
             return list(self.client.stream("问题", **kwargs))
 
-    def test_initialization_failure_has_resolved_identity_and_no_sensitive_detail(self):
-        implementation = Mock(side_effect=TimeoutError("secret=provider-token"))
+    def test_initialization_failure_has_resolved_identity_and_actual_traceback(self):
+        implementation = Mock(side_effect=TimeoutError("模型请求超时：request_id=test-request-103"))
         events = self.collect(implementation)
         self.assertEqual(len(events), 1)
         self.assertIsInstance(events[0], ErrorEvent)
         self.assertEqual(events[0].seq, 1)
         self.assertEqual(parse_stream_event(events[0].model_dump_json(exclude_unset=True)), events[0])
         self.assertEqual(events[0].thread_id, implementation.call_args.kwargs["thread_id"])
-        self.assertNotIn("provider-token", events[0].model_dump_json())
+        self.assertTrue(events[0].data.error.startswith("Traceback (most recent call last):\n"))
+        self.assertIn("in stream_client_turn", events[0].data.error)
+        self.assertRegex(events[0].data.error, r'File ".*client_replay\.py", line \d+')
+        self.assertTrue(events[0].data.error.endswith("TimeoutError: 模型请求超时：request_id=test-request-103\n"))
+
+    def test_chained_exception_preserves_root_cause_and_call_frames(self):
+        def model_request():
+            raise TimeoutError("模型服务未响应")
+
+        def implementation(*args, **kwargs):
+            try:
+                model_request()
+            except TimeoutError as error:
+                raise RuntimeError("模型调用失败") from error
+
+        events = self.collect(implementation, thread_id="thread_001")
+        self.assertEqual([event.type for event in events], ["error"])
+        detail = events[0].data.error
+        self.assertIn("in model_request", detail)
+        self.assertIn("in implementation", detail)
+        self.assertIn("TimeoutError: 模型服务未响应\n", detail)
+        self.assertIn("The above exception was the direct cause of the following exception:", detail)
+        self.assertTrue(detail.endswith("RuntimeError: 模型调用失败\n"))
+        self.assertEqual(parse_stream_event(events[0].model_dump_json()).data.error, detail)
 
     def test_runtime_and_parser_failures_follow_last_published_sequence(self):
         for failure in (TimeoutError(), OSError(), ValueError(), GraphRecursionError()):
@@ -59,6 +82,8 @@ class ClientStreamErrorTests(unittest.TestCase):
                 events = self.collect(implementation, thread_id="thread_001")
                 self.assertEqual([event.type for event in events], ["answer_content", "error"])
                 self.assertEqual([event.seq for event in events], [1, 2])
+                self.assertIn("in implementation", events[-1].data.error)
+                self.assertIn(type(failure).__name__, events[-1].data.error)
 
     def test_protocol_validation_failure_does_not_reenter_broken_parser(self):
         def implementation(*args, **kwargs):
@@ -67,6 +92,7 @@ class ClientStreamErrorTests(unittest.TestCase):
             yield from parser.parse(("custom", {"type": "context_used", "data": {}}))
         events = self.collect(implementation, thread_id="thread_001")
         self.assertEqual([event.type for event in events], ["answer_content", "error"])
+        self.assertIn("ValidationError", events[-1].data.error)
         self.assertEqual(events[-1].seq, 2)
 
     def test_end_is_not_published_before_generator_cleanup_succeeds(self):
@@ -78,6 +104,7 @@ class ClientStreamErrorTests(unittest.TestCase):
                 raise OSError("清理失败")
         events = self.collect(implementation, thread_id="thread_001")
         self.assertEqual([event.type for event in events], ["answer_content", "error"])
+        self.assertTrue(events[-1].data.error.endswith("OSError: 清理失败\n"))
 
     def test_existing_fallbacks_and_child_failure_do_not_create_terminal_error(self):
         def implementation(*args, **kwargs):
@@ -129,6 +156,8 @@ class ClientStreamErrorTests(unittest.TestCase):
         self.assertEqual([event.type for event in events], ["answer_content", "error"])
         self.assertIn("原始异常", logs.output[-1])
         self.assertIn("恢复失败", "\n".join(logs.output))
+        self.assertTrue(events[-1].data.error.endswith("RuntimeError: 原始异常\n"))
+        self.assertNotIn("OSError: 恢复失败", events[-1].data.error)
 
     def test_graph_close_failure_preserves_active_failure_or_cancellation(self):
         for active_error in (RuntimeError("原始异常"), asyncio.CancelledError()):

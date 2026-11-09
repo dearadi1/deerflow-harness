@@ -174,7 +174,7 @@ from deerflow.protocol import ClientStreamEvent, parse_stream_event
 | `thread_id` | 本轮使用的会话 ID。 |
 | `seq` | 本轮从 1 递增的发布序号，主子智能体共用，新一轮重新计数。 |
 
-协议定义了 12 类事件：`reasoning_content`、`answer_content`、`title`、`suggestions`、`tool_chunk`、`tool_calls`、`tool_result`、`token_usage`、`context_compaction_start`、`context_compaction_end`、`context_used`、`end`。并非每轮都会出现全部类型。
+协议定义了 13 类事件：`reasoning_content`、`answer_content`、`title`、`suggestions`、`tool_chunk`、`tool_calls`、`tool_result`、`token_usage`、`context_compaction_start`、`context_compaction_end`、`context_used`、`end`、`error`。并非每轮都会出现全部类型。
 
 字段结构、关联规则、用量与费用说明直接引用：
 
@@ -186,9 +186,9 @@ from deerflow.protocol import ClientStreamEvent, parse_stream_event
 消费时需要注意：
 
 - 正文按 `(agent_id, data.id)` 累积 `answer_content.data.content`；思考和正文分别累积，同轮可能有多条 AI 消息。
-- 只有 `type == "end"` 且 `agent_id == "main"` 才表示本轮结束；子智能体的结束事件不能作为整轮结束信号。
+- `type == "end"` 且 `agent_id == "main"` 表示本轮正常结束，主 `error` 表示异常终止；子智能体的结束事件不能作为整轮结束信号。
 - 主 `end.data.id` 是本轮 `run_id`。主结束事件的用量与费用已汇总子智能体，不要再次叠加子结束事件。
-- 正常耗尽底层流后才执行 `parser.finish()`。异常和提前关闭不保证收到主 `end`，异常会向迭代调用方传播。
+- 正常耗尽底层流后才执行 `parser.finish()`。未处理的运行异常转换为唯一主 `error`，`data.error` 包含实际 Python 堆栈及异常链，之后不补发主 `end`；参数及重放拒绝、图控制信号和取消仍向调用方传播。提前关闭不保证收到终态。
 - 成功生成追问时，尾部顺序为 `suggestions → 对应 token_usage（有可发布用量时）→ 主 end`。
 
 ## 6. 最小消费示例

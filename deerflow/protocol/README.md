@@ -2,7 +2,7 @@
 
 公共入口统一为 `deerflow.protocol`，随 Harness 一起安装，原顶层包 `deerflow_protocol` 已迁入此处。协议模块只依赖 Pydantic 2 和标准库；`deerflow` 顶层采用按需导出，导入协议不会加载客户端、LangChain、LangGraph、配置、模型服务或沙箱。下游代码请将 `from deerflow_protocol import ...` 更新为 `from deerflow.protocol import ...`。
 
-十二类事件都有具体模型：`ReasoningContentEvent`、`AnswerContentEvent`、`TitleEvent`、`SuggestionsEvent`、`ToolChunkEvent`、`ToolCallsEvent`、`ToolResultEvent`、`TokenUsageEvent`、`ContextCompactionStartEvent`、`ContextCompactionEndEvent`、`ContextUsedEvent`、`EndEvent`。公共基类是 `StreamEvent`，判别联合类型是 `ClientStreamEvent`。`present_files` 的工具结果 `content` 是 `PresentedFileResult` 对象数组，每个文件独立携带 `path` 和 `msg`。
+十三类事件都有具体模型：`ReasoningContentEvent`、`AnswerContentEvent`、`TitleEvent`、`SuggestionsEvent`、`ToolChunkEvent`、`ToolCallsEvent`、`ToolResultEvent`、`TokenUsageEvent`、`ContextCompactionStartEvent`、`ContextCompactionEndEvent`、`ContextUsedEvent`、`EndEvent`、`ErrorEvent`。公共基类是 `StreamEvent`，判别联合类型是 `ClientStreamEvent`。`present_files` 的工具结果 `content` 是 `PresentedFileResult` 对象数组，每个文件独立携带 `path` 和 `msg`。
 
 ```python
 from deerflow.protocol import ToolCallsEvent, TokenUsageEvent, parse_stream_event
@@ -46,4 +46,4 @@ LLM 生成的标题与对应的 `token_usage` 共用标题模型的消息 ID，�
 
 `TokenUsageEvent.data` 还包含实际绑定的 `model_name` 和费用模型 `TokenCost`。例如 `event.data.cost.total_cost` 为 Decimal，JSON 中为精确十进制字符串，币种为 CNY。`ModelPrice` 保存本次元/百万 Token 单价；普通输入、缓存命中输入、输出分别计价。`EndEvent.data.cost` 汇总各模型独立计算的费用。无法确定完整金额时 `cost.status="unpriced"`，`total_cost=None`，原因见 `cost.reason`；不会用零伪装未知费用。旧 JSON 未携带这些新增可选字段时仍可解析。
 
-`error` 的载荷为 `{"error":"智能体执行失败，当前任务无法继续"}`，仅承接未处理的运行异常；每轮最多一个，之后不再发送主 `end`。已有模型、工具和子任务错误继续使用原事件。参数及重放拒绝、图控制信号、取消仍保留原行为。`chat()` 收到终止错误后抛出 `RuntimeError`。完整边界见 [协议说明](AGENTS.md#13-终止错误块-error)。
+`error` 的 `data.error` 返回实际异常的 Python 堆栈字符串，包含调用位置、异常类型、原始消息及异常链，JSON 中用 `\n` 表示换行。仅承接未处理的运行异常；每轮最多一个，之后不再发送主 `end`。已有模型、工具和子任务错误继续使用原事件。参数及重放拒绝、图控制信号、取消仍保留原行为。`chat()` 收到终止错误后抛出带有该堆栈文本的 `RuntimeError`。完整边界见 [协议说明](AGENTS.md#13-终止错误块-error)。

@@ -210,10 +210,10 @@ AI 正文增量，字段与思考块相同：`id`、`content`、可选的 `addit
 
 ## 13. 终止错误块 `error`
 
-仅承接尚未被内部容错处理、导致本轮无法继续的运行异常。`agent_id` 固定为 `main`，`data.error` 为必填非空字符串，提供安全的失败描述。完整异常及堆栈仅记录日志。
+仅承接尚未被内部容错处理、导致本轮无法继续的运行异常。`agent_id` 固定为 `main`，`data.error` 为必填非空字符串，返回实际异常的 Python 堆栈，包含调用文件、行号、函数、异常类型和原始消息；存在异常链时一并返回。堆栈中的换行在 JSON 中编码为 `\n`，同时保留服务端异常日志。
 
 ```json
-{"type":"error","agent_id":"main","thread_id":"thread_123","seq":42,"data":{"error":"智能体执行失败，当前任务无法继续"}}
+{"type":"error","agent_id":"main","thread_id":"thread_123","seq":42,"data":{"error":"Traceback (most recent call last):\n  File \"/app/model_client.py\", line 42, in request\n    raise TimeoutError(\"模型请求超时\")\nTimeoutError: 模型请求超时\n"}}
 ```
 
 本轮最多发布一个 `error`，之后终止流，不补发主 `end`，不再次抛出同一个运行异常。序号接续最后实际发布的块；初始化即失败时为 1。已有内容保留。主 `end` 延迟到生成器清理成功后发布。

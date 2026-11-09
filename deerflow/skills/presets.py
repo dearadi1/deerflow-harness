@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from deerflow.config.extensions_config import ExtensionsConfig, extensions_config_file_lock
+from deerflow.config.extensions_config import extensions_config_file_lock
 from deerflow.config.skills_config import SkillsConfig
 from deerflow.skills.parser import parse_skill_file
 from deerflow.skills.types import SKILL_MD_FILE, Skill, SkillCategory
@@ -110,7 +110,7 @@ def _validate_document(data: Any) -> dict[str, Any]:
 
 
 def load_public_skill_catalog(skills_root: Path) -> list[Skill]:
-    """独立扫描公共目录，避免迁移时被用户同名私有技能遮蔽。"""
+    """独立扫描公共目录，避免预设中的技能被用户同名私有技能遮蔽。"""
     from deerflow.skills.storage.skill_storage import walk_skill_directories
 
     root = skills_root / SkillCategory.PUBLIC.value
@@ -145,8 +145,13 @@ def _write_document(path: Path, data: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _default_document(states: dict[str, bool]) -> dict[str, Any]:
-    return {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": states}}}
+def _default_document() -> dict[str, Any]:
+    return {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": {}}}}
+
+
+def _effective_skill_states(preset_id: str, configured_states: dict[str, bool], names: set[str]) -> dict[str, bool]:
+    # 内置预设自动接纳新增公共技能；显式关闭和自定义预设的选择仍由文件决定。
+    return {name: configured_states.get(name, preset_id == "default") for name in sorted(names | configured_states.keys())}
 
 
 class SkillPresetStore:
@@ -160,11 +165,6 @@ class SkillPresetStore:
         self.path = Path(path or configured_path or get_paths().base_dir / "skill_presets.json").resolve()
         if self.path.name.lower() in {"config.yaml", "config.yml"}:
             raise ValueError("公共技能预设必须使用独立文件，不能使用 config.yaml")
-
-    def _initial_document(self) -> dict[str, Any]:
-        extensions = ExtensionsConfig.from_file()
-        states = {skill.name: extensions.is_skill_enabled(skill.name, "public") for skill in load_public_skill_catalog(self.skills_root)}
-        return _default_document(states)
 
     def _parse_document(self, content: bytes) -> dict[str, Any]:
         try:
@@ -194,16 +194,16 @@ class SkillPresetStore:
         """仅在启动边界恢复格式错误；锁内校验和备份同一份原始字节。"""
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
             if not self.path.exists():
-                _write_document(self.path, self._initial_document())
+                _write_document(self.path, _default_document())
                 return self._read_existing()
             content = self.path.read_bytes()
             try:
                 return self._parse_document(content)
             except ValueError as error:
                 backup = self._backup_invalid_document(content)
-                data = _default_document({})
+                data = _default_document()
                 _write_document(self.path, data)
-                logger.warning("公共技能预设格式错误，已恢复空默认预设；原文件备份：%s；原因：%s", backup, error)
+                logger.warning("公共技能预设格式错误，已恢复全部启用的默认预设；原文件备份：%s；原因：%s", backup, error)
                 return data
 
     def read(self) -> dict[str, Any]:
@@ -211,13 +211,12 @@ class SkillPresetStore:
             return self._read_existing()
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
             if not self.path.exists():
-                # 仅文件缺失时迁移；保留旧扩展条目，私有同名技能仍依赖它们。
-                _write_document(self.path, self._initial_document())
+                _write_document(self.path, _default_document())
             return self._read_existing()
 
     def _mutate(self, change: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
-            data = self._read_existing() if self.path.exists() else self._initial_document()
+            data = self._read_existing() if self.path.exists() else _default_document()
             change(data)
             _write_document(self.path, _validate_document(data))
             return data
@@ -231,7 +230,7 @@ class SkillPresetStore:
 
     def _details(self, data: dict[str, Any], preset_id: str, names: set[str]) -> dict[str, Any]:
         entry = self._entry(data, preset_id)
-        states = {name: entry["skills"].get(name, False) for name in sorted(names | entry["skills"].keys())}
+        states = _effective_skill_states(preset_id, entry["skills"], names)
         return {
             "preset_id": preset_id, "name": entry["name"], "is_default": preset_id == data["default_preset"],
             "skills": states, "enabled_skills": sorted(name for name in names if states[name]),
@@ -252,8 +251,10 @@ class SkillPresetStore:
         data = self.read()
         selected = data["default_preset"] if preset_id is None else preset_id
         entry = self._entry(data, selected)
-        signature = hashlib.sha256(json.dumps([str(self.path), selected, entry], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        return PublicSkillPreset(selected, entry["name"], frozenset(name for name, enabled in entry["skills"].items() if enabled), signature)
+        names = {skill.name for skill in load_public_skill_catalog(self.skills_root)} if selected == "default" else set()
+        states = _effective_skill_states(selected, entry["skills"], names)
+        signature = hashlib.sha256(json.dumps([str(self.path), selected, entry, states], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        return PublicSkillPreset(selected, entry["name"], frozenset(name for name, enabled in states.items() if enabled), signature)
 
     def _checked_states(self, states: dict[str, bool]) -> dict[str, bool]:
         states = _validate_skill_states(states)

@@ -102,8 +102,7 @@ class SkillClientPublicTests(unittest.TestCase):
             "name": "example", "description": "描述",
             "skill_path": "/mnt/skills/public/example", "host_path": path,
         }])
-        self.assertFalse((self.view / "example/SKILL.md").exists())
-        self.enable_public("example")
+        self.assertTrue(self.public.get_preset()["skills"]["example"])
         self.assertTrue((self.view / "example/SKILL.md").is_file())
         self.user_factory.assert_not_called()
 
@@ -164,12 +163,12 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertNotIn("enabled", self.public.get_skill_info("example"))
         self.assertEqual((directory / "SKILL.md").read_bytes(), original_file)
 
-    def test_skill_states_are_separate_and_only_custom_defaults_enabled(self):
+    def test_skill_states_are_separate_and_public_and_custom_default_enabled(self):
         self.use_persisted_skill_states()
         self.public.create_skill("example", "公共描述")
         self.client.create_skill("alice", "example", "用户描述")
         self.assertFalse(hasattr(self.public, "list_skill_states"))
-        self.assertFalse(self.public.get_preset()["skills"]["example"])
+        self.assertTrue(self.public.get_preset()["skills"]["example"])
         self.assertEqual(self.client.list_skill_states("alice"), [{"name": "example", "global_enabled": True, "enabled": True, "user_enabled": True}])
         self.assertEqual(self.client.list_skill_states("bob"), [])
         self.assertNotIn("enabled", self.public.list_skills()[0])
@@ -415,7 +414,7 @@ class SkillClientPublicTests(unittest.TestCase):
 
     def test_public_list_includes_disabled_and_skips_invalid_and_nested_packages(self):
         source = Path(self.public.create_skill("example", "描述"))
-        self.extensions.skills["example"] = SkillStateConfig(enabled=False)
+        self.public.update_preset("default", skill_states={"example": False})
         self.public.create_file("example", "refresh.txt")
         self.assertEqual(len(self.public.list_skills()), 1)
         self.assertFalse((self.view / "example").exists())

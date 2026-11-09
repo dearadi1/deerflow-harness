@@ -93,16 +93,67 @@ class SkillPresetStoreTests(PresetFixture):
         self.assertEqual(len(preset_ids), 12)
         self.assertEqual(set(self.store.read()["presets"]), {"default"} | preset_ids)
 
-    def test_initial_migration_preserves_legacy_bytes_and_ignores_private_shadow(self):
+    def test_initial_default_enables_all_public_skills_and_preserves_private_global_state(self):
         self.extension_file.write_text('{"skills":{"alpha":{"enabled":false}},"placeholder":"$SECRET"}')
         original = self.extension_file.read_bytes()
         write_skill(self.paths.user_custom_skills_dir("alice"), "alpha")
         snapshot = self.store.resolve()
         self.assertEqual(snapshot.preset_id, "default")
-        self.assertEqual(snapshot.enabled_skills, {"beta"})
+        self.assertEqual(snapshot.enabled_skills, {"alpha", "beta"})
+        self.assertEqual(self.store.get_preset()["skills"], {"alpha": True, "beta": True})
+        self.assertEqual(self.enabled(), {"beta"})
         self.assertEqual(self.extension_file.read_bytes(), original)
         self.extension_file.write_text("{}")
+        self.assertEqual(self.store.resolve().enabled_skills, {"alpha", "beta"})
+
+    def test_default_keeps_explicit_disables_across_restart_and_new_skills(self):
+        self.store.initialize()
+        self.store.update_preset("default", skill_states={"alpha": False})
+        write_skill(self.skills / "public", "later")
+        original = self.file.read_bytes()
+        restarted = SkillPresetStore(self.skills)
+        restarted.initialize()
+        detail = restarted.get_preset()
+        self.assertEqual(detail["skills"], {"alpha": False, "beta": True, "later": True})
+        self.assertEqual(detail["enabled_skills"], ["beta", "later"])
+        self.assertEqual(restarted.resolve().enabled_skills, {"beta", "later"})
+        self.assertEqual(self.file.read_bytes(), original)
+        self.assertEqual(restarted.update_preset("default", skill_states={"alpha": True})["enabled_skills"], ["alpha", "beta", "later"])
+
+    def test_default_catalog_changes_refresh_signature_without_mutating_active_snapshot(self):
+        snapshot = self.store.resolve()
+        original = self.file.read_bytes()
+        write_skill(self.skills / "public", "later")
+        with public_skill_preset_scope(snapshot):
+            self.assertEqual(self.enabled(), {"alpha", "beta"})
+        following = self.store.resolve()
+        self.assertEqual(following.enabled_skills, {"alpha", "beta", "later"})
+        self.assertNotEqual(snapshot.signature, following.signature)
+        self.assertEqual(self.enabled(), {"alpha", "beta", "later"})
+        (self.skills / "public/later/SKILL.md").unlink()
+        self.assertEqual(self.store.resolve().signature, snapshot.signature)
+        self.assertEqual(self.file.read_bytes(), original)
+
+    def test_existing_default_configuration_preserves_explicit_states(self):
+        document = {
+            "version": 1, "default_preset": "default",
+            "presets": {"default": {"name": "已有预设", "skills": {"alpha": False, "beta": True, "missing": False}}},
+        }
+        self.file.write_text(json.dumps(document))
+        original = self.file.read_bytes()
+        self.assertEqual(self.store.initialize(), document)
+        self.assertEqual(self.store.get_preset()["missing_skills"], ["missing"])
         self.assertEqual(self.store.resolve().enabled_skills, {"beta"})
+        self.assertEqual(self.file.read_bytes(), original)
+
+    def test_selecting_custom_default_keeps_its_unconfigured_skills_disabled(self):
+        created = self.store.create_preset("自定义默认预设")
+        self.store.set_default_preset(created["preset_id"])
+        write_skill(self.skills / "public", "later")
+        self.assertEqual(self.store.get_preset()["enabled_skills"], [])
+        self.assertEqual(self.store.resolve().enabled_skills, set())
+        self.assertEqual(self.store.get_preset("default")["enabled_skills"], ["alpha", "beta", "later"])
+        self.assertEqual(self.store.resolve("default").enabled_skills, {"alpha", "beta", "later"})
 
     def test_crud_default_and_return_values_are_independent(self):
         self.create_choices()
@@ -235,7 +286,7 @@ class SkillPresetStoreTests(PresetFixture):
                     instance = constructor()
                 if isinstance(instance, DeerFlowClientPool):
                     instance.close()
-                self.assertEqual(self.store.resolve().enabled_skills, frozenset())
+                self.assertEqual(self.store.resolve().enabled_skills, {"alpha", "beta"})
                 self.assertEqual(len(list(self.root.glob("skill_presets.json.invalid-*.bak"))), index)
 
     def test_default_file_path_uses_framework_data_directory(self):
@@ -256,9 +307,9 @@ class SkillPresetStartupTests(PresetFixture):
     def backups(self):
         return list(self.file.parent.glob(f"{self.file.name}.invalid-*.bak"))
 
-    def assert_empty_default(self, document):
+    def assert_all_enabled_default(self, document):
         self.assertEqual(document, {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": {}}}})
-        self.assertEqual(self.store.resolve().enabled_skills, frozenset())
+        self.assertEqual(self.store.resolve().enabled_skills, {"alpha", "beta"})
 
     def test_invalid_formats_keep_exact_bytes_and_recover_without_private_changes(self):
         self.create_choices()
@@ -280,14 +331,14 @@ class SkillPresetStartupTests(PresetFixture):
             previous = set(self.backups())
             self.file.write_bytes(content)
             with self.subTest(content=content), self.assertLogs("deerflow.skills.presets", level="WARNING"):
-                self.assert_empty_default(self.store.initialize())
+                self.assert_all_enabled_default(self.store.initialize())
             created = set(self.backups()) - previous
             self.assertEqual(len(created), 1)
             self.assertEqual(created.pop().read_bytes(), content)
-            self.assertEqual({skill.name for skill in self.user.load_skills(enabled_only=True)}, {"alpha"})
+            self.assertEqual({skill.name for skill in self.user.load_skills(enabled_only=True)}, {"alpha", "beta"})
             self.assertEqual(self.user._skill_states_file.read_bytes(), private_before)
             self.assertEqual(self.extension_file.read_bytes(), extensions_before)
-            self.assert_empty_default(self.store.initialize())
+            self.assert_all_enabled_default(self.store.initialize())
             self.assertEqual(len(self.backups()), len(previous) + 1)
 
     def test_valid_manual_file_is_not_rewritten_or_backed_up(self):
@@ -299,10 +350,10 @@ class SkillPresetStartupTests(PresetFixture):
         self.assertEqual(self.file.read_bytes(), original)
         self.assertEqual(self.backups(), [])
 
-    def test_missing_file_still_migrates_existing_public_states(self):
+    def test_missing_file_enables_all_public_skills_without_migrating_legacy_states(self):
         self.extension_file.write_text('{"skills":{"alpha":{"enabled":false}}}')
         self.store.initialize()
-        self.assertEqual(self.store.resolve().enabled_skills, {"beta"})
+        self.assertEqual(self.store.resolve().enabled_skills, {"alpha", "beta"})
         self.assertEqual(self.backups(), [])
 
     def test_backup_failure_never_overwrites_original(self):
@@ -335,7 +386,7 @@ class SkillPresetStartupTests(PresetFixture):
         with ThreadPoolExecutor(max_workers=6) as executor:
             documents = list(executor.map(lambda _: self.store.initialize(), range(12)))
         for document in documents:
-            self.assert_empty_default(document)
+            self.assert_all_enabled_default(document)
         self.assertEqual(len(self.backups()), 1)
         self.file.write_bytes(b"\xff")
         program = "from pathlib import Path; from deerflow.skills.presets import SkillPresetStore; import sys; SkillPresetStore(Path(sys.argv[1])).initialize()"
@@ -344,7 +395,7 @@ class SkillPresetStartupTests(PresetFixture):
             output, error = process.communicate(timeout=30)
             self.assertEqual(process.returncode, 0, (output, error))
         self.assertEqual(sorted(backup.read_bytes() for backup in self.backups()), [b"{", b"\xff"])
-        self.assert_empty_default(self.store.read())
+        self.assert_all_enabled_default(self.store.read())
 
 
 class SkillPresetRuntimeTests(PresetFixture):
