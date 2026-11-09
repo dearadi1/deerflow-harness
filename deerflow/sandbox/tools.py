@@ -24,6 +24,7 @@ from deerflow.authz.sandbox_authz import (
 from deerflow.config import get_app_config
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
 from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH
+from deerflow.environment import EnvironmentSnapshot, get_environment_variables
 from deerflow.runtime.secret_context import read_active_secrets
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.sandbox.env_policy import is_blocked_env_name
@@ -49,7 +50,7 @@ from deerflow.sandbox.read_file_contract import (
     READ_FILE_START_LINE_EXCEEDS,
     READ_FILE_TRUNCATION_PREFIX,
 )
-from deerflow.sandbox.sandbox import Sandbox
+from deerflow.sandbox.sandbox import Sandbox, bind_sandbox_environment
 from deerflow.sandbox.sandbox_provider import SandboxProvider, get_sandbox_provider
 from deerflow.sandbox.search import GrepMatch
 from deerflow.sandbox.security import LOCAL_HOST_BASH_DISABLED_MESSAGE, is_host_bash_allowed
@@ -1787,7 +1788,7 @@ def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
                 if sandbox is not None:
                     if runtime.context is not None:
                         runtime.context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for releasing in after_agent
-                    return sandbox
+                    return bind_sandbox_environment(sandbox, user_id)
             # Missing thread scope or released sandbox: use the lazy path below.
 
     # Lazy acquisition: get thread_id and acquire sandbox
@@ -1818,7 +1819,7 @@ def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
 
     if runtime.context is not None:
         runtime.context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for releasing in after_agent
-    return sandbox
+    return bind_sandbox_environment(sandbox, user_id)
 
 
 async def ensure_sandbox_initialized_async(runtime: Runtime | None = None) -> Sandbox:
@@ -1884,7 +1885,7 @@ async def ensure_sandbox_initialized_async(runtime: Runtime | None = None) -> Sa
                 if sandbox is not None:
                     if runtime.context is not None:
                         runtime.context["sandbox_id"] = sandbox_id
-                    return sandbox
+                    return bind_sandbox_environment(sandbox, user_id)
 
     thread_id = _resolve_runtime_thread_id(runtime)
     if thread_id is None:
@@ -1911,7 +1912,7 @@ async def ensure_sandbox_initialized_async(runtime: Runtime | None = None) -> Sa
 
     if runtime.context is not None:
         runtime.context["sandbox_id"] = sandbox_id
-    return sandbox
+    return bind_sandbox_environment(sandbox, user_id)
 
 
 async def _run_sync_tool_after_async_sandbox_init(
@@ -2453,6 +2454,7 @@ def bash_tool(runtime: Runtime, description: str = "", *, command: str) -> str:
         # short-lived GitHub App installation token threaded through by the
         # GitHub channel. Both are injected as per-call env into the subprocess,
         # never placed in the command string.
+        managed_env = get_environment_variables(resolve_runtime_user_id(runtime))
         injected_env = read_active_secrets(getattr(runtime, "context", None)) or None
         identity_prefix = _channel_identity_prefix(runtime)
         user_prefix = _user_identity_prefix(runtime)
@@ -2462,13 +2464,14 @@ def bash_tool(runtime: Runtime, description: str = "", *, command: str) -> str:
             injected_env = {**(injected_env or {}), **github_env}
         if lark_cli_env:
             injected_env = {**(injected_env or {}), **lark_cli_env}
-        redaction_env = injected_env
+        redaction_env = {name: value for name, value in managed_env.items() if is_blocked_env_name(name)}
+        redaction_env.update(injected_env or {})
+        injected_env = EnvironmentSnapshot({**managed_env, **(injected_env or {})})
         if is_local_sandbox(runtime):
             # Match the credential-name policy used for inherited host env.
             # Keep benign operator settings readable and redact effective
             # credentials before execution, including any exception output.
-            redaction_env = {name: value for name, value in (getattr(sandbox, "environment", None) or {}).items() if is_blocked_env_name(name)}
-            redaction_env.update(injected_env or {})
+            redaction_env = {**{name: value for name, value in (getattr(sandbox, "environment", None) or {}).items() if is_blocked_env_name(name)}, **redaction_env}
             if not is_host_bash_allowed():
                 return f"Error: {LOCAL_HOST_BASH_DISABLED_MESSAGE}"
             ensure_thread_directories_exist(runtime)
@@ -2490,7 +2493,7 @@ def bash_tool(runtime: Runtime, description: str = "", *, command: str) -> str:
             else:
                 windows_user_id = _resolved_user_id(runtime)
                 if windows_user_id is not None:
-                    local_env = {**(injected_env or {}), USER_ID_ENV: windows_user_id}
+                    local_env = EnvironmentSnapshot({**injected_env, USER_ID_ENV: windows_user_id})
             try:
                 from deerflow.config.app_config import get_app_config
 
@@ -2532,7 +2535,7 @@ def bash_tool(runtime: Runtime, description: str = "", *, command: str) -> str:
                     env=injected_env,
                     timeout=command_timeout,
                 ),
-                injected_env,
+                redaction_env,
             ),
             max_chars,
         )

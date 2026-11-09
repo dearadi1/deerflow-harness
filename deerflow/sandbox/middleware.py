@@ -31,6 +31,7 @@ from deerflow.sandbox.lease import (
     sandbox_lease_owner,
 )
 from deerflow.sandbox.overwrite import unwrap_sandbox
+from deerflow.sandbox.sandbox import bind_sandbox_environment
 from deerflow.sandbox.sandbox_provider import get_initialized_sandbox_provider
 from deerflow.utils.file_io import await_drained
 
@@ -145,6 +146,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
                 thread_id,
                 user_id=user_id,
             )
+        bind_sandbox_environment(provider.get(sandbox_id), user_id)
         logger.info(f"Acquiring sandbox {sandbox_id}")
         return sandbox_id
 
@@ -164,6 +166,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
                 thread_id,
                 user_id=user_id,
             )
+        bind_sandbox_environment(provider.get(sandbox_id), user_id)
         logger.info(f"Acquiring sandbox {sandbox_id}")
         return sandbox_id
 
@@ -189,6 +192,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
                 thread_id=thread_id,
                 user_id=user_id,
             )
+            bind_sandbox_environment(provider.get(sandbox_id), user_id)
             return sandbox_id
         return None
 
@@ -214,6 +218,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
                 thread_id=thread_id,
                 user_id=user_id,
             )
+            bind_sandbox_environment(provider.get(sandbox_id), user_id)
             return sandbox_id
         return None
 

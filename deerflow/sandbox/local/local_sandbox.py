@@ -628,6 +628,7 @@ class LocalSandbox(Sandbox):
         # which DOES splice keys into ``export <k>=<v>``. Enforcing the same
         # rule on both implementations keeps the contract consistent and forces
         # any new caller to use safe key names.
+        env = self.command_environment(env)
         _validate_extra_env(env)
         # Resolve container paths in command before execution
         resolved_command = self._resolve_paths_in_command(command)

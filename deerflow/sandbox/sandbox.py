@@ -1,5 +1,7 @@
 import re
+import threading
 from abc import ABC, abstractmethod
+from typing import TypeVar
 
 from deerflow.sandbox.search import GrepMatch
 
@@ -12,6 +14,14 @@ from deerflow.sandbox.search import GrepMatch
 # contract: a future shell-splicing implementation must not have to re-derive
 # its own rule.
 _ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SandboxType = TypeVar("_SandboxType")
+
+
+def bind_sandbox_environment(sandbox: _SandboxType, user_id: str) -> _SandboxType:
+    # 第三方鸭子类型仍通过 bash 工具的结构化 env 获得变量，不强制新增接口。
+    if isinstance(sandbox, Sandbox):
+        sandbox.bind_environment(user_id)
+    return sandbox
 
 
 def _validate_extra_env(extra_env: dict[str, str] | None) -> None:
@@ -79,6 +89,26 @@ class Sandbox(ABC):
 
     def __init__(self, id: str):
         self._id = id
+        self._environment_user_id: str | None = None
+        self._environment_lock = threading.Lock()
+
+    def bind_environment(self, user_id: str) -> None:
+        """只绑定可信的用户身份，不把变量值缓存到可复用的沙盒实例上。"""
+        with self._environment_lock:
+            if self._environment_user_id not in (None, user_id):
+                raise ValueError("不能把沙盒环境变量重新绑定到其他用户")
+            self._environment_user_id = user_id
+
+    def command_environment(self, env: dict[str, str] | None = None) -> dict[str, str] | None:
+        """每次启动命令时重读变量；本次请求的显式注入拥有最高优先级。"""
+        user_id = getattr(self, "_environment_user_id", None)
+        if user_id is None:
+            return env
+        from deerflow.environment import EnvironmentSnapshot, get_environment_variables
+
+        if isinstance(env, EnvironmentSnapshot):
+            return env
+        return EnvironmentSnapshot({**get_environment_variables(user_id), **(env or {})})
 
     @property
     def id(self) -> str:

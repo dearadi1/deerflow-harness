@@ -154,6 +154,7 @@ class E2BSandbox(Sandbox):
             timeout: Optional per-call command timeout in seconds. ``None`` keeps
                 the e2b SDK default (60s).
         """
+        env = self.command_environment(env)
         _validate_extra_env(env)
         with self._lock:
             client = self._client

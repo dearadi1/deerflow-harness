@@ -563,6 +563,7 @@ class AioSandbox(Sandbox):
         use distinct server-side sessions and can execute concurrently. Secret-
         bearing commands keep the existing fresh ``bash.exec`` behavior.
         """
+        env = self.command_environment(env)
         if env or scope_id is None:
             return self.execute_command(command, env=env, timeout=timeout)
         _validate_extra_env(env)
@@ -859,6 +860,7 @@ class AioSandbox(Sandbox):
         # keys; enforcing the POSIX env-var name rule keeps the contract
         # consistent with the local and e2b sandboxes and catches unsafe keys
         # early. ``_validate_extra_env`` is a no-op when ``env`` is None or empty.
+        env = self.command_environment(env)
         _validate_extra_env(env)
         raise_if_turn_cancelled()
         effective_timeout = self._effective_command_timeout(timeout)

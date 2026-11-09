@@ -9,6 +9,7 @@ from unittest.mock import patch
 from deerflow.agent_client import DeerFlowClientPool
 from deerflow.client_config import load_client_config
 from deerflow.config.app_config import AppConfig, get_app_config, reload_app_config, reset_app_config
+from deerflow.environment_client import DeerFlowEnvironmentClient
 from deerflow.skill_client import DeerFlowSkillClient
 from deerflow.thread_client import DeerFlowThreadClient
 
@@ -48,7 +49,7 @@ class ManagementClientConfigTests(unittest.TestCase):
         return SimpleNamespace(config=get_app_config(), options=options)
 
     def constructors(self):
-        return (DeerFlowClientPool, DeerFlowSkillClient, DeerFlowThreadClient)
+        return (DeerFlowClientPool, DeerFlowSkillClient, DeerFlowThreadClient, DeerFlowEnvironmentClient)
 
     def assert_config(self, constructor, options, expected_limit):
         client = constructor(**options)

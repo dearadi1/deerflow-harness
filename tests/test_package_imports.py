@@ -14,6 +14,7 @@ class PackageImportTests(unittest.TestCase):
             "DeerFlowClientPool": "deerflow.agent_client",
             "DeerFlowThreadClient": "deerflow.thread_client",
             "DeerFlowSkillClient": "deerflow.skill_client",
+            "DeerFlowEnvironmentClient": "deerflow.environment_client",
             "configure_knowledge_search": "deerflow.community.hours_knowledge.callable",
         }
         self.assertEqual(set(package.__all__), set(exports))

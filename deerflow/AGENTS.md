@@ -63,6 +63,11 @@ drift.
 
 ### Embedded Client (`packages/harness/deerflow/client.py`)
 
+环境变量使用同级 `DeerFlowEnvironmentClient` 管理，公共入口为 `.public`，
+私有接口显式接收 `user_id`。存储、冲突、热更新及沙盒注入约定见
+[ENVIRONMENT_AGENTS.md](ENVIRONMENT_AGENTS.md)。不要把用户变量写入宿主
+`os.environ` 或沙盒创建时的固定环境；每次命令执行读取当前文件，覆盖复用沙盒。
+
 公共技能改用独立预设文件；`DeerFlowSkillClient.public` 提供预设管理，旧公共全局
 开关入口移除，私有启用规则保留，私有详情增加最终 `enabled`。公共列表只返回元数据，
 预设创建只接收名称并返回随机 ID，技能开关通过更新预设设置。`stream` / `start_stream` 显式接收 `skill_preset`，
