@@ -59,7 +59,7 @@ class StreamModelTests(unittest.TestCase):
             ("tool_result", {"id": "result_message", "tool_call_id": "call_a", "content": "结果", "name": None, "status": "success"}, ToolResultEvent),
             ("token_usage", usage, TokenUsageEvent),
             ("end", usage, EndEvent),
-            ("error", {"error": "智能体执行失败，当前任务无法继续"}, ErrorEvent),
+            ("error", {"error": "Traceback (most recent call last):\n  File \"model.py\", line 42, in request\nTimeoutError: 模型请求超时\n"}, ErrorEvent),
         ]
 
     def test_every_event_recovers_its_concrete_model_and_preserves_wire_payload(self):

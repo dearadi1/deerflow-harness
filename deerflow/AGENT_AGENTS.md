@@ -179,7 +179,7 @@ with pool.start_stream(
 
 预设文件默认位于 `.deer-flow/skill_presets.json`；设置 `DEER_FLOW_HOME` 时位于该数据目录。可通过 `DEER_FLOW_SKILL_PRESETS_PATH` 显式指定其他路径。
 
-初始化时会校验预设文件；格式错误时先在同目录保存 `skill_presets.json.invalid-<随机值>.bak`，再恢复为空 `default` 预设，所有公共 Skill 关闭，私有状态保持不变。备份或替换失败会阻止初始化，原文件保留；运行中的格式错误仍会报错。
+内置 `default` 初始启用全部公共 Skill，未配置的新技能也默认启用，可通过预设接口逐个关闭。自定义预设未配置项仍默认关闭，选作当前默认预设也不会自动全开。初始化时会校验预设文件；格式错误时先在同目录保存 `skill_presets.json.invalid-<随机值>.bak`，再恢复为全部启用的 `default` 预设，私有状态保持不变。备份或替换失败会阻止初始化，原文件保留；运行中的格式错误仍会报错。
 
 ## 事件与异常
 

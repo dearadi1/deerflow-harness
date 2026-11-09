@@ -235,6 +235,8 @@ class ClientReplayTests(unittest.TestCase):
                 harness.fail = True
                 events = self.stream(client, "失败修改", replay_last_turn=True)
                 self.assertEqual(events[-1].type, "error")
+                self.assertIn("Traceback (most recent call last):", events[-1].data.error)
+                self.assertIn("RuntimeError: 模拟模型失败", events[-1].data.error)
                 self.assertFalse(any(event.type == "end" and event.agent_id == "main" for event in events))
                 self.assertTrue(harness.wrote_failure)
                 self.assertEqual(harness.snapshot().values, original)
@@ -249,6 +251,7 @@ class ClientReplayTests(unittest.TestCase):
             events = self.stream(client, "问题")
         self.assertEqual([event.type for event in events], ["error"])
         self.assertEqual(events[0].seq, 1)
+        self.assertTrue(events[0].data.error.endswith("OSError: 数据库不可用\n"))
 
     def test_early_close_restores_original_state_and_releases_locks(self):
         for mode in ("full", "delta"):

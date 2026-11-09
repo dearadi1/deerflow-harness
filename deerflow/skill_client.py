@@ -735,7 +735,8 @@ class DeerFlowSkillClient(_SkillOperations):
     custom 状态包含 global_enabled、user_enabled、最终 enabled，仍取两者交集。
     public 列表仅返回技能元数据；启用状态通过 get_preset 查询、update_preset 修改。
     create_preset 只接收名称，返回含随机 preset_id 的空预设详情；预设独立保存到
-    skill_presets.json，未配置的公共技能默认关闭。预设修改在下一轮自动生效。
+    skill_presets.json。内置 default 未配置项默认启用，显式关闭有效；自定义预设
+    未配置项默认关闭。预设修改在下一轮自动生效。
     技能包与私有状态修改复用原有视图及缓存更新，已有 Agent 按原生命周期重建。
     """
 

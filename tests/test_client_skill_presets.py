@@ -65,20 +65,20 @@ class ClientSkillPresetTests(PresetFixture):
         self.addCleanup(pool.close)
         return pool
 
-    def test_recovered_empty_default_supports_repeated_and_concurrent_streams(self):
+    def test_recovered_all_enabled_default_supports_repeated_and_concurrent_streams(self):
         write_skill(self.paths.user_custom_skills_dir("alice"), "personal")
         self.file.write_bytes(b"{")
         synchronous = self.pool(synchronous=True)
         with synchronous.session(user_id="alice") as client:
             for _ in range(2):
-                list(client.stream("默认空预设", thread_id="recovered_sync"))
+                list(client.stream("默认全开预设", thread_id="recovered_sync"))
         managed = self.pool()
         with managed.start_stream("甲", user_id="alice", thread_id="recovered_a") as first:
             with managed.start_stream("乙", user_id="bob", thread_id="recovered_b") as second:
                 list(first)
                 list(second)
-        self.assertEqual(self.observations[:2], [("alice", "default", {"personal"})] * 2)
-        self.assertCountEqual(self.observations[2:], [("alice", "default", {"personal"}), ("bob", "default", set())])
+        self.assertEqual(self.observations[:2], [("alice", "default", {"alpha", "beta", "personal"})] * 2)
+        self.assertCountEqual(self.observations[2:], [("alice", "default", {"alpha", "beta", "personal"}), ("bob", "default", {"alpha", "beta"})])
         for pool in (synchronous, managed):
             self.assertEqual(pool.stats["borrowed"], 0)
             self.assertEqual(pool.stats["available"], 2)
@@ -204,6 +204,16 @@ class ClientSkillPresetTests(PresetFixture):
             client._ensure_agent(client._get_runnable_config("cache_1"))
         self.assertEqual(create.call_count, 3)
 
+    def test_default_agent_cache_observes_new_skills_and_explicit_disables(self):
+        client, prompt, create = self.cached_skill_client()
+        self.assertEqual(self.assemble_skills(client, prompt, preset_id="default"), {"alpha", "beta"})
+        write_skill(self.skills / "public", "later")
+        self.assertEqual(self.assemble_skills(client, prompt, preset_id="default"), {"alpha", "beta", "later"})
+        self.store.update_preset("default", skill_states={"alpha": False})
+        self.assertEqual(self.assemble_skills(client, prompt, preset_id="default"), {"beta", "later"})
+        self.assertEqual(self.assemble_skills(client, prompt, preset_id="default"), {"beta", "later"})
+        self.assertEqual(create.call_count, 3)
+
     def test_legacy_public_toggle_rejected_but_private_entry_still_works(self):
         client = DeerFlowClient(checkpointer=self.saver)
         write_skill(self.paths.user_custom_skills_dir("alice"), "personal")
@@ -243,10 +253,10 @@ class ClientSkillPresetTests(PresetFixture):
         create = self.enterContext(patch("deerflow.client.create_agent"))
         return client, prompt, create
 
-    def assemble_skills(self, client, prompt, *, user="alice"):
+    def assemble_skills(self, client, prompt, *, user="alice", preset_id=None):
         config = client._get_runnable_config("private_cache")
         config["configurable"]["user_id"] = user
-        with public_skill_preset_scope(self.store.resolve(self.preset_two)):
+        with public_skill_preset_scope(self.store.resolve(self.preset_two if preset_id is None else preset_id)):
             client._ensure_agent(config)
         return prompt.call_args.kwargs["skill_names"]
 

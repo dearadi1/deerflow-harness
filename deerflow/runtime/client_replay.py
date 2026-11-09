@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import logging
 import threading
+import traceback
 import weakref
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
@@ -90,9 +91,9 @@ def stream_client_turn(client: Any, message: str, *, thread_id: str | None, repl
                     yield event
         except (GraphBubbleUp, ReplayUnavailableError, ReplayConflictError, ReplayAccessError, CheckpointModeMismatchError, CheckpointModeReconfigurationError):
             raise
-        except Exception:
+        except Exception as error:
             logger.exception("客户端运行失败：thread_id=%s", thread_id)
-            yield ErrorEvent(type="error", agent_id="main", thread_id=thread_id, seq=last_seq + 1, data=ErrorData(error="智能体执行失败，当前任务无法继续"))
+            yield ErrorEvent(type="error", agent_id="main", thread_id=thread_id, seq=last_seq + 1, data=ErrorData(error="".join(traceback.format_exception(error))))
 
 
 def _stream_completed_turn(client: Any, message: str, thread_id: str, replay_last_turn: bool, kwargs: dict) -> Iterator[ClientStreamEvent]:
