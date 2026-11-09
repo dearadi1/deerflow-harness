@@ -193,6 +193,7 @@ class BoxliteBox(Sandbox):
         The bridge deadline produces exit code 124. SDK wait failures returned
         as ``ExecResult(exit_code=-1)`` retain -1 if they reach us first.
         """
+        env = self.command_environment(env)
         _validate_extra_env(env)  # POSIX env-var key rule; raises ValueError on a bad key
         if self.is_closed:
             return "Error: sandbox has been closed"

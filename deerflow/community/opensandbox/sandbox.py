@@ -267,6 +267,7 @@ class OpenSandboxSandbox(Sandbox):
         return normalized
 
     def execute_command(self, command: str, env: dict[str, str] | None = None, timeout: float | None = None) -> str:
+        env = self.command_environment(env)
         _validate_extra_env(env)
         merged_env = {**self._default_env, **(env or {})} or None
         try:

@@ -260,6 +260,7 @@ class TenkiSandbox(Sandbox):
         Per-call ``env`` is layered over the static config environment and
         scoped to this command only (request-scoped secrets, issue #3861).
         """
+        env = self.command_environment(env)
         _validate_extra_env(env)  # POSIX env-var key rule; raises ValueError on a bad key
         if self.is_closed:
             return "Error: sandbox has been closed"

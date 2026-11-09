@@ -1,5 +1,12 @@
 ### Sandbox System (`packages/harness/deerflow/sandbox/`)
 
+环境管理器的公共／用户私有 `.bashrc` 在每次命令执行时逻辑合并。
+获取及复用路径调用 `bind_sandbox_environment` 绑定用户；提供方的命令入口调用
+`command_environment(env)`，AIO 的作用域分流前也需调用，防止绕过临时 env 会话。
+仅绑定身份，不缓存变量值或写入容器创建环境；删除后不再注入旧值。
+存储及运行边界见 [ENVIRONMENT_AGENTS.md](../ENVIRONMENT_AGENTS.md)，验证为
+`test_environment_client.py` 和 `test_sandbox_environment.py`。
+
 Sandbox restore requires a thread ID, even forks.
 
 **Network approval policy**: `SandboxMiddleware` uses
