@@ -51,6 +51,7 @@ from deerflow.client_config import load_client_config
 from deerflow.config.app_config import get_app_config
 from deerflow.runtime.client_async import StreamCleanupError
 from deerflow.runtime.user_context import CurrentUser, get_current_user, reset_current_user, set_current_user
+from deerflow.skills.presets import validate_preset_id
 from deerflow.utils.thread_id import resolve_thread_id
 
 __all__ = [
@@ -240,12 +241,15 @@ class DeerFlowClientPool:
         thread_id: str | None = None,
         replay_last_turn: bool = False,
         disabled_tools: list[str] | None = None,
+        skill_preset: str | None = None,
         acquire_timeout: float | None = None,
         buffer_size: int = 64,
         **kwargs: Any,
     ) -> ManagedAgentStream:
         """托管整轮生成，返回支持跨线程 close 的同步流；执行结束后自动归还实例。"""
         user = _resolve_user(user_id)
+        if skill_preset is not None:
+            validate_preset_id(skill_preset)
         if not isinstance(replay_last_turn, bool):
             raise TypeError("replay_last_turn 必须为布尔值")
         if replay_last_turn and thread_id is None:
@@ -256,6 +260,7 @@ class DeerFlowClientPool:
             **kwargs, "thread_id": resolve_thread_id(thread_id),
             "replay_last_turn": replay_last_turn,
             "disabled_tools": DeerFlowClient._validate_disabled_tools(disabled_tools),
+            "skill_preset": skill_preset,
         }
         wait_timeout = self._acquire_timeout if acquire_timeout is None else _validate_timeout(acquire_timeout)
         owner = object()
@@ -437,6 +442,7 @@ class AgentClientSession:
         thread_id: str | None = None,
         replay_last_turn: bool = False,
         disabled_tools: list[str] | None = None,
+        skill_preset: str | None = None,
         **kwargs: Any,
     ) -> Iterator[Any]:
         """流式调用底层客户端，并在整个流期间保持 session 租约。
@@ -451,6 +457,7 @@ class AgentClientSession:
                 "thread_id": thread_id,
                 "replay_last_turn": replay_last_turn,
                 "disabled_tools": disabled_tools,
+                "skill_preset": skill_preset,
                 **kwargs,
             },
         )

@@ -6,17 +6,22 @@ from unittest.mock import Mock, patch
 
 from deerflow.agents.middlewares.uploads_middleware import UploadsMiddleware
 from deerflow.client import DeerFlowClient
+from deerflow.skills.presets import PublicSkillPreset
 from deerflow.config.paths import Paths
 from deerflow.tools.builtins.list_uploaded_files_tool import _list_uploaded_files_impl
 
 
 class ClientUploadsTests(unittest.TestCase):
     def setUp(self):
+        # 本组只验证流协议，独立隔离新增的预设文件边界。
+        preset = PublicSkillPreset("default", "默认预设", frozenset(), "stream_fixture")
+        self.enterContext(patch("deerflow.client.preset_store_for_config", return_value=SimpleNamespace(resolve=lambda _: preset)))
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.paths = Paths(self.temporary.name)
         self.middleware = UploadsMiddleware(base_dir=self.temporary.name)
         self.client = object.__new__(DeerFlowClient)
+        self.client._app_config = SimpleNamespace()
         self.prepare_client()
         self.stub_external_runtime()
 

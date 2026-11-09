@@ -185,33 +185,16 @@ class UserScopedSkillStorage(LocalSkillStorage):
     # ------------------------------------------------------------------
 
     def load_skills(self, *, enabled_only: bool = False) -> list:
-        """Discover all skills and merge enabled state per isolation scope.
+        """公共开关由父类应用本轮预设，非公共类别保留全局与用户开关的交集。
 
-        Delegates skill discovery and PUBLIC enabled-state to
-        :meth:`LocalSkillStorage.load_skills` (which reads from the
-        overridden ``_iter_skill_files``).  Then overrides CUSTOM/LEGACY
-        enabled state with per-user ``_skill_states.json`` so that two
-        users each owning a same-named custom skill can toggle independently.
-
-        Calling ``super().load_skills()`` preserves the full template-method
-        flow (discover → global enabled-state merge → filter → sort) so
-        that patching ``LocalSkillStorage.load_skills`` in tests still
-        intercepts the call.
+        先沿用父类发现及同名覆盖，再处理用户状态，避免预设影响同名私有技能。
         """
         # Let the parent do full discovery + global enabled-state merge.
         # The overridden _iter_skill_files() routes custom reads to
         # _user_custom_root and legacy reads to _global_custom_root.
         skills = super().load_skills(enabled_only=False)
 
-        # Override enabled state for CUSTOM / LEGACY with per-user state,
-        # ANDed with the global extensions_config default. This preserves a
-        # pre-upgrade global disable of a shared custom/legacy skill from
-        # being silently re-enabled by an absent per-user entry, while still
-        # letting the per-user state override the global default when both
-        # are present. PUBLIC skill state remains governed solely by
-        # extensions_config (handled by ``super().load_skills`` above). Re-read
-        # from disk here too so another worker's update cannot be masked by
-        # this process's singleton cache while rebuilding a user projection.
+        # 重读旧状态使其他进程的私有开关变更仍能在下次视图重建时生效。
         from deerflow.config.extensions_config import ExtensionsConfig
 
         extensions_config = ExtensionsConfig.from_file()

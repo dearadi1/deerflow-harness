@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from pydantic import create_model
 
 from deerflow.client import DeerFlowClient
+from deerflow.skills.presets import PublicSkillPreset
 from deerflow.community.hours_knowledge import callable as callbacks
 from deerflow.community.hours_knowledge.tools import knowledge_base_search_tool
 from deerflow.tools.types import Runtime
@@ -123,8 +124,12 @@ class HoursKnowledgeToolTests(unittest.TestCase):
 
 class HoursKnowledgeStreamTests(unittest.TestCase):
     def setUp(self):
+        # 本组只验证流协议，独立隔离新增的预设文件边界。
+        preset = PublicSkillPreset("default", "默认预设", frozenset(), "stream_fixture")
+        self.enterContext(patch("deerflow.client.preset_store_for_config", return_value=SimpleNamespace(resolve=lambda _: preset)))
         self.enterContext(patch.object(callbacks, "_knowledge_search", Mock(return_value=[])))
         self.client = object.__new__(DeerFlowClient)
+        self.client._app_config = SimpleNamespace()
         self.prepare_client()
         self.stub_external_runtime()
         self.contexts = []

@@ -345,7 +345,11 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
         permissive, matching the other run-context carriers. A published
         ``False`` hides the entry from the reminder only; state is untouched.
         """
-        if not entries or self._skill_authorization is None or not self._entry_decisions_owner_token:
+        from deerflow.skills.presets import current_public_skill_preset
+
+        if not entries or not self._entry_decisions_owner_token:
+            return entries
+        if self._skill_authorization is None and current_public_skill_preset() is None:
             return entries
         from deerflow.runtime.secret_context import read_skill_entry_decisions
 

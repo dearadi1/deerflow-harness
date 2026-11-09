@@ -18,4 +18,7 @@ def load_client_config(config_path: str | None = None) -> AppConfig:
     config = reload_app_config(resolved_path)
     # 后续 get_app_config 会重新解析路径，必须固定来源以保留配置及热更新语义。
     os.environ["DEER_FLOW_CONFIG_PATH"] = resolved_path
+    from deerflow.skills.presets import preset_store_for_config
+
+    preset_store_for_config(config).read()
     return config

@@ -103,7 +103,7 @@ not by the top-level infrastructure reload-boundary registry.
 
 **Extensions Configuration** (`extensions_config.json`):
 
-MCP servers and skills are configured together in `extensions_config.json` in project root:
+MCP servers and non-public skills' legacy global states are configured in `extensions_config.json` in project root. 公共技能开关独立存储于 `{DEER_FLOW_HOME}/skill_presets.json`，路径可用 `DEER_FLOW_SKILL_PRESETS_PATH` 覆盖；格式、迁移和管理入口见 [SKILL_AGENTS.md](../SKILL_AGENTS.md#公共技能预设)。公共运行不再叠加旧扩展状态，旧条目保留给私有技能。
 
 Both the runtime loader and raw read-modify-write reader accept UTF-8 with or
 without a leading BOM. Writes remain UTF-8 without a BOM.
@@ -181,7 +181,7 @@ Tests: `tests/test_secret_file.py`, `tests/test_credentials_key.py`.
 **`extensions_config.json`**:
 - `mcpServers` - Map of server name → config (enabled, type, command, args, env, url, headers, oauth, description, `routing`, `tools`, `tool_call_timeout`, `session_init_timeout`). `routing.mode="prefer"` emits `<mcp_routing_hints>` prompt guidance; if `tool_search` defers the hinted tool, `McpRoutingMiddleware` can also auto-promote matching deferred schemas before the model call. It does not hard-disable other tools. `session_init_timeout` (default `DEFAULT_MCP_SESSION_INIT_TIMEOUT` = 60s, `null` to disable) bounds server bring-up: tool discovery and persistent stdio session initialization, so a hung server cannot block agent construction indefinitely; durable HTTP/SSE task calls use it for their ephemeral session initialization too. `tool_call_timeout` bounds individual stdio calls and durable-task calls on every transport; other HTTP/SSE tools use transport-level timeouts.
 - `tool_search.auto_promote_top_k` - Global MCP routing auto-promote breadth. Default `3`, clamped to `1..5`; applies only when `tool_search.enabled=true` and only to deferred MCP tools with `routing.mode="prefer"` and non-empty keywords. For lead agents the deferred catalog is built from the full configured MCP set; auto-promotion never grants authority because an active skill's runtime policy still filters model-visible schemas, `tool_search` results, and execution.
-- `skills` - Map of skill name → state (enabled)
+- `skills` - 非公共技能保留的全局名称开关；公共技能只在首次初始化预设文件时迁移这些值
 - `middlewares` - `AgentMiddleware` entries for lead and subagent runtime extension: class-path strings or `{class, kwargs}` objects. `kwargs` values must be JSON types; YAML dates and timestamps are coerced to ISO strings so they match JSON. `config.yaml -> extensions` can override these fields after validation; overrides are replace-per-field, not list concatenation.
 
 Gateway API endpoints and `DeerFlowClient` methods can modify MCP servers and skill state at runtime; their `extensions_config.json` writes use the shared atomic replacement helper, while `middlewares` remains an operator-controlled config-file extension point.

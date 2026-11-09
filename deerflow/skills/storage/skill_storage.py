@@ -362,17 +362,18 @@ class SkillStorage(ABC):
 
         skills = list(skills_by_name.values())
 
-        # Merge enabled state from extensions config (re-read every call so
-        # changes made by another process are picked up immediately).
-        # All skill categories (PUBLIC, LEGACY, CUSTOM) respect the
-        # extensions_config enabled/disabled state.  CUSTOM skills default
-        # to enabled when no explicit config entry exists (so newly
-        # installed skills appear active without requiring a manual toggle).
+        from deerflow.skills.presets import resolve_public_skill_preset
+
+        # 公共状态独立于旧扩展配置；配置损坏必须报错，不能恢复成全部启用。
+        preset = resolve_public_skill_preset(skills_root=self.get_skills_root_path())
+        skills = [dataclasses.replace(skill, enabled=preset.is_enabled(skill.name)) if skill.category == SkillCategory.PUBLIC else skill for skill in skills]
+
+        # 非公共类别继续实时读取旧扩展状态，保留私有技能的兼容及默认启用规则。
         try:
             from deerflow.config.extensions_config import ExtensionsConfig
 
             extensions_config = ExtensionsConfig.from_file()
-            skills = [dataclasses.replace(s, enabled=extensions_config.is_skill_enabled(s.name, s.category)) for s in skills]
+            skills = [dataclasses.replace(s, enabled=extensions_config.is_skill_enabled(s.name, s.category)) if s.category != SkillCategory.PUBLIC else s for s in skills]
         except Exception as e:
             logger.warning("Failed to load extensions config: %s", e)
 

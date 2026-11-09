@@ -593,19 +593,9 @@ class ExtensionsConfig(BaseModel):
         return {name: config for name, config in self.mcp_servers.items() if config.enabled}
 
     def is_skill_enabled(self, skill_name: str, skill_category: str) -> bool:
-        """Check if a skill is enabled.
+        """读取历史名称开关；公共技能仅在首次迁移预设时使用此值。
 
-        Args:
-            skill_name: Name of the skill
-            skill_category: Category of the skill (public, custom, or legacy)
-
-        Returns:
-            True if enabled, False otherwise.
-
-        Note:
-            All skill categories (public, custom, legacy) respect the
-            extensions_config enabled/disabled state.  When no explicit
-            entry exists, skills default to enabled.
+        非公共类别继续以此值约束用户开关，未配置时默认启用。
         """
         skill_config = self.skills.get(skill_name)
         if skill_config is None:
