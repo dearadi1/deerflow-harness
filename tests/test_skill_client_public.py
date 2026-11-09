@@ -20,7 +20,7 @@ from deerflow.config.shared_reset_marker import (
 )
 from deerflow.config.skills_config import SkillsConfig
 from deerflow.skill_client import DeerFlowSkillClient
-from deerflow.skills.projection import get_skill_projection_paths
+from deerflow.skills.projection import ensure_skill_projections, get_skill_projection_paths
 from deerflow.skills.storage import LocalSkillStorage, UserScopedSkillStorage
 
 
@@ -82,6 +82,13 @@ class SkillClientPublicTests(unittest.TestCase):
             self.users[user_id] = UserScopedSkillStorage(user_id, app_config=self.config)
         return self.users[user_id]
 
+    def enable_public(self, *names):
+        self.public.update_preset("default", skill_states=dict.fromkeys(names, True))
+        ensure_skill_projections(self.storage)
+
+    def cache_key(self, user_id):
+        return (id(self.config), user_id, self.public._presets.resolve().signature)
+
     @staticmethod
     def markdown(description="更新描述", name="example"):
         return f"---\nname: {name}\ndescription: {description}\ntags: [one, two]\n---\n正文\n".encode()
@@ -93,8 +100,10 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertEqual(self.public.get_skill_info("example")["license"], "MIT")
         self.assertEqual(self.public.list_skills(), [{
             "name": "example", "description": "描述",
-            "skill_path": "/mnt/skills/public/example", "host_path": path, "enabled": True,
+            "skill_path": "/mnt/skills/public/example", "host_path": path,
         }])
+        self.assertFalse((self.view / "example/SKILL.md").exists())
+        self.enable_public("example")
         self.assertTrue((self.view / "example/SKILL.md").is_file())
         self.user_factory.assert_not_called()
 
@@ -109,15 +118,61 @@ class SkillClientPublicTests(unittest.TestCase):
 
         self.addCleanup(reset_extensions_config)
 
-    def test_skill_states_are_separate_and_default_enabled(self):
+    def test_public_catalog_is_independent_of_presets_and_legacy_state(self):
+        self.public.create_skill("example", "公共描述")
+        original = self.public.list_skills()
+        self.assertEqual(set(original[0]), {"name", "description", "skill_path", "host_path"})
+        created = self.public.create_preset(name="空预设")
+        preset_id = created["preset_id"]
+        self.assertEqual(created["enabled_skills"], [])
+        self.public.update_preset(preset_id, skill_states={"example": True})
+        self.public.set_default_preset(preset_id)
+        self.assertEqual(self.public.list_skills(), original)
+        with self.assertRaises(TypeError):
+            self.public.list_skills(preset_id=preset_id)
+        with self.assertRaises(TypeError):
+            self.public.create_preset(name="非法", preset_id="provided")
+        with self.assertRaises(TypeError):
+            self.public.create_preset(name="非法", skill_states={"example": True})
+        with self.assertRaises(TypeError):
+            self.public.create_preset(name="非法", copy_from=preset_id)
+        self.public._presets.path.write_text("{")
+        with patch.object(ExtensionsConfig, "from_file", side_effect=AssertionError("公共列表不应读取启用配置")):
+            self.assertEqual(self.public.list_skills(), original)
+
+    def test_private_details_refresh_effective_state_without_metadata_changes(self):
+        self.use_persisted_skill_states()
+        self.public.create_skill("example", "公共描述")
+        self.client.create_skill("alice", "example", "私有描述", enabled="用户自定义字段")
+        self.client.create_skill("bob", "example", "另一用户")
+        directory = self.paths.user_custom_skills_dir("alice") / "example"
+        original_file = (directory / "SKILL.md").read_bytes()
+        self.assertIs(self.client.get_skill_info("alice", "example")["enabled"], True)
+        self.client.set_skill_enabled("alice", "example", False)
+        self.assertIs(self.client.get_skill_info("alice", "example")["enabled"], False)
+        self.assertIs(self.client.get_skill_info("bob", "example")["enabled"], True)
+        self.client.set_skill_enabled("alice", "example", True)
+        info = self.client.get_skill_info("alice", "example")
+        info["enabled"] = False
+        self.assertIs(self.client.get_skill_info("alice", "example")["enabled"], True)
+        self.config_path.write_text('{"skills": {"example": {"enabled": false}}}')
+        self.assertIs(self.client.get_skill_info("alice", "example")["enabled"], False)
+        self.public.update_preset("default", skill_states={"example": True})
+        self.assertIs(self.client.get_skill_info("alice", "example")["enabled"], False)
+        self.config_path.write_text("{}")
+        self.assertIs(self.client.get_skill_info("alice", "example")["enabled"], True)
+        self.assertNotIn("enabled", self.public.get_skill_info("example"))
+        self.assertEqual((directory / "SKILL.md").read_bytes(), original_file)
+
+    def test_skill_states_are_separate_and_only_custom_defaults_enabled(self):
         self.use_persisted_skill_states()
         self.public.create_skill("example", "公共描述")
         self.client.create_skill("alice", "example", "用户描述")
-        public_states = [{"name": "example", "global_enabled": True, "enabled": True}]
-        self.assertEqual(self.public.list_skill_states(), public_states)
-        self.assertEqual(self.client.list_skill_states("alice"), [dict(public_states[0], user_enabled=True)])
+        self.assertFalse(hasattr(self.public, "list_skill_states"))
+        self.assertFalse(self.public.get_preset()["skills"]["example"])
+        self.assertEqual(self.client.list_skill_states("alice"), [{"name": "example", "global_enabled": True, "enabled": True, "user_enabled": True}])
         self.assertEqual(self.client.list_skill_states("bob"), [])
-        self.assertIs(self.public.list_skills()[0]["enabled"], True)
+        self.assertNotIn("enabled", self.public.list_skills()[0])
         self.assertIs(self.client.list_skills("alice")[0]["enabled"], True)
 
     def test_custom_toggle_is_user_scoped_and_invalidates_shared_caches(self):
@@ -147,33 +202,19 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertEqual(peer.get_enabled_skills_for_config(self.config, "alice"), [])
         self.assertTrue(self.client.set_skill_enabled("alice", "example", True)["enabled"])
 
-    def test_public_toggle_preserves_raw_config_and_global_disable_wins(self):
-        from deerflow.config.extensions_config import get_extensions_config
-
+    def test_public_presets_preserve_private_global_state_and_raw_config(self):
         self.use_persisted_skill_states()
         self.public.create_skill("example", "公共描述")
         self.client.create_skill("alice", "example", "用户描述")
-        self.config_path.write_text(json.dumps({"mcp_servers": {}, "skills": {"other": {"enabled": False}}, "placeholder": "$SECRET"}))
-        modules = self.prompt_cache_modules()
-        for module in modules:
-            module.clear_skills_system_prompt_cache = Mock()
-            module.get_enabled_skills_for_config(self.config, "alice")
-        self.assertTrue(get_extensions_config().is_skill_enabled("example", "public"))
-        self.assertFalse(self.public.set_skill_enabled("example", False)["enabled"])
-        self.assertFalse(get_extensions_config().is_skill_enabled("example", "public"))
-        raw = json.loads(self.config_path.read_text())
-        self.assertEqual(raw["placeholder"], "$SECRET")
-        self.assertEqual(raw["skills"]["other"], {"enabled": False})
-        self.assertFalse((self.view / "example").exists())
-        for module in modules:
-            module.clear_skills_system_prompt_cache.assert_called_once_with()
+        self.config_path.write_text(json.dumps({"mcp_servers": {}, "skills": {"example": {"enabled": False}}, "placeholder": "$SECRET"}))
+        original = self.config_path.read_bytes()
+        self.assertFalse(hasattr(self.public, "set_skill_enabled"))
+        self.enable_public("example")
+        self.assertEqual(self.config_path.read_bytes(), original)
         state = self.client.set_skill_enabled("alice", "example", True)
         self.assertEqual(state, {"name": "example", "global_enabled": False, "user_enabled": True, "enabled": False})
-        self.assertIs(self.public.list_skills()[0]["enabled"], False)
+        self.assertIs(self.public.get_preset()["skills"]["example"], True)
         self.assertIs(self.client.list_skills("alice")[0]["enabled"], False)
-        self.assertTrue(self.public.set_skill_enabled("example", True)["enabled"])
-        self.assertIs(self.public.list_skills()[0]["enabled"], True)
-        self.assertIs(self.client.list_skills("alice")[0]["enabled"], True)
         self.assertTrue((self.view / "example/SKILL.md").is_file())
 
     def test_skill_state_validation_and_external_changes(self):
@@ -185,14 +226,19 @@ class SkillClientPublicTests(unittest.TestCase):
             self.client.set_skill_enabled("", "example", False)
         with self.assertRaises(FileNotFoundError):
             self.client.set_skill_enabled("alice", "example", False)
-        with self.assertRaises(FileNotFoundError):
-            self.public.set_skill_enabled("missing", False)
+        with self.assertRaises(ValueError):
+            self.public.update_preset("default", skill_states={"missing": False})
         with self.assertRaises(TypeError):
-            self.public.set_skill_enabled("example", "false")
-        self.assertTrue(self.public.list_skill_states()[0]["enabled"])
+            self.public.update_preset("default", skill_states={"example": "false"})
+        self.enable_public("example")
+        self.assertTrue(self.public.get_preset()["skills"]["example"])
         self.config_path.write_text('{"skills": {"example": {"enabled": false}}}')
-        self.assertFalse(self.public.list_skill_states()[0]["enabled"])
-        self.assertIs(self.public.list_skills()[0]["enabled"], False)
+        self.assertTrue(self.public.get_preset()["skills"]["example"])
+        document = json.loads(self.public._presets.path.read_text())
+        document["presets"]["default"]["skills"]["example"] = False
+        self.public._presets.path.write_text(json.dumps(document))
+        self.assertFalse(self.public.get_preset()["skills"]["example"])
+        self.assertNotIn("enabled", self.public.list_skills()[0])
 
     def test_custom_toggle_notification_failure_reports_committed_state(self):
         self.use_persisted_skill_states()
@@ -204,6 +250,7 @@ class SkillClientPublicTests(unittest.TestCase):
 
     def test_all_public_resource_operations(self):
         self.public.create_skill("example", "描述")
+        self.enable_public("example")
         self.public.create_folder("example", "scripts")
         self.public.create_file("example", "scripts/main.py")
         self.public.upload_file("example", "scripts/main.py", bytearray(b"print(1)\n"))
@@ -327,6 +374,7 @@ class SkillClientPublicTests(unittest.TestCase):
 
     def test_root_markdown_protection_preserves_source_and_view(self):
         self.public.create_skill("example", "描述")
+        self.enable_public("example")
         for operation, arguments in (
             (self.public.create_file, ("SKILL.md",)),
             (self.public.delete_file, ("SKILL.md",)),
@@ -413,7 +461,7 @@ class SkillClientPublicTests(unittest.TestCase):
         for module in modules:
             self.assertEqual(module.get_enabled_skills_for_config(self.config, "alice"), [])
             module.get_enabled_skills_for_config(self.config, "bob")
-        other_entries = [module._enabled_skills_by_config_cache[(id(self.config), "bob")] for module in modules]
+        other_entries = [module._enabled_skills_by_config_cache[self.cache_key("bob")] for module in modules]
         self.client.create_skill("alice", "example", "初始描述")
         self.assert_cached_skill_descriptions(modules, ["初始描述"])
         self.client.upload_file("alice", "example", "SKILL.md", self.markdown("新描述"))
@@ -421,7 +469,7 @@ class SkillClientPublicTests(unittest.TestCase):
         self.client.delete_skill("alice", "example")
         self.assert_cached_skill_descriptions(modules, [])
         for module, entry in zip(modules, other_entries):
-            self.assertIs(module._enabled_skills_by_config_cache[(id(self.config), "bob")], entry)
+            self.assertIs(module._enabled_skills_by_config_cache[self.cache_key("bob")], entry)
         marker = SharedResetMarker("skills-cache-reset")
         self.assertEqual(json.loads(marker.path_for(self.config_path).read_text())["user_id"], "alice")
 
@@ -436,13 +484,13 @@ class SkillClientPublicTests(unittest.TestCase):
         for module in modules:
             module.get_enabled_skills_for_config(self.config, "alice")
             module.get_enabled_skills_for_config(self.config, "bob")
-        source_entries = [module._enabled_skills_by_config_cache[(id(self.config), "bob")] for module in modules]
+        source_entries = [module._enabled_skills_by_config_cache[self.cache_key("bob")] for module in modules]
         with patch.object(SharedResetMarker, "publish", autospec=True, side_effect=SharedResetMarker.publish) as publish:
             self.client.copy_skill("bob", "alice", "example")
             publish.assert_called_once_with(ANY, self.config_path, user_id="alice")
         self.assert_cached_skill_descriptions(modules, ["来源描述"])
         for module, entry in zip(modules, source_entries):
-            self.assertIs(module._enabled_skills_by_config_cache[(id(self.config), "bob")], entry)
+            self.assertIs(module._enabled_skills_by_config_cache[self.cache_key("bob")], entry)
 
     def test_public_copy_publishes_target_reset_once(self):
         self.public.create_skill("example", "公共描述")
@@ -596,6 +644,7 @@ class SkillClientPublicTests(unittest.TestCase):
 
     def test_duplicate_public_creation_preserves_existing_contents_and_view(self):
         self.public.create_skill("example", "原有描述")
+        self.enable_public("example")
         before = (self.view / "example/SKILL.md").read_bytes()
         with self.assertRaises(FileExistsError):
             self.public.create_skill("example", "不能覆盖")
@@ -622,6 +671,7 @@ class SkillClientPublicTests(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=2) as executor:
                 results = list(executor.map(create, ("甲", "乙")))
         self.assertEqual(sum(result is not None for result in results), 1)
+        self.enable_public("example", "other")
         self.assertEqual((self.view / "example/SKILL.md").read_bytes(), (self.public_root / "example/SKILL.md").read_bytes())
         self.assertTrue((self.view / "other/SKILL.md").exists())
 
@@ -709,7 +759,7 @@ class SkillClientPublicTests(unittest.TestCase):
                 with self.subTest(user_id=user_id, name=name, description=description), self.assertRaises(error):
                     self.client.create_skill(user_id, name, description)
             publish.assert_not_called()
-        self.assertFalse(self.paths.base_dir.exists())
+        self.assertFalse((self.paths.base_dir / "users").exists())
 
     def test_required_and_extra_arguments_follow_public_signatures(self):
         cases = (
@@ -857,12 +907,12 @@ class SkillClientPublicTests(unittest.TestCase):
         )
         self.assertEqual(module.get_enabled_skills_for_config(self.config, "alice"), [])
         module.get_enabled_skills_for_config(self.config, "bob")
-        other = module._enabled_skills_by_config_cache[(id(self.config), "bob")]
+        other = module._enabled_skills_by_config_cache[self.cache_key("bob")]
         self.client.create_skill("alice", "example", "对端更新")
         self.assertEqual(module.get_enabled_skills_for_config(self.config, "alice"), [])
         now[0] = 1.0
         self.assertEqual([skill.description for skill in module.get_enabled_skills_for_config(self.config, "alice")], ["对端更新"])
-        self.assertIs(module._enabled_skills_by_config_cache[(id(self.config), "bob")], other)
+        self.assertIs(module._enabled_skills_by_config_cache[self.cache_key("bob")], other)
         module._invalidate_enabled_skills_cache.assert_not_called()
 
     def test_multiple_unobserved_publications_use_full_reset(self):

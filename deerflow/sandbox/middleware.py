@@ -101,12 +101,15 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         # Preserve the zero-copy shared view for ordinary threads. A thread
         # that previously used a restricted Agent keeps its stable mount root;
         # an unrestricted run repopulates that root with all enabled skills.
-        if self._available_skills is None and not get_paths().thread_skills_view_dir(thread_id, user_id=user_id).exists():
+        from deerflow.skills.presets import current_public_skill_preset
+
+        has_preset = current_public_skill_preset() is not None
+        if self._available_skills is None and not has_preset and not get_paths().thread_skills_view_dir(thread_id, user_id=user_id).exists():
             return None
 
         provider = get_sandbox_provider()
         if not provider.supports_agent_skill_isolation:
-            if self._available_skills is not None:
+            if self._available_skills is not None or has_preset:
                 raise SandboxRuntimeError(f"Sandbox provider {provider.__class__.__name__} cannot enforce per-Agent skill filesystem isolation")
             # The thread projection may have been created under a different
             # provider. An unrestricted run does not need that policy view and

@@ -14,6 +14,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from deerflow.protocol import ClientStreamEvent
 from deerflow.runtime.client_replay import ClientTurnReplay, _reserve_turn
 from deerflow.runtime.turn_cancellation import get_turn_cancellation_event, turn_cancellation_scope
+from deerflow.skills.presets import preset_store_for_config, public_skill_preset_scope
 
 
 class StreamCleanupError(RuntimeError):
@@ -162,11 +163,13 @@ async def stream_managed_turn(
     replay_last_turn: bool,
     disabled_tools: list[str] | None,
     executor: DrainingExecutor,
+    skill_preset: str | None = None,
     **kwargs: Any,
 ) -> AsyncIterator[ClientStreamEvent]:
     """仅在本轮独占的事件循环中调用，锁覆盖图退出、存储恢复和后台任务排空。"""
     disabled_tools = client._validate_disabled_tools(disabled_tools)
-    with _reserve_turn(client, thread_id):
+    preset = await _sync_call(preset_store_for_config(getattr(client, "_app_config", None)).resolve, skill_preset)
+    with _reserve_turn(client, thread_id), public_skill_preset_scope(preset):
         replay = ClientTurnReplay(enabled=replay_last_turn)
         turn = None
         stream = None

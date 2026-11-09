@@ -21,20 +21,12 @@ from pypinyin import lazy_pinyin
 
 from deerflow.client_config import load_client_config
 from deerflow.config.app_config import AppConfig
-from deerflow.config.extensions_config import (
-    ExtensionsConfig,
-    atomic_write_extensions_config,
-    extensions_config_file_lock,
-    extensions_config_write_lock,
-    read_raw_extensions_config,
-    reload_extensions_config,
-    set_raw_skill_enabled,
-    validate_raw_extensions_config,
-)
+from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.config.paths import get_paths
 from deerflow.skills.frontmatter import split_skill_markdown
 from deerflow.skills.parser import parse_allowed_tools, parse_required_secrets
 from deerflow.skills.permissions import make_skill_tree_sandbox_readable, make_skill_written_path_sandbox_readable
+from deerflow.skills.presets import preset_store_for_config
 from deerflow.skills.projection import _projection_lock, get_skill_projection_paths, skill_projection_mutation
 from deerflow.skills.storage import LocalSkillStorage, SkillStorage, UserScopedSkillStorage, get_or_new_skill_storage, get_or_new_user_skill_storage
 from deerflow.skills.types import SKILL_MD_FILE, SkillCategory
@@ -431,13 +423,16 @@ class _SkillOperations:
 
     @_chinese_errors
     def get_skill_info(self, user_id: str, skill_name: str) -> dict[str, Any]:
-        """返回该用户 custom 技能的完整 YAML 头，保留各字段原始类型。
+        """返回完整 YAML 头；私有技能额外返回实时计算的最终 enabled。
 
         文件未变化时直接复用进程内解析缓存；每次仅检查文件属性，不重复读取
-        文件内容。文件被更新、替换或删除后，下次查询立即识别新状态。
+        文件内容。启用状态不进入元数据缓存，避免开关变化后仍返回旧值。
         """
-        directory = self._skill_dir(self._storage(user_id), skill_name)
-        return self._read_skill_metadata(directory)
+        storage = self._storage(user_id)
+        metadata = self._read_skill_metadata(self._skill_dir(storage, skill_name))
+        if self._category == SkillCategory.PUBLIC:
+            return metadata
+        return dict(metadata, enabled=self._skill_state(storage, skill_name, ExtensionsConfig.from_file())["enabled"])
 
     @staticmethod
     def _raise_walk_error(error: OSError) -> None:
@@ -463,10 +458,7 @@ class _SkillOperations:
             "host_path": str(directory),
         }
 
-    @_chinese_errors
-    def list_skills(self, user_id: str) -> list[dict[str, Any]]:
-        """仅扫描当前作用域，复用详情缓存，包含禁用项并返回最终启用状态。"""
-        storage = self._storage(user_id)
+    def _list_skill_metadata(self, storage: SkillStorage) -> list[dict[str, str]]:
         root = self._root(storage)
         skills_by_name: dict[str, dict[str, str]] = {}
         for directory in self._iter_custom_skill_directories(root):
@@ -475,10 +467,19 @@ class _SkillOperations:
             except (ValueError, FileNotFoundError):
                 continue
             skills_by_name[metadata["name"]] = self._skill_info(root, directory, metadata)
+        return [skills_by_name[name] for name in sorted(skills_by_name)]
+
+    @_chinese_errors
+    def list_skills(self, user_id: str) -> list[dict[str, Any]]:
+        """仅扫描当前作用域；公共列表独立于预设，私有列表标注最终启用状态。"""
+        storage = self._storage(user_id)
+        skills = self._list_skill_metadata(storage)
+        if self._category == SkillCategory.PUBLIC:
+            return skills
         extensions = ExtensionsConfig.from_file()
         return [
-            dict(skills_by_name[name], enabled=self._skill_state(storage, name, extensions)["enabled"])
-            for name in sorted(skills_by_name)
+            dict(skill, enabled=self._skill_state(storage, skill["name"], extensions)["enabled"])
+            for skill in skills
         ]
 
     def _skill_state(self, storage: SkillStorage, name: str, extensions: ExtensionsConfig) -> dict[str, Any]:
@@ -496,35 +497,18 @@ class _SkillOperations:
         extensions = ExtensionsConfig.from_file()
         return [self._skill_state(storage, skill["name"], extensions) for skill in self.list_skills(user_id)]
 
-    @staticmethod
-    def _set_public_skill_enabled(storage: SkillStorage, name: str, enabled: bool) -> None:
-        config_path = ExtensionsConfig.resolve_config_path()
-        if config_path is None:
-            raise FileNotFoundError("未找到扩展配置，请设置 DEER_FLOW_EXTENSIONS_CONFIG_PATH 或创建 extensions_config.json")
-        removal_names = (name,) if not enabled else ()
-        with skill_projection_mutation(storage, "public", remove_names=removal_names):
-            with extensions_config_write_lock, extensions_config_file_lock(config_path):
-                # 合并原始配置，避免将环境变量引用解析成明文或覆盖并发更新。
-                raw_config = read_raw_extensions_config(config_path)
-                set_raw_skill_enabled(raw_config, name, enabled)
-                validate_raw_extensions_config(raw_config)
-                atomic_write_extensions_config(config_path, raw_config)
-                reload_extensions_config()
-
     @_chinese_errors
     def set_skill_enabled(self, user_id: str, skill_name: str, enabled: bool) -> dict[str, Any]:
         """修改用户 custom 开关并返回有效状态；全局禁用仍具有约束力。"""
+        if self._category == SkillCategory.PUBLIC:
+            raise ValueError("公共技能开关已迁移至预设，请使用 public.update_preset")
         if not isinstance(enabled, bool):
             raise TypeError("enabled 必须是布尔值")
         storage = self._storage(user_id)
         if not any(skill["name"] == skill_name for skill in self.list_skills(user_id)):
             raise FileNotFoundError(f"当前作用域中不存在技能: {skill_name}")
-        if self._category == SkillCategory.PUBLIC:
-            self._set_public_skill_enabled(storage, skill_name, enabled)
-            self._notify_skill_change()
-        else:
-            storage.set_skill_enabled_state(skill_name, enabled)
-            self._notify_skill_change(user_id=storage.user_id)
+        storage.set_skill_enabled_state(skill_name, enabled)
+        self._notify_skill_change(user_id=storage.user_id)
         return self._skill_state(storage, skill_name, ExtensionsConfig.from_file())
 
     @_chinese_errors
@@ -676,6 +660,8 @@ class _PublicSkillClient:
 
     def __init__(self, app_config: AppConfig) -> None:
         self._operations = _SkillOperations(app_config, category=SkillCategory.PUBLIC)
+        self._presets = preset_store_for_config(app_config)
+        self._presets.read()
 
     def create_skill(self, name: str, description: str, **extra_fields: str) -> str:
         return self._operations.create_skill(None, name, description, **extra_fields)
@@ -693,13 +679,23 @@ class _PublicSkillClient:
     def list_skills(self) -> list[dict[str, Any]]:
         return self._operations.list_skills(None)
 
-    def list_skill_states(self) -> list[dict[str, Any]]:
-        """查询全局 public 状态，不受用户同名 custom 技能遮蔽。"""
-        return self._operations.list_skill_states(None)
+    def list_presets(self) -> dict[str, Any]:
+        return self._presets.list_presets()
 
-    def set_skill_enabled(self, skill_name: str, enabled: bool) -> dict[str, Any]:
-        """修改全局 public 开关，并通知所有用户的技能缓存失效。"""
-        return self._operations.set_skill_enabled(None, skill_name, enabled)
+    def get_preset(self, preset_id: str | None = None) -> dict[str, Any]:
+        return self._presets.get_preset(preset_id)
+
+    def create_preset(self, name: str) -> dict[str, Any]:
+        return self._presets.create_preset(name)
+
+    def update_preset(self, preset_id: str, *, skill_states: dict[str, bool], name: str | None = None) -> dict[str, Any]:
+        return self._presets.update_preset(preset_id, skill_states=skill_states, name=name)
+
+    def set_default_preset(self, preset_id: str) -> dict[str, Any]:
+        return self._presets.set_default_preset(preset_id)
+
+    def delete_preset(self, preset_id: str) -> None:
+        self._presets.delete_preset(preset_id)
 
     def get_resource_tree(self, skill_name: str) -> list[dict[str, Any]]:
         return self._operations.get_resource_tree(None, skill_name)
@@ -736,13 +732,11 @@ class DeerFlowSkillClient(_SkillOperations):
     create_skill 和 copy_skill 返回实际技能目录的绝对路径，不包含 SKILL.md。
     文件路径相对于技能根目录；upload_file 仅更新已有的 UTF-8 文本文件。
     根目录 SKILL.md 只能通过 upload_file 更新，不能单独创建、删除或移动。
-    list_skill_states(user_id) 与 public.list_skill_states() 独立查询启用状态；
-    set_skill_enabled(user_id, skill_name, enabled) 修改用户开关，
-    public.set_skill_enabled(skill_name, enabled) 修改全局开关。
-    状态包含 global_enabled、最终 enabled；custom 另含 user_enabled，
-    最终状态为全局与用户开关的交集，不包含 Agent 白名单或授权过滤。
-    修改复用技能视图更新、本进程缓存失效及跨进程共享重置标记；
-    已构建的会话 Agent 快照仍需调用方按原有生命周期重建。
+    custom 状态包含 global_enabled、user_enabled、最终 enabled，仍取两者交集。
+    public 列表仅返回技能元数据；启用状态通过 get_preset 查询、update_preset 修改。
+    create_preset 只接收名称，返回含随机 preset_id 的空预设详情；预设独立保存到
+    skill_presets.json，未配置的公共技能默认关闭。预设修改在下一轮自动生效。
+    技能包与私有状态修改复用原有视图及缓存更新，已有 Agent 按原生命周期重建。
     """
 
     @_chinese_errors

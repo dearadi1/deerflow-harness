@@ -243,16 +243,23 @@ def _extract_skill_name_from_skills_path(path: str) -> str | None:
     return None
 
 
+def _enabled_public_skill_roots() -> tuple[str, ...]:
+    """按声明名称应用预设，再映射回包目录，兼容命名空间及目录别名。"""
+    from deerflow.skills.presets import load_public_skill_catalog, resolve_public_skill_preset
+
+    config = get_app_config()
+    preset = resolve_public_skill_preset(app_config=config)
+    catalog = load_public_skill_catalog(config.skills.get_skills_path())
+    return tuple(posixpath.normpath(skill.get_container_path(config.skills.container_path)) for skill in catalog if preset.is_enabled(skill.name))
+
+
+def _public_path_is_enabled(path: str, roots: tuple[str, ...]) -> bool:
+    normalized = posixpath.normpath(path)
+    return any(normalized == root or normalized.startswith(root + "/") or root.startswith(normalized + "/") for root in roots)
+
+
 def _is_disabled_skill_path(path: str, *, user_id: str | None = None) -> bool:
-    """Check if a path belongs to a disabled skill.
-
-    PUBLIC skill enabled state is read from the global
-    ``extensions_config.json``.  CUSTOM / LEGACY skill enabled state is
-    read from the per-user ``_skill_states.json`` so that two users with
-    same-named custom skills can toggle independently.
-
-    Returns False for non-skills paths or paths whose skill is enabled.
-    """
+    """公共路径服从本轮预设，非公共路径保留原有用户状态检查。"""
     skill_name = _extract_skill_name_from_skills_path(path)
     if skill_name is None:
         return False
@@ -282,10 +289,7 @@ def _is_disabled_skill_path(path: str, *, user_id: str | None = None) -> bool:
             category = matching.category.value
 
         if category == "public":
-            from deerflow.config.extensions_config import ExtensionsConfig
-
-            ext_config = ExtensionsConfig.from_file()
-            return not ext_config.is_skill_enabled(skill_name, category)
+            return not _public_path_is_enabled(path, _enabled_public_skill_roots())
         else:
             # CUSTOM / LEGACY: use per-user state
             effective_uid = user_id or get_effective_user_id()
@@ -301,22 +305,23 @@ def _is_disabled_skill_path(path: str, *, user_id: str | None = None) -> bool:
 
 
 def _drop_disabled_skill_paths(paths: list[str], *, user_id: str | None = None) -> list[str]:
-    """Filter out paths that belong to a disabled skill.
-
-    ``_is_disabled_skill_path`` gates the *requested* path, which is enough for
-    ``read_file`` but not for the tools that descend: ``ls``, ``glob`` and
-    ``grep`` return paths other than the one they were given, so a root anywhere
-    above a disabled skill still surfaces its files.  This applies the same check
-    to the results.
-
-    The enabled-state lookup re-reads ``extensions_config.json`` (or the per-user
-    skill state) on every call, so the verdict is memoized per skill — a 100-match
-    grep must not become 100 config reads.
-    """
+    """过滤递归工具结果；公共目录每批解析一次，私有判断沿用按名称缓存。"""
     skills_prefix = _get_skills_container_path()
+    public_prefix = skills_prefix.rstrip("/") + "/public/"
+    public_roots = None
     verdicts: dict[tuple[str, str], bool] = {}
     kept: list[str] = []
     for path in paths:
+        if path.startswith(public_prefix):
+            if public_roots is None:
+                try:
+                    public_roots = _enabled_public_skill_roots()
+                except (OSError, ValueError, KeyError):
+                    logger.warning("公共技能预设读取失败，隐藏公共技能路径", exc_info=True)
+                    public_roots = ()
+            if _public_path_is_enabled(path, public_roots):
+                kept.append(path)
+            continue
         skill_name = _extract_skill_name_from_skills_path(path)
         if skill_name is None:
             kept.append(path)

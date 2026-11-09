@@ -41,7 +41,7 @@ _ENABLED_SKILLS_BY_CONFIG_CACHE_MAXSIZE = 256
 _ENABLED_SKILLS_REFRESH_WAIT_TIMEOUT_SECONDS = 5.0
 _enabled_skills_lock = threading.Lock()
 _enabled_skills_cache: list[Skill] | None = None
-_enabled_skills_by_config_cache: "OrderedDict[tuple[int, str], tuple[object, list[Skill]]]" = OrderedDict()  # noqa: UP037
+_enabled_skills_by_config_cache: "OrderedDict[tuple[int, str, str], tuple[object, list[Skill]]]" = OrderedDict()  # noqa: UP037
 _enabled_skills_refresh_active = False
 _enabled_skills_refresh_version = 0
 _enabled_skills_refresh_event = threading.Event()
@@ -268,11 +268,18 @@ def get_enabled_skills_for_config(app_config: AppConfig | None = None, user_id: 
     加载公共技能和用户级自定义技能；否则回退到全局存储
     （公共技能及全局自定义技能回退）。
     """
+    from deerflow.skills.presets import current_public_skill_preset, public_skill_preset_scope, resolve_public_skill_preset
+
     if app_config is None:
-        return _get_enabled_skills()
+        if current_public_skill_preset() is None:
+            return _get_enabled_skills()
+        from deerflow.config import get_app_config
+
+        app_config = get_app_config()
 
     _check_shared_skills_cache_reset()
-    cache_key = (id(app_config), user_id or "default")
+    preset = resolve_public_skill_preset(app_config=app_config)
+    cache_key = (id(app_config), user_id or "default", preset.signature)
     with _enabled_skills_lock:
         cached = _enabled_skills_by_config_cache.get(cache_key)
         if cached is not None:
@@ -283,10 +290,11 @@ def get_enabled_skills_for_config(app_config: AppConfig | None = None, user_id: 
                 return list(cached_skills)
         load_version = _enabled_skills_refresh_version
 
-    if user_id:
-        skills = list(get_or_new_user_skill_storage(user_id, app_config=app_config).load_skills(enabled_only=True))
-    else:
-        skills = list(get_or_new_skill_storage(app_config=app_config).load_skills(enabled_only=True))
+    with public_skill_preset_scope(preset):
+        if user_id:
+            skills = list(get_or_new_user_skill_storage(user_id, app_config=app_config).load_skills(enabled_only=True))
+        else:
+            skills = list(get_or_new_skill_storage(app_config=app_config).load_skills(enabled_only=True))
     with _enabled_skills_lock:
         if _enabled_skills_refresh_version == load_version:
             _enabled_skills_by_config_cache[cache_key] = (app_config, skills)

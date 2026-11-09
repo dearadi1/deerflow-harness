@@ -12,6 +12,7 @@ def stream(
     thread_id: str | None = None,
     replay_last_turn: bool = False,
     disabled_tools: list[str] | None = None,
+    skill_preset: str | None = None,
     **kwargs,
 ) -> Generator[ClientStreamEvent, None, None]:
     ...
@@ -61,6 +62,12 @@ for event in client.stream(
 该参数只影响本次调用构建的主智能体工具集合，不修改全局配置、工具单例或调用方列表。名单变化会触发 Agent 重建；下一轮不传或传空列表恢复正常工具集合，仍受原有配置和授权约束。独立构建的子智能体工具集合不受此参数控制；如需禁止委派可同时加入 `task` 和 `batch_task`。
 
 `client.chat(..., disabled_tools=[...])`、客户端池的 session 代理和 TUI 的 `stream_actions(..., disabled_tools=[...])` 均透传同一参数。重生成时通过本次 `stream(..., replay_last_turn=True, disabled_tools=[...])` 指定，历史名单不会自动沿用。
+
+### 2.2 按轮选择公共技能预设
+
+`stream(..., skill_preset="preset_1")` 显式选择公共技能预设；不传或传 `None` 时使用独立 `skill_presets.json` 中的当前默认预设。每轮重新选择，不继承上一轮显式值，也不修改默认值。未知预设在迭代准备时抛出 `ValueError`。
+
+本轮公共开关固定为快照，普通子 agent 继承；下一轮自动按内容签名更新缓存。私有技能开关、Agent 白名单和授权规则保持原有约束。`chat()`、session 和 `pool.start_stream()` 支持同名参数。文件格式与管理接口见 [SKILL_AGENTS.md](SKILL_AGENTS.md#公共技能预设)，沙箱隔离要求见 [AGENT_AGENTS.md](AGENT_AGENTS.md#每轮选择公共技能预设)。
 
 ## 3. kwargs 中实际读取的参数
 

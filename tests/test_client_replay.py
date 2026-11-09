@@ -23,6 +23,7 @@ from deerflow.agents.middlewares.message_utils import is_genuine_user_message
 from deerflow.agents.middlewares.dynamic_context_middleware import DynamicContextMiddleware
 from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
 from deerflow.client import DeerFlowClient
+from deerflow.skills.presets import PublicSkillPreset
 from deerflow.runtime.checkpoint_state import CheckpointStateAccessor
 from deerflow.runtime.checkpoint_mode import CheckpointModeMismatchError
 from deerflow.runtime.client_replay import ClientTurnReplay, ReplayConflictError, ReplayUnavailableError
@@ -102,6 +103,7 @@ class ReplayGraph:
 
     def client(self, *, agent_name=None):
         client = object.__new__(DeerFlowClient)
+        client._app_config = SimpleNamespace()
         client._model_name = None
         client._thinking_enabled = False
         client._plan_mode = False
@@ -121,6 +123,9 @@ class ReplayGraph:
 
 class ClientReplayTests(unittest.TestCase):
     def setUp(self):
+        # 本组只验证流协议，独立隔离新增的预设文件边界。
+        preset = PublicSkillPreset("default", "默认预设", frozenset(), "stream_fixture")
+        self.enterContext(patch("deerflow.client.preset_store_for_config", return_value=SimpleNamespace(resolve=lambda _: preset)))
         self.stack = self.enterContext(ExitStack())
         self.directory = self.enterContext(tempfile.TemporaryDirectory())
         self.sqlite_count = 0

@@ -73,6 +73,7 @@ from deerflow.runtime.client_replay import ClientTurnReplay, stream_client_turn
 from deerflow.runtime.goal import DEFAULT_MAX_GOAL_CONTINUATIONS, build_goal_state, goal_thread_lock, read_thread_goal, write_thread_goal
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.describe import build_skill_search_setup
+from deerflow.skills.presets import preset_store_for_config, public_skill_preset_scope, resolve_public_skill_preset
 from deerflow.skills.storage import get_or_new_user_skill_storage
 from deerflow.subagents.capacity import configure_subagent_execution_capacity
 from deerflow.tools.builtins.tool_search import assemble_deferred_tools, build_mcp_routing_middleware, get_mcp_routing_hints_prompt_section
@@ -272,6 +273,7 @@ class DeerFlowClient:
         if config_path is not None:
             reload_app_config(config_path)
         self._app_config = get_app_config()
+        preset_store_for_config(self._app_config).read()
         runtime_config = getattr(self._app_config, "subagent_runtime", None)
         if not isinstance(runtime_config, SubagentRuntimeConfig):
             # Preserve compatibility with lightweight embedded/test configs
@@ -384,6 +386,8 @@ class DeerFlowClient:
         mcp_plugins = getattr(agent_config, "mcp_plugins", None)
         # Delegation reads this run's metadata, including when the graph is cached.
         config.setdefault("metadata", {})["mcp_plugins"] = mcp_plugins
+        preset = resolve_public_skill_preset(app_config=self._app_config)
+        config["metadata"].update(skill_preset=preset.preset_id, skill_preset_signature=preset.signature)
 
         authorization_identity = None
         if self._app_config.authorization.enabled:
@@ -416,6 +420,7 @@ class DeerFlowClient:
             self._checkpoint_snapshot_frequency,
             effective_user_id,
             authorization_identity,
+            preset.signature,
         )
 
         if self._agent is not None and self._agent_config_key == key:
@@ -866,6 +871,7 @@ class DeerFlowClient:
         thread_id: str | None = None,
         replay_last_turn: bool = False,
         disabled_tools: list[str] | None = None,
+        skill_preset: str | None = None,
         **kwargs,
     ) -> Generator[ClientStreamEvent, None, None]:
         """Stream a conversation turn with a DeerFlow request trace context.
@@ -881,6 +887,8 @@ class DeerFlowClient:
         传新问题即修改生成。仅恢复线程状态，不撤销长期记忆、文件或外部工具副作用。
         disabled_tools 按工具实际名称精确匹配，仅禁用本轮主智能体的工具。
         None 或空列表不额外禁用工具；不修改全局工具配置。
+        skill_preset 选择本轮公共技能预设；None 使用文件中的当前默认值。
+        本轮固定公共开关快照并由普通子智能体继承，私有状态保持原有规则。
         非空的 DEER_FLOW_RECURSION_LIMIT 环境变量优先于 kwargs.recursion_limit，
         两者均未设置时使用 100；环境变量必须是正整数。
         推荐追问统一由应用配置 suggestions.enabled 控制，默认生成 3 个。
@@ -901,6 +909,7 @@ class DeerFlowClient:
         # records inside the binding while returning control to the caller
         # with the ContextVar restored.
         disabled_tools = self._validate_disabled_tools(disabled_tools)
+        preset = preset_store_for_config(self._app_config).resolve(skill_preset)
         inner = stream_client_turn(self, message, thread_id=thread_id, replay_last_turn=replay_last_turn, disabled_tools=disabled_tools, **kwargs)
         _EXHAUSTED = object()
         try:
@@ -908,7 +917,8 @@ class DeerFlowClient:
                 token = bind_trace_id(trace_id)
                 try:
                     try:
-                        event = next(inner)
+                        with public_skill_preset_scope(preset):
+                            event = next(inner)
                     except StopIteration:
                         event = _EXHAUSTED
                 finally:
@@ -925,7 +935,8 @@ class DeerFlowClient:
             # when GC closes the generator from another Context.
             token = bind_trace_id(trace_id)
             try:
-                inner.close()
+                with public_skill_preset_scope(preset):
+                    inner.close()
             finally:
                 reset_trace_id(token)
 
@@ -1033,6 +1044,8 @@ class DeerFlowClient:
         # survives worker/isolated-loop boundaries and matches the identity
         # used by prompt assembly and the agent cache.
         context["user_id"] = effective_user_id
+        preset = resolve_public_skill_preset(app_config=self._app_config)
+        context["skill_preset"] = preset.preset_id
         self._ensure_agent(config, context=context)
         configurable = config.get("configurable") or {}
         effective_model_name = getattr(self, "_effective_model_name", None)
@@ -1326,23 +1339,11 @@ class DeerFlowClient:
         if skill is None:
             raise ValueError(f"Skill '{name}' not found")
 
-        # PUBLIC skills → global extensions_config.json (shared state).
-        # CUSTOM / LEGACY skills → per-user _skill_states.json (isolated state).
+        # 公共状态只能通过预设修改，避免旧名称开关再次影响私有同名技能。
         from deerflow.skills.types import SkillCategory
 
         if skill.category == SkillCategory.PUBLIC:
-            config_path = ExtensionsConfig.resolve_config_path()
-            if config_path is None:
-                raise FileNotFoundError("Cannot locate extensions_config.json. Set DEER_FLOW_EXTENSIONS_CONFIG_PATH or ensure it exists in the project root.")
-
-            from deerflow.skills.projection import skill_projection_mutation
-
-            removal_names = (name,) if not enabled else ()
-            with skill_projection_mutation(storage, "public", remove_names=removal_names):
-                with extensions_config_write_lock, extensions_config_file_lock(config_path):
-                    # The projection lock is cross-process, but the singleton
-                    # cache is not. Reload raw from disk under the config lock.
-                    self._write_skill_enabled_state(config_path, name, enabled)
+            raise ValueError("公共技能开关已迁移至预设，请使用 DeerFlowSkillClient.public.update_preset")
         else:
             # CUSTOM / LEGACY: write per-user state
             from deerflow.skills.storage.user_scoped_skill_storage import UserScopedSkillStorage

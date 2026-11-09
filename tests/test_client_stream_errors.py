@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.errors import GraphInterrupt, GraphRecursionError
 
 from deerflow.client import DeerFlowClient, _close_stream_iterator
+from deerflow.skills.presets import PublicSkillPreset
 from deerflow.client_stream import ClientStreamParser
 from deerflow.protocol import ErrorData, ErrorEvent, parse_stream_event
 from deerflow.runtime.client_replay import ReplayConflictError, ReplayUnavailableError
@@ -29,7 +30,11 @@ def end():
 
 class ClientStreamErrorTests(unittest.TestCase):
     def setUp(self):
+        # 本组只验证流协议，独立隔离新增的预设文件边界。
+        preset = PublicSkillPreset("default", "默认预设", frozenset(), "stream_fixture")
+        self.enterContext(patch("deerflow.client.preset_store_for_config", return_value=SimpleNamespace(resolve=lambda _: preset)))
         self.client = object.__new__(DeerFlowClient)
+        self.client._app_config = SimpleNamespace()
 
     def collect(self, implementation, **kwargs):
         with patch.object(self.client, "_stream_turn", side_effect=implementation):

@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deerflow.skills.parser import parse_skill_file
-from deerflow.skills.types import SKILL_MD_FILE, Skill, SkillCategory
+from deerflow.skills.presets import SkillPresetStore, current_public_skill_preset, load_public_skill_catalog, resolve_public_skill_preset
+from deerflow.skills.types import Skill, SkillCategory
 from deerflow.utils.file_lock import retry_until_locked
 
 if TYPE_CHECKING:
@@ -348,7 +348,8 @@ def _source_signature(storage: SkillStorage, scope: str) -> str:
     host_root = storage.get_skills_root_path()
     if scope == "public":
         _update_tree_digest(digest, host_root / SkillCategory.PUBLIC.value, "public")
-        state = {"extensions": _extensions_state()}
+        # 共享视图只跟随默认预设，不能被并发会话的显式选择改写。
+        state = {"preset": SkillPresetStore(host_root).resolve().signature}
     elif scope == "user":
         user_custom_root = storage.get_user_custom_root()
         integration_root = storage.get_user_integrations_root()
@@ -432,8 +433,9 @@ def _thread_source_signature(
     """Sign every input that changes a thread's effective skill view."""
     digest = hashlib.sha256()
     digest.update(f"policy-version:{_THREAD_PROJECTION_POLICY_VERSION}\0".encode())
-    digest.update(f"public:{_source_signature(storage, 'public')}\0".encode())
+    _update_tree_digest(digest, storage.get_skills_root_path() / SkillCategory.PUBLIC.value, "public")
     digest.update(f"user:{_source_signature(storage, 'user')}\0".encode())
+    digest.update(resolve_public_skill_preset(skills_root=storage.get_skills_root_path()).signature.encode())
     policy = None if allowed_skills is None else sorted(allowed_skills)
     digest.update(json.dumps(policy, separators=(",", ":"), ensure_ascii=True).encode())
     return digest.hexdigest()
@@ -457,32 +459,9 @@ def _thread_projection_is_fresh(
 
 
 def _load_public_skills(storage: SkillStorage, *, enabled_only: bool) -> list[Skill]:
-    from deerflow.config.extensions_config import ExtensionsConfig
-
-    public_root = storage.get_skills_root_path() / SkillCategory.PUBLIC.value
-    if not public_root.is_dir():
-        return []
-    extensions = ExtensionsConfig.from_file()
-    skills: list[Skill] = []
-    for current_root, dir_names, file_names in os.walk(public_root, followlinks=True):
-        dir_names[:] = sorted(name for name in dir_names if not name.startswith("."))
-        if SKILL_MD_FILE not in file_names:
-            continue
-        # Match the runtime loader: nested SKILL.md files inside a package are
-        # support data, not independently configurable skills.
-        dir_names.clear()
-        skill_file = Path(current_root) / SKILL_MD_FILE
-        skill = parse_skill_file(
-            skill_file,
-            category=SkillCategory.PUBLIC,
-            relative_path=skill_file.parent.relative_to(public_root),
-        )
-        if skill is None:
-            continue
-        enabled = extensions.is_skill_enabled(skill.name, SkillCategory.PUBLIC.value)
-        if not enabled_only or enabled:
-            skills.append(skill)
-    return skills
+    root = storage.get_skills_root_path()
+    preset = SkillPresetStore(root).resolve()
+    return [skill for skill in load_public_skill_catalog(root) if not enabled_only or preset.is_enabled(skill.name)]
 
 
 def _by_relative_path(skills: list[Skill], category: SkillCategory) -> dict[Path, Skill]:
@@ -624,7 +603,7 @@ def ensure_thread_skill_projection(
     """
     paths = get_thread_skill_projection_paths(storage, thread_id)
     scope_root = paths.public.parent
-    if allowed_skills is None and not scope_root.exists():
+    if allowed_skills is None and current_public_skill_preset() is None and not scope_root.exists():
         return None
 
     try:

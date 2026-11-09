@@ -21,6 +21,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from deerflow.agents.middlewares.skill_usage import SKILL_USAGE_KEY, SKILL_USAGES_KEY, build_skill_usage, record_skill_usage
 from deerflow.authz.activation_decisions import ActivationDecisions
+from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH
 from deerflow.runtime.events.catalog import (
     MIDDLEWARE_SKILL_ACTIVATION_TAG,
     MIDDLEWARE_SKILL_SECRETS_TAG,
@@ -33,6 +34,7 @@ from deerflow.runtime.secret_context import (
     read_slash_skill_source_paths,
     write_slash_skill_source_paths,
 )
+from deerflow.skills.presets import current_public_skill_preset
 from deerflow.skills.slash import parse_slash_skill_reference, resolve_slash_skill
 from deerflow.skills.storage import get_or_new_skill_storage, get_or_new_user_skill_storage
 from deerflow.skills.storage.skill_storage import SkillStorage
@@ -914,7 +916,7 @@ Follow this skill before choosing a general workflow. Load supporting resources 
         # plus the synchronous authorize() decisions and publish the path-keyed
         # map for the durable renderer. Passive steps (no entries) publish
         # nothing and pay no I/O, mirroring the async empty-paths guard.
-        if self._skill_authorization is not None:
+        if self._skill_authorization is not None or current_public_skill_preset() is not None:
             _, entry_paths = self._candidate_activation_targets(request)
             if entry_paths:
                 names, registry = self._canonical_names_for_paths(entry_paths)
@@ -948,10 +950,18 @@ Follow this skill before choosing a general workflow. Load supporting resources 
         decisions: dict[str, bool] = {}
         registry = entry_registry if isinstance(entry_registry, dict) else {}
         collected = activation_decisions.get_or_none if activation_decisions is not None else (lambda _name: None)
+        preset = current_public_skill_preset()
+        skills_config = getattr(self._app_config, "skills", None)
+        public_root = getattr(skills_config, "container_path", DEFAULT_SKILLS_CONTAINER_PATH).rstrip("/") + "/public/"
         for path in entry_paths:
             normalized = posixpath.normpath(path)
             skill = registry.get(normalized)
             decision = collected(skill.name) if skill is not None else None
+            if self._skill_authorization is None:
+                decision = True
+            # 切换预设后隐藏旧轮次公共技能提醒，私有技能的展示规则保持原样。
+            if preset is not None and normalized.startswith(public_root):
+                decision = bool(decision) and skill is not None and skill.enabled
             decisions[normalized] = bool(decision) if decision is not None else False
         write_skill_entry_decisions(run_context, decisions, owner_token=self._slash_source_owner_token)
 
@@ -985,7 +995,7 @@ Follow this skill before choosing a general workflow. Load supporting resources 
         # miss is impossible by construction (and a failed load means entries
         # bind nothing — no silent fresh-load recovery).
         entry_registry: dict[str, Skill] | object | None = None
-        if self._skill_authorization is not None:
+        if self._skill_authorization is not None or current_public_skill_preset() is not None:
             slash_names, entry_paths = self._candidate_activation_targets(request)
             canonical_names, entry_registry = await asyncio.to_thread(self._canonical_names_for_paths, entry_paths)
             activation_decisions = await self._collect_activation_decisions([*slash_names, *canonical_names])

@@ -63,6 +63,14 @@ drift.
 
 ### Embedded Client (`packages/harness/deerflow/client.py`)
 
+公共技能改用独立预设文件；`DeerFlowSkillClient.public` 提供预设管理，旧公共全局
+开关入口移除，私有启用规则保留，私有详情增加最终 `enabled`。公共列表只返回元数据，
+预设创建只接收名称并返回随机 ID，技能开关通过更新预设设置。`stream` / `start_stream` 显式接收 `skill_preset`，
+省略时每轮读取当前默认值。公共快照在同步流每次推进时绑定，托管流及普通子代理
+继承本轮快照，Agent 缓存按内容签名更新。详见 [SKILL_AGENTS.md](SKILL_AGENTS.md)
+与 [AGENT_AGENTS.md](AGENT_AGENTS.md)；验证包含 `test_skill_presets.py`、
+`test_client_skill_presets.py` 和现有管理、托管流回归。
+
 `DeerFlowClient` embeds the harness without HTTP/FastAPI, sharing Gateway modules, config, data directories, and response schemas.
 
 **Agent Conversation**:

@@ -41,8 +41,9 @@ class ToolDescriptionTests(unittest.TestCase):
                 self.assertNotIn("runtime", schema["properties"])
                 self.assertEqual(schema["properties"]["description"]["default"], "")
                 hint = schema["properties"]["description"]["description"]
-                self.assertIn("This is optional", hint)
-                self.assertIn("first tool argument", hint)
+                # 保留模型提示中的可选性与顺序要求，允许不改变含义的文案调整。
+                self.assertRegex(hint, r"(?i)\boptional\b")
+                self.assertRegex(hint, r"(?i)\bfirst\s+(?:tool\s+)?argument\b")
 
     def test_omission_is_valid_without_relaxing_required_arguments(self):
         for tool, required in TOOL_CASES:
