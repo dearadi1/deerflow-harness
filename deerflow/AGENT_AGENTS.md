@@ -179,6 +179,8 @@ with pool.start_stream(
 
 预设文件默认位于 `.deer-flow/skill_presets.json`；设置 `DEER_FLOW_HOME` 时位于该数据目录。可通过 `DEER_FLOW_SKILL_PRESETS_PATH` 显式指定其他路径。
 
+初始化时会校验预设文件；格式错误时先在同目录保存 `skill_presets.json.invalid-<随机值>.bak`，再恢复为空 `default` 预设，所有公共 Skill 关闭，私有状态保持不变。备份或替换失败会阻止初始化，原文件保留；运行中的格式错误仍会报错。
+
 ## 事件与异常
 
 两种流式入口均产出 `ClientStreamEvent` 事件模型，可以读取 `event.type`、`event.thread_id`、`event.data`，或用 `event.model_dump(mode="json")` 转为字典。池不直接返回 SSE 文本。完整事件格式见 [CLIENT_AGENTS.md](CLIENT_AGENTS.md) 和 [protocol/models.py](protocol/models.py)。
@@ -207,7 +209,7 @@ pool.close(wait=True, timeout=30)
 
 `stats` 返回 `size`、`available`、`borrowed`、`waiting`、`closed`、`failed`。`size` 是池容量，不代表模型请求、工具或子代理的并发上限。
 
-`invalidate_agents()` 使缓存于下一次客户端调用前刷新，正在运行的流不被强制重建。通过 session 调用会修改配置或记忆的管理方法时，池会自动失效相关 Agent 缓存；从池外修改且需要重建 Agent 的配置时，调用此方法。
+`invalidate_agents()` 使缓存于下一次客户端调用前刷新，正在运行的流不被强制重建。公共预设、私有开关及 Skill 管理器成功发布的技能变更在下一轮自动生效，覆盖同步和托管入口、顺序复用及多个池槽位，无需调用此方法。通过 session 调用会修改配置或记忆的管理方法时，池也会自动失效相关 Agent 缓存；其他从池外进行且需要重建 Agent 的修改仍需调用此方法。
 
 `close(wait=True, timeout=None)` 拒绝新借用，唤醒等待者，并等待已借出的实例归还。`wait=False` 只停止接收新调用，不等待，也不会强行取消正在运行的对话。要主动停止对话，应先关闭对应的 `ManagedAgentStream`。
 

@@ -21,6 +21,7 @@ import copy
 import logging
 import mimetypes
 import os
+import sys
 import tempfile
 import uuid
 from collections.abc import Generator, Iterator, Mapping, Sequence
@@ -96,6 +97,31 @@ from deerflow.uploads.manager import (
 from deerflow.utils.thread_id import resolve_thread_id, validate_thread_id
 
 logger = logging.getLogger(__name__)
+
+
+def _skill_configuration_signature(user_id: str | None) -> tuple:
+    """每轮检测池外状态写入，避免依赖提示词缓存的轮询间隔。"""
+    from deerflow.config.file_signature import get_config_signature
+    from deerflow.config.shared_reset_marker import SharedResetMarker, resolve_shared_config_path
+
+    paths = []
+    if user_id is not None:
+        paths.append(get_paths().user_skills_dir(user_id) / "_skill_states.json")
+    extensions_path = resolve_shared_config_path()
+    if extensions_path is not None:
+        paths.extend((extensions_path, SharedResetMarker("skills-cache-reset").path_for(extensions_path)))
+    return tuple((str(path), get_config_signature(path)) for path in paths)
+
+
+def _refresh_skill_prompt_caches(user_id: str | None) -> None:
+    """重建图前同步刷新已加载的两套提示词，避免新图仍引用旧技能目录。"""
+    for name in ("deerflow.agents.lead_agent.prompt", "deerflow.agents.lead_agent.prompt_zh"):
+        module = sys.modules.get(name)
+        if module is not None:
+            if user_id is None:
+                module.clear_skills_system_prompt_cache()
+            else:
+                module.invalidate_user_skill_cache(user_id)
 
 
 @dataclass
@@ -273,7 +299,7 @@ class DeerFlowClient:
         if config_path is not None:
             reload_app_config(config_path)
         self._app_config = get_app_config()
-        preset_store_for_config(self._app_config).read()
+        preset_store_for_config(self._app_config).initialize()
         runtime_config = getattr(self._app_config, "subagent_runtime", None)
         if not isinstance(runtime_config, SubagentRuntimeConfig):
             # Preserve compatibility with lightweight embedded/test configs
@@ -421,11 +447,13 @@ class DeerFlowClient:
             effective_user_id,
             authorization_identity,
             preset.signature,
+            _skill_configuration_signature(effective_user_id),
         )
 
         if self._agent is not None and self._agent_config_key == key:
             return
 
+        _refresh_skill_prompt_caches(effective_user_id)
         thinking_enabled = cfg.get("thinking_enabled", True)
         model_name = cfg.get("model_name")
         # Phase 3: enforce model:use authorization on the embedded/library path

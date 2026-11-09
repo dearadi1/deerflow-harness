@@ -214,17 +214,29 @@ class SkillPresetStoreTests(PresetFixture):
         with self.assertRaises(ValueError):
             SkillPresetStore(self.skills, path=self.root / "config.yaml")
 
-    def test_client_initialization_rejects_invalid_preset_file(self):
+    def test_client_initialization_recovers_invalid_preset_file(self):
+        from deerflow import DeerFlowSkillClient
+        from deerflow.agent_client import DeerFlowClientPool
         from deerflow.client import DeerFlowClient
         from deerflow.client_config import load_client_config
 
-        self.file.write_text("{")
+        config_path = self.root / "app.yaml"
+        config_path.write_text(json.dumps({"sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"}, "skills": {"path": str(self.skills)}}))
+        constructors = [
+            lambda: DeerFlowClient(),
+            lambda: load_client_config(str(config_path)),
+            lambda: DeerFlowSkillClient(config_path=str(config_path)),
+            lambda: DeerFlowClientPool(config_path=str(config_path), size=2),
+        ]
         with patch("deerflow.client.get_app_config", return_value=self.config):
-            with self.assertRaisesRegex(ValueError, "预设文件无效"):
-                DeerFlowClient()
-        with patch("deerflow.client_config.reload_app_config", return_value=self.config):
-            with self.assertRaisesRegex(ValueError, "预设文件无效"):
-                load_client_config(str(self.root / "app.yaml"))
+            for index, constructor in enumerate(constructors, start=1):
+                self.file.write_bytes(b"{")
+                with self.subTest(constructor=constructor), self.assertLogs("deerflow.skills.presets", level="WARNING"):
+                    instance = constructor()
+                if isinstance(instance, DeerFlowClientPool):
+                    instance.close()
+                self.assertEqual(self.store.resolve().enabled_skills, frozenset())
+                self.assertEqual(len(list(self.root.glob("skill_presets.json.invalid-*.bak"))), index)
 
     def test_default_file_path_uses_framework_data_directory(self):
         with patch.dict(os.environ):
@@ -238,6 +250,101 @@ class SkillPresetStoreTests(PresetFixture):
                 self.assertEqual(SkillPresetStore(self.skills, path=self.file).path, self.file)
         with patch.dict(os.environ, {"DEER_FLOW_SKILL_PRESETS_PATH": ""}):
             self.assertEqual(SkillPresetStore(self.skills).path, self.paths.base_dir / "skill_presets.json")
+
+
+class SkillPresetStartupTests(PresetFixture):
+    def backups(self):
+        return list(self.file.parent.glob(f"{self.file.name}.invalid-*.bak"))
+
+    def assert_empty_default(self, document):
+        self.assertEqual(document, {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": {}}}})
+        self.assertEqual(self.store.resolve().enabled_skills, frozenset())
+
+    def test_invalid_formats_keep_exact_bytes_and_recover_without_private_changes(self):
+        self.create_choices()
+        valid = self.store.read()
+        invalid_documents = [
+            b"", b"{", b"[]", b"\xff\xfe\x00", b'{"version":1,"version":1}', b"[" * 2000 + b"]" * 2000,
+            json.dumps(valid | {"version": True}).encode(),
+            json.dumps(valid | {"presets": {}}).encode(),
+            json.dumps(valid | {"default_preset": "missing"}).encode(),
+            json.dumps(valid | {"unexpected": True}).encode(),
+            json.dumps(valid | {"presets": {"default": {"name": "默认", "skills": {"alpha": "true"}}}, "default_preset": "default"}).encode(),
+        ]
+        write_skill(self.paths.user_custom_skills_dir("alice"), "alpha")
+        write_skill(self.paths.user_custom_skills_dir("alice"), "personal")
+        self.user.set_skill_enabled_state("personal", False)
+        private_before = self.user._skill_states_file.read_bytes()
+        extensions_before = self.extension_file.read_bytes()
+        for content in invalid_documents:
+            previous = set(self.backups())
+            self.file.write_bytes(content)
+            with self.subTest(content=content), self.assertLogs("deerflow.skills.presets", level="WARNING"):
+                self.assert_empty_default(self.store.initialize())
+            created = set(self.backups()) - previous
+            self.assertEqual(len(created), 1)
+            self.assertEqual(created.pop().read_bytes(), content)
+            self.assertEqual({skill.name for skill in self.user.load_skills(enabled_only=True)}, {"alpha"})
+            self.assertEqual(self.user._skill_states_file.read_bytes(), private_before)
+            self.assertEqual(self.extension_file.read_bytes(), extensions_before)
+            self.assert_empty_default(self.store.initialize())
+            self.assertEqual(len(self.backups()), len(previous) + 1)
+
+    def test_valid_manual_file_is_not_rewritten_or_backed_up(self):
+        self.create_choices()
+        document = self.store.read()
+        self.file.write_bytes(b"\xef\xbb\xbf" + json.dumps(document, ensure_ascii=False).encode())
+        original = self.file.read_bytes()
+        self.assertEqual(self.store.initialize(), document)
+        self.assertEqual(self.file.read_bytes(), original)
+        self.assertEqual(self.backups(), [])
+
+    def test_missing_file_still_migrates_existing_public_states(self):
+        self.extension_file.write_text('{"skills":{"alpha":{"enabled":false}}}')
+        self.store.initialize()
+        self.assertEqual(self.store.resolve().enabled_skills, {"beta"})
+        self.assertEqual(self.backups(), [])
+
+    def test_backup_failure_never_overwrites_original(self):
+        self.file.write_bytes(b"invalid\xff")
+        for target in ("tempfile.mkstemp", "os.fsync"):
+            with self.subTest(target=target), patch(f"deerflow.skills.presets.{target}", side_effect=OSError("备份失败")):
+                with self.assertRaises(OSError):
+                    self.store.initialize()
+            self.assertEqual(self.file.read_bytes(), b"invalid\xff")
+            self.assertEqual(self.backups(), [])
+
+    def test_replacement_failure_preserves_both_original_and_backup(self):
+        self.file.write_bytes(b"{")
+        with patch("deerflow.skills.presets.os.replace", side_effect=OSError("替换失败")):
+            with self.assertRaises(OSError):
+                self.store.initialize()
+        self.assertEqual(self.file.read_bytes(), b"{")
+        self.assertEqual([backup.read_bytes() for backup in self.backups()], [b"{"])
+        self.assertEqual(list(self.root.glob(".skill_presets.json.*.tmp")), [])
+
+    def test_read_errors_are_not_treated_as_format_errors(self):
+        self.file.mkdir()
+        with self.assertRaises(IsADirectoryError):
+            self.store.initialize()
+        self.assertTrue(self.file.is_dir())
+        self.assertEqual(self.backups(), [])
+
+    def test_concurrent_initializers_recover_once_per_corrupt_file(self):
+        self.file.write_bytes(b"{")
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            documents = list(executor.map(lambda _: self.store.initialize(), range(12)))
+        for document in documents:
+            self.assert_empty_default(document)
+        self.assertEqual(len(self.backups()), 1)
+        self.file.write_bytes(b"\xff")
+        program = "from pathlib import Path; from deerflow.skills.presets import SkillPresetStore; import sys; SkillPresetStore(Path(sys.argv[1])).initialize()"
+        processes = [subprocess.Popen([sys.executable, "-c", program, str(self.skills)], stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(4)]
+        for process in processes:
+            output, error = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 0, (output, error))
+        self.assertEqual(sorted(backup.read_bytes() for backup in self.backups()), [b"{", b"\xff"])
+        self.assert_empty_default(self.store.read())
 
 
 class SkillPresetRuntimeTests(PresetFixture):

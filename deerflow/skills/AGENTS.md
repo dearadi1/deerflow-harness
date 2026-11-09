@@ -4,7 +4,7 @@
 
 - **公共预设**：`presets.py` 管理独立的 `skill_presets.json`，路径由 `DEER_FLOW_SKILL_PRESETS_PATH` 或数据目录确定，禁止使用 `config.yaml`。客户端/池初始化时加载并校验；仅文件缺失时把已有公共开关迁入 `default`。公共运行只读取预设，私有及其他非公共类别保留旧全局状态与用户状态的交集；不得删除仍可能影响同名私有技能的旧扩展条目。新增公共技能在未配置的预设中默认关闭。
 - **预设运行快照**：`stream` / `start_stream` 的 `skill_preset` 每轮解析一次，不传则使用文件中的当前默认值。`ContextVar` 保存不可变公共开关快照，同步流逐次推进及关闭时绑定，禁止跨 `yield` 泄漏；托管流及普通子 agent 的复制上下文继承快照。两套提示词缓存与 Agent 缓存包含预设内容签名；管理接口和新轮次重读文件，不依赖 extensions 重置标记。持久技能提醒使用激活中间件发布的路径决策隐藏本轮关闭的公共项，私有展示规则不变。
-- **预设文件与视图**：读改写用进程锁和跨进程侧车文件锁，保存采用 fsync 后原子替换，不支持退化的单文件挂载覆盖写；格式错误明确失败。共享公共视图只跟随默认预设；已绑定预设的运行使用线程级视图，其签名包含本轮预设，不能让并发会话重建共享公共目录来切换预设。已有 Agent 白名单与授权仍可收窄可用技能。测试：`test_skill_presets.py`、`test_client_skill_presets.py`、`test_skill_client_public.py`。
+- **预设文件与视图**：读改写用进程锁和跨进程侧车文件锁，保存采用 fsync 后原子替换，不支持退化的单文件挂载覆盖写。初始化调用 `initialize()`：格式错误时锁内将校验的原始字节完整写入同目录唯一的 `.invalid-*.bak`，再恢复空 `default`，不能重新迁移旧公共开关；备份或替换失败保留原文件。普通 `read()` / 修改接口仍对损坏文件报错，不隐式重置。共享公共视图只跟随默认预设；已绑定预设的运行使用线程级视图，其签名包含本轮预设，不能让并发会话重建共享公共目录来切换预设。已有 Agent 白名单与授权仍可收窄可用技能。测试：`test_skill_presets.py`、`test_client_skill_presets.py`、`test_skill_client_public.py`。
 
 - **Frontmatter boundaries**: `frontmatter.py` owns standalone `---` delimiter lines for runtime parsing, installation validation, and review. Accept trailing spaces/tabs, LF/CRLF, a leading UTF-8 BOM, and a closing delimiter at EOF. Preserve body whitespace; prefix-only lines such as `---suffix` cannot close frontmatter. Regression coverage lives in `tests/test_skill_frontmatter_boundaries.py`.
 

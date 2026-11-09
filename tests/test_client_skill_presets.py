@@ -1,6 +1,9 @@
 """通过同步池入口和真实 LangGraph 托管执行验证预设生命周期。"""
 
 import asyncio
+import os
+import subprocess
+import sys
 import threading
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -61,6 +64,25 @@ class ClientSkillPresetTests(PresetFixture):
         pool = DeerFlowClientPool(size=size, client_factory=lambda: self.client(synchronous=synchronous))
         self.addCleanup(pool.close)
         return pool
+
+    def test_recovered_empty_default_supports_repeated_and_concurrent_streams(self):
+        write_skill(self.paths.user_custom_skills_dir("alice"), "personal")
+        self.file.write_bytes(b"{")
+        synchronous = self.pool(synchronous=True)
+        with synchronous.session(user_id="alice") as client:
+            for _ in range(2):
+                list(client.stream("默认空预设", thread_id="recovered_sync"))
+        managed = self.pool()
+        with managed.start_stream("甲", user_id="alice", thread_id="recovered_a") as first:
+            with managed.start_stream("乙", user_id="bob", thread_id="recovered_b") as second:
+                list(first)
+                list(second)
+        self.assertEqual(self.observations[:2], [("alice", "default", {"personal"})] * 2)
+        self.assertCountEqual(self.observations[2:], [("alice", "default", {"personal"}), ("bob", "default", set())])
+        for pool in (synchronous, managed):
+            self.assertEqual(pool.stats["borrowed"], 0)
+            self.assertEqual(pool.stats["available"], 2)
+        self.assertEqual(len(list(self.root.glob("skill_presets.json.invalid-*.bak"))), 1)
 
     def test_session_stream_selects_preset_and_omission_uses_current_default(self):
         pool = self.pool(synchronous=True, size=1)
@@ -209,3 +231,75 @@ class ClientSkillPresetTests(PresetFixture):
             content = command.update["messages"][0].content
             self.assertIn(f"## Skill: {selected}\n", content)
             self.assertNotIn(f"## Skill: {absent}\n", content)
+
+    def cached_skill_client(self):
+        self.config.skills.deferred_discovery = True
+        client = DeerFlowClient(checkpointer=self.saver)
+        self.enterContext(patch.object(client, "_get_tools", return_value=[]))
+        self.enterContext(patch("deerflow.agents.task_continuity.tools.append_task_continuity_tools"))
+        self.enterContext(patch("deerflow.client.build_middlewares", return_value=[]))
+        self.enterContext(patch("deerflow.client.create_chat_model"))
+        prompt = self.enterContext(patch("deerflow.client.apply_prompt_template", return_value="提示词"))
+        create = self.enterContext(patch("deerflow.client.create_agent"))
+        return client, prompt, create
+
+    def assemble_skills(self, client, prompt, *, user="alice"):
+        config = client._get_runnable_config("private_cache")
+        config["configurable"]["user_id"] = user
+        with public_skill_preset_scope(self.store.resolve(self.preset_two)):
+            client._ensure_agent(config)
+        return prompt.call_args.kwargs["skill_names"]
+
+    def test_cached_agent_observes_same_size_private_state_edit_without_invalidation(self):
+        write_skill(self.paths.user_custom_skills_dir("alice"), "alpha")
+        self.user.set_skill_enabled_state("alpha", True)
+        states = self.user._skill_states_file
+        states.write_text('{"alpha":{"enabled":true }}')
+        client, prompt, create = self.cached_skill_client()
+        self.assertEqual(self.assemble_skills(client, prompt), {"alpha", "beta"})
+        self.assemble_skills(client, prompt)
+        self.assertEqual(create.call_count, 1)
+        original_stat = states.stat()
+        states.write_text('{"alpha":{"enabled":false}}')
+        os.utime(states, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        self.assertEqual(self.assemble_skills(client, prompt), {"beta"})
+        self.assertEqual(create.call_count, 2)
+        self.user.set_skill_enabled_state("alpha", True)
+        self.assertEqual(self.assemble_skills(client, prompt), {"alpha", "beta"})
+        self.assertEqual(create.call_count, 3)
+
+    def test_all_cached_clients_observe_peer_process_private_toggle(self):
+        write_skill(self.paths.user_custom_skills_dir("alice"), "personal")
+        write_skill(self.paths.user_custom_skills_dir("bob"), "personal")
+        self.user.set_skill_enabled_state("personal", True)
+        client, prompt, create = self.cached_skill_client()
+        another = DeerFlowClient(checkpointer=self.saver)
+        self.enterContext(patch.object(another, "_get_tools", return_value=[]))
+        for selected in (client, another):
+            self.assertEqual(self.assemble_skills(selected, prompt), {"beta", "personal"})
+        process = subprocess.run([
+            sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('{\"personal\":{\"enabled\":false}}')",
+            str(self.user._skill_states_file),
+        ], capture_output=True, text=True, timeout=30)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        for selected in (client, another):
+            self.assertEqual(self.assemble_skills(selected, prompt), {"beta"})
+        self.assertEqual(create.call_count, 4)
+        self.assertEqual(self.assemble_skills(client, prompt, user="bob"), {"beta", "personal"})
+
+    def test_management_mutations_rebuild_cached_catalog_without_manual_invalidation(self):
+        from deerflow.skill_client import DeerFlowSkillClient
+
+        with patch("deerflow.skill_client.load_client_config", return_value=self.config):
+            manager = DeerFlowSkillClient()
+        client, prompt, create = self.cached_skill_client()
+        self.assertEqual(self.assemble_skills(client, prompt), {"beta"})
+        manager.create_skill("alice", "personal", "私有测试")
+        self.assertEqual(self.assemble_skills(client, prompt), {"beta", "personal"})
+        manager.set_skill_enabled("alice", "personal", False)
+        self.assertEqual(self.assemble_skills(client, prompt), {"beta"})
+        manager.set_skill_enabled("alice", "personal", True)
+        self.assertEqual(self.assemble_skills(client, prompt), {"beta", "personal"})
+        manager.delete_skill("alice", "personal")
+        self.assertEqual(self.assemble_skills(client, prompt), {"beta"})
+        self.assertEqual(create.call_count, 5)
