@@ -20,5 +20,5 @@ def load_client_config(config_path: str | None = None) -> AppConfig:
     os.environ["DEER_FLOW_CONFIG_PATH"] = resolved_path
     from deerflow.skills.presets import preset_store_for_config
 
-    preset_store_for_config(config).read()
+    preset_store_for_config(config).initialize()
     return config

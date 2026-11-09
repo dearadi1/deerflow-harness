@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import stat
@@ -24,6 +25,7 @@ from deerflow.skills.types import SKILL_MD_FILE, Skill, SkillCategory
 
 _PRESET_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _WRITE_LOCK = threading.RLock()
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,10 @@ def _write_document(path: Path, data: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _default_document(states: dict[str, bool]) -> dict[str, Any]:
+    return {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": states}}}
+
+
 class SkillPresetStore:
     """文件是唯一事实来源；每次操作重读，跨进程锁覆盖整个读改写事务。"""
 
@@ -158,14 +164,47 @@ class SkillPresetStore:
     def _initial_document(self) -> dict[str, Any]:
         extensions = ExtensionsConfig.from_file()
         states = {skill.name: extensions.is_skill_enabled(skill.name, "public") for skill in load_public_skill_catalog(self.skills_root)}
-        return {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": states}}}
+        return _default_document(states)
+
+    def _parse_document(self, content: bytes) -> dict[str, Any]:
+        try:
+            data = json.loads(content.decode("utf-8-sig"), object_pairs_hook=_unique_object)
+            return _validate_document(data)
+        except (ValueError, TypeError, RecursionError) as error:
+            raise ValueError(f"公共技能预设文件无效：{self.path}；{error}") from error
 
     def _read_existing(self) -> dict[str, Any]:
+        return self._parse_document(self.path.read_bytes())
+
+    def _backup_invalid_document(self, content: bytes) -> Path:
+        """独占创建备份，完整写入后才允许调用方替换损坏文件。"""
+        descriptor, backup_name = tempfile.mkstemp(dir=self.path.parent, prefix=f"{self.path.name}.invalid-", suffix=".bak")
+        backup = Path(backup_name)
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8-sig"), object_pairs_hook=_unique_object)
-            return _validate_document(data)
-        except (ValueError, TypeError) as error:
-            raise ValueError(f"公共技能预设文件无效：{self.path}；{error}") from error
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            backup.unlink(missing_ok=True)
+            raise
+        return backup
+
+    def initialize(self) -> dict[str, Any]:
+        """仅在启动边界恢复格式错误；锁内校验和备份同一份原始字节。"""
+        with _WRITE_LOCK, extensions_config_file_lock(self.path):
+            if not self.path.exists():
+                _write_document(self.path, self._initial_document())
+                return self._read_existing()
+            content = self.path.read_bytes()
+            try:
+                return self._parse_document(content)
+            except ValueError as error:
+                backup = self._backup_invalid_document(content)
+                data = _default_document({})
+                _write_document(self.path, data)
+                logger.warning("公共技能预设格式错误，已恢复空默认预设；原文件备份：%s；原因：%s", backup, error)
+                return data
 
     def read(self) -> dict[str, Any]:
         if self.path.exists():

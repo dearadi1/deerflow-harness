@@ -67,7 +67,7 @@ drift.
 开关入口移除，私有启用规则保留，私有详情增加最终 `enabled`。公共列表只返回元数据，
 预设创建只接收名称并返回随机 ID，技能开关通过更新预设设置。`stream` / `start_stream` 显式接收 `skill_preset`，
 省略时每轮读取当前默认值。公共快照在同步流每次推进时绑定，托管流及普通子代理
-继承本轮快照，Agent 缓存按内容签名更新。详见 [SKILL_AGENTS.md](SKILL_AGENTS.md)
+继承本轮快照，Agent 缓存按预设、用户开关、旧扩展文件及共享技能刷新标记的内容签名更新；重建时同步失效提示词目录，池外私有开关修改不要求下游手动刷新。初始化遇到损坏预设时先同目录备份原始字节，再恢复空默认预设；运行中读取仍严格报错。详见 [SKILL_AGENTS.md](SKILL_AGENTS.md)
 与 [AGENT_AGENTS.md](AGENT_AGENTS.md)；验证包含 `test_skill_presets.py`、
 `test_client_skill_presets.py` 和现有管理、托管流回归。
 
