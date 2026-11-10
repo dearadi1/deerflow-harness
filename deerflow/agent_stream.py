@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
+import time
 from collections import deque
 from collections.abc import Iterator
 from contextvars import copy_context
@@ -17,6 +19,9 @@ from deerflow.trace_context import bind_trace_id, generate_trace_id, get_current
 
 if TYPE_CHECKING:
     from deerflow.agent_client import DeerFlowClientPool, _ClientSlot
+
+
+logger = logging.getLogger(__name__)
 
 
 class StreamCloseTimeoutError(TimeoutError):
@@ -102,7 +107,10 @@ class ManagedAgentStream(Iterator[ClientStreamEvent]):
     def closed(self) -> bool:
         return self._done.is_set()
 
-    def _start(self) -> None:
+    def _start(self, *, started_at: float, pool_wait: float) -> None:
+        self._started_at = started_at
+        self._pool_wait = pool_wait
+        self._first_block_logged = False
         self._worker = self._pool._get_stream_worker(self._slot)
         self._worker.start(self)
 
@@ -173,8 +181,25 @@ class ManagedAgentStream(Iterator[ClientStreamEvent]):
         try:
             async for event in stream:
                 await self._publish(event)
+                self._log_first_block(event)
         finally:
             await stream.aclose()
+
+    def _log_first_block(self, event: ClientStreamEvent) -> None:
+        # 标题、用量等历史元数据不能冒充首 token；仅记耗时，不记录用户输入或模型内容。
+        if self._first_block_logged or event.type not in {"reasoning_content", "answer_content", "tool_chunk", "tool_calls"}:
+            return
+        if event.type in {"reasoning_content", "answer_content"} and not event.data.content:
+            return
+        if getattr(getattr(event.data, "additional_kwargs", None), "deerflow_error_fallback", False):
+            return
+        self._first_block_logged = True
+        logger.info(
+            "Managed stream first block: elapsed_ms=%.1f pool_wait_ms=%.1f event_type=%s",
+            (time.monotonic() - self._started_at) * 1000,
+            self._pool_wait * 1000,
+            event.type,
+        )
 
     async def _run(self) -> None:
         user_token = set_current_user(self._user)

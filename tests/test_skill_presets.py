@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,7 +16,7 @@ from unittest.mock import patch
 
 from deerflow.config.app_config import AppConfig
 from deerflow.config.paths import Paths
-from deerflow.skills.presets import SkillPresetStore, current_public_skill_preset, public_skill_preset_scope
+from deerflow.skills.presets import SkillPresetStore, current_public_skill_preset, load_public_skill_catalog, public_skill_preset_scope
 from deerflow.skills.projection import ensure_skill_projections, ensure_thread_skill_projection
 from deerflow.skills.slash import resolve_slash_skill
 from deerflow.skills.storage import UserScopedSkillStorage
@@ -62,6 +63,47 @@ class PresetFixture(unittest.TestCase):
 
 
 class SkillPresetStoreTests(PresetFixture):
+    def test_read_operations_reuse_one_fresh_catalog_snapshot(self):
+        self.store.initialize()
+        operations = (self.store.read, self.store.resolve, self.store.get_preset, self.store.list_presets)
+        for operation in operations:
+            with self.subTest(operation=operation.__name__):
+                with patch("deerflow.skills.presets.load_public_skill_catalog", wraps=load_public_skill_catalog) as scan:
+                    operation()
+                self.assertEqual(scan.call_count, 1)
+
+    def test_catalog_sync_rechecks_disappeared_skill_inside_write_lock(self):
+        self.store.initialize()
+        original = self.file.read_bytes()
+        added = write_skill(self.skills / "public", "later")
+        calls = 0
+
+        def scan_then_delete(root):
+            nonlocal calls
+            skills = load_public_skill_catalog(root)
+            calls += 1
+            if calls == 1:
+                shutil.rmtree(added)
+            return skills
+
+        with patch("deerflow.skills.presets.load_public_skill_catalog", side_effect=scan_then_delete):
+            preset = self.store.resolve()
+        self.assertEqual(calls, 2)
+        self.assertEqual(preset.enabled_skills, {"alpha", "beta"})
+        self.assertEqual(self.file.read_bytes(), original)
+
+    def test_next_resolution_observes_external_metadata_changes(self):
+        self.store.initialize()
+        first = self.store.resolve()
+        skill_file = self.skills / "public" / "alpha" / "SKILL.md"
+        skill_file.write_text("---\nname: renamed\ndescription: 测试技能\n---\n", encoding="utf-8")
+        changed = self.store.resolve()
+        self.assertEqual(changed.enabled_skills, {"renamed", "beta"})
+        self.assertNotEqual(changed.signature, first.signature)
+        detail = self.store.get_preset()
+        self.assertEqual(detail["missing_skills"], ["alpha"])
+        self.assertTrue(detail["skills"]["renamed"])
+
     def test_create_generates_unique_persisted_ids_and_empty_skill_selection(self):
         created = self.store.create_preset("同名预设")
         another = self.store.create_preset("同名预设")

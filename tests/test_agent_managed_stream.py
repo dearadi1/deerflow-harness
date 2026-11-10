@@ -348,6 +348,19 @@ class ManagedStreamTests(unittest.TestCase):
         self.assertEqual(graph.observed[0][0], "user_001")
         self.sandbox_release.assert_called_once()
 
+    def test_first_block_timing_does_not_log_conversation_or_environment(self):
+        graph, pool = self.harness()
+        graph.release.set()
+        with self.assertLogs("deerflow.agent_stream", level="INFO") as captured:
+            events = list(self.start(pool, "private_latency_prompt", temporary_env={"TEST_TOKEN": "private_latency_secret"}))
+        self.assertEqual(events[-1].type, "end")
+        records = [line for line in captured.output if "Managed stream first block:" in line]
+        self.assertEqual(len(records), 1)
+        self.assertIn("event_type=answer_content", records[0])
+        self.assertRegex(records[0], r"elapsed_ms=\d+\.\d pool_wait_ms=\d+\.\d")
+        self.assertNotIn("private_latency_prompt", records[0])
+        self.assertNotIn("private_latency_secret", records[0])
+
     def test_sync_node_close_timeout_keeps_slot_and_thread_lock_until_worker_exits(self):
         graph, pool = self.harness(synchronous=True, size=2)
         stream = self.start(pool)

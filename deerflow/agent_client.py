@@ -252,6 +252,7 @@ class DeerFlowClientPool:
 
         temporary_env 在入口复制，仅在本轮沙盒命令中覆盖持久变量，不随会话保存。
         """
+        started_at = time.monotonic()
         user = _resolve_user(user_id)
         temporary_env = validate_temporary_environment(temporary_env)
         if skill_preset is not None:
@@ -271,10 +272,12 @@ class DeerFlowClientPool:
         }
         wait_timeout = self._acquire_timeout if acquire_timeout is None else _validate_timeout(acquire_timeout)
         owner = object()
+        wait_started_at = time.monotonic()
         slot = self._acquire(wait_timeout, owner=owner)
+        pool_wait = time.monotonic() - wait_started_at
         try:
             stream = ManagedAgentStream(self, slot, owner, user, message, options, buffer_size)
-            stream._start()
+            stream._start(started_at=started_at, pool_wait=pool_wait)
             return stream
         except BaseException:
             self._release(slot, owner)
