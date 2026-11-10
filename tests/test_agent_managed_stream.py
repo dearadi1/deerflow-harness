@@ -126,6 +126,8 @@ class ManagedStreamTests(unittest.TestCase):
         self.pools = []
         self.streams = []
         self.directory = self.enterContext(tempfile.TemporaryDirectory())
+        # 托管流测试使用独立预设文件，避免读取工作区的业务配置或历史格式。
+        self.enterContext(patch.dict(os.environ, {"DEER_FLOW_SKILL_PRESETS_PATH": str(Path(self.directory) / "skill_presets.json")}))
         self.enterContext(patch("deerflow.client.build_tracing_callbacks", return_value=[]))
         self.enterContext(patch("deerflow.client.inject_langfuse_metadata"))
         self.sandbox_release = self.enterContext(patch("deerflow.sandbox.lease.release_sandbox_execution_lease"))

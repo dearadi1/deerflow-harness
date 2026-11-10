@@ -56,7 +56,6 @@ class PresetFixture(unittest.TestCase):
         self.preset_two = self.store.create_preset("预设2")["preset_id"]
         self.store.update_preset(self.preset_one, skill_states={"alpha": True})
         self.store.update_preset(self.preset_two, skill_states={"beta": True})
-        self.store.set_default_preset(self.preset_one)
 
     def enabled(self):
         return {skill.name for skill in self.user.load_skills(enabled_only=True)}
@@ -75,7 +74,7 @@ class SkillPresetStoreTests(PresetFixture):
         document = json.loads(self.file.read_text())
         self.assertEqual(document["presets"][preset_id], {"name": "同名预设", "skills": {}})
         self.assertEqual(document["presets"]["default"]["skills"], {"alpha": True, "beta": True})
-        self.assertEqual(document["default_preset"], "default")
+        self.assertEqual(set(document), {"version", "presets"})
         self.assertEqual(SkillPresetStore(self.skills).get_preset(preset_id), created)
         created["skills"]["alpha"] = True
         self.assertFalse(self.store.get_preset(preset_id)["skills"]["alpha"])
@@ -119,12 +118,12 @@ class SkillPresetStoreTests(PresetFixture):
         self.assertEqual(detail["skills"], {"alpha": False, "beta": True, "later": True})
         self.assertEqual(detail["enabled_skills"], ["beta", "later"])
         self.assertEqual(restarted.resolve().enabled_skills, {"beta", "later"})
-        self.assertEqual(self.file.read_bytes(), original)
+        self.assertNotEqual(self.file.read_bytes(), original)
+        self.assertEqual(json.loads(self.file.read_text())["presets"]["default"]["skills"], detail["skills"])
         self.assertEqual(restarted.update_preset("default", skill_states={"alpha": True})["enabled_skills"], ["alpha", "beta", "later"])
 
     def test_default_catalog_changes_refresh_signature_without_mutating_active_snapshot(self):
         snapshot = self.store.resolve()
-        original = self.file.read_bytes()
         write_skill(self.skills / "public", "later")
         with public_skill_preset_scope(snapshot):
             self.assertEqual(self.enabled(), {"alpha", "beta"})
@@ -132,13 +131,17 @@ class SkillPresetStoreTests(PresetFixture):
         self.assertEqual(following.enabled_skills, {"alpha", "beta", "later"})
         self.assertNotEqual(snapshot.signature, following.signature)
         self.assertEqual(self.enabled(), {"alpha", "beta", "later"})
+        persisted = self.file.read_bytes()
         (self.skills / "public/later/SKILL.md").unlink()
-        self.assertEqual(self.store.resolve().signature, snapshot.signature)
-        self.assertEqual(self.file.read_bytes(), original)
+        removed = self.store.resolve()
+        self.assertEqual(removed.enabled_skills, snapshot.enabled_skills)
+        self.assertNotEqual(removed.signature, following.signature)
+        self.assertEqual(self.store.get_preset()["missing_skills"], ["later"])
+        self.assertEqual(self.file.read_bytes(), persisted)
 
     def test_existing_default_configuration_preserves_explicit_states(self):
         document = {
-            "version": 1, "default_preset": "default",
+            "version": 1,
             "presets": {"default": {"name": "已有预设", "skills": {"alpha": False, "beta": True, "missing": False}}},
         }
         self.file.write_text(json.dumps(document))
@@ -148,14 +151,78 @@ class SkillPresetStoreTests(PresetFixture):
         self.assertEqual(self.store.resolve().enabled_skills, {"beta"})
         self.assertEqual(self.file.read_bytes(), original)
 
-    def test_selecting_custom_default_keeps_its_unconfigured_skills_disabled(self):
-        created = self.store.create_preset("自定义默认预设")
-        self.store.set_default_preset(created["preset_id"])
+    def test_custom_preset_name_cannot_replace_builtin_default(self):
+        created = self.store.create_preset("默认预设")
         write_skill(self.skills / "public", "later")
-        self.assertEqual(self.store.get_preset()["enabled_skills"], [])
+        self.assertEqual(self.store.get_preset(created["preset_id"])["enabled_skills"], [])
+        self.assertEqual(self.store.resolve(created["preset_id"]).enabled_skills, set())
+        self.assertEqual(self.store.get_preset()["preset_id"], "default")
+        self.assertEqual(self.store.resolve().enabled_skills, {"alpha", "beta", "later"})
+
+    def test_catalog_sync_persists_only_missing_builtin_states_for_every_entry(self):
+        self.create_choices()
+        self.store.update_preset("default", skill_states={"alpha": False})
+        expected = json.loads(self.file.read_text())
+        operations = (
+            self.store.initialize, self.store.read, self.store.get_preset,
+            self.store.list_presets, self.store.resolve,
+            lambda: self.store.update_preset(self.preset_one, skill_states={}),
+        )
+        for index, operation in enumerate(operations):
+            name = f"new-{index}"
+            write_skill(self.skills / "public", name)
+            expected["presets"]["default"]["skills"][name] = True
+            with self.subTest(operation=operation):
+                operation()
+                self.assertEqual(json.loads(self.file.read_text()), expected)
+                self.assertFalse(self.store.get_preset(self.preset_one)["skills"][name])
+                self.assertTrue(self.store.resolve("default").is_enabled(name))
+
+    def test_builtin_default_cannot_be_deleted_but_can_be_renamed_and_disabled(self):
+        self.create_choices()
+        detail = self.store.update_preset("default", skill_states={"alpha": False, "beta": False}, name="手动关闭")
+        self.assertTrue(detail["is_default"])
+        self.assertEqual(detail["enabled_skills"], [])
+        original = self.file.read_bytes()
+        with self.assertRaisesRegex(ValueError, "不能删除.*default"):
+            self.store.delete_preset("default")
+        self.assertEqual(self.file.read_bytes(), original)
+        self.assertEqual(SkillPresetStore(self.skills).initialize(), json.loads(original))
         self.assertEqual(self.store.resolve().enabled_skills, set())
-        self.assertEqual(self.store.get_preset("default")["enabled_skills"], ["alpha", "beta", "later"])
-        self.assertEqual(self.store.resolve("default").enabled_skills, {"alpha", "beta", "later"})
+        self.store.delete_preset(self.preset_one)
+        self.store.delete_preset(self.preset_two)
+        self.assertEqual(set(self.store.read()["presets"]), {"default"})
+
+    def test_catalog_sync_failure_preserves_file_and_retries_on_next_read(self):
+        self.store.initialize()
+        original = self.file.read_bytes()
+        write_skill(self.skills / "public", "later")
+        with patch("deerflow.skills.presets.os.replace", side_effect=OSError("模拟磁盘失败")):
+            with self.assertRaises(OSError):
+                self.store.resolve()
+        self.assertEqual(self.file.read_bytes(), original)
+        self.assertEqual(list(self.root.glob(".skill_presets.json.*.tmp")), [])
+        self.assertTrue(self.store.resolve().is_enabled("later"))
+        self.assertTrue(json.loads(self.file.read_text())["presets"]["default"]["skills"]["later"])
+
+    def test_catalog_sync_rereads_concurrent_explicit_disable_before_writing(self):
+        self.store.initialize()
+        write_skill(self.skills / "public", "later")
+        writer = SkillPresetStore(self.skills)
+        read_existing = self.store._read_existing
+        changed = False
+
+        def read_then_disable():
+            nonlocal changed
+            data = read_existing()
+            if not changed:
+                changed = True
+                writer.update_preset("default", skill_states={"later": False})
+            return data
+
+        with patch.object(self.store, "_read_existing", side_effect=read_then_disable):
+            self.assertFalse(self.store.resolve().is_enabled("later"))
+        self.assertFalse(json.loads(self.file.read_text())["presets"]["default"]["skills"]["later"])
 
     def test_crud_default_and_return_values_are_independent(self):
         self.create_choices()
@@ -167,21 +234,20 @@ class SkillPresetStoreTests(PresetFixture):
         changed = self.store.update_preset(preset_three, skill_states={"alpha": False}, name="新名称")
         self.assertEqual(changed["enabled_skills"], ["beta"])
         self.assertEqual(changed["name"], "新名称")
-        self.store.set_default_preset(preset_three)
         self.store.delete_preset(self.preset_one)
         result = self.store.list_presets()
-        self.assertEqual(result["default_preset"], preset_three)
+        self.assertEqual(set(result), {"presets"})
         self.assertEqual([item["preset_id"] for item in result["presets"]], sorted(["default", preset_three, self.preset_two]))
-        self.assertEqual(SkillPresetStore(self.skills).resolve().enabled_skills, {"beta"})
+        self.assertEqual(SkillPresetStore(self.skills).resolve(preset_three).enabled_skills, {"beta"})
+        self.assertEqual(SkillPresetStore(self.skills).resolve().preset_id, "default")
 
     def test_manual_edit_and_restarted_client_load_the_same_file(self):
         self.create_choices()
         data = self.store.read()
-        data["default_preset"] = self.preset_two
-        data["presets"][self.preset_two]["skills"] = {"alpha": True, "beta": False}
+        data["presets"]["default"]["skills"] = {"alpha": True, "beta": False}
         self.file.write_text("\ufeff" + json.dumps(data, ensure_ascii=False), encoding="utf-8")
         self.assertEqual(SkillPresetStore(self.skills).resolve().enabled_skills, {"alpha"})
-        self.assertEqual(self.store.resolve().preset_id, self.preset_two)
+        self.assertEqual(self.store.resolve().preset_id, "default")
         config_path = self.root / "config.yaml"
         config_path.write_text(json.dumps({
             "sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"},
@@ -190,7 +256,7 @@ class SkillPresetStoreTests(PresetFixture):
         program = "import json, sys; from deerflow import DeerFlowSkillClient; print(json.dumps(DeerFlowSkillClient(config_path=sys.argv[1]).public.get_preset()))"
         restarted = subprocess.run([sys.executable, "-c", program, str(config_path)], capture_output=True, text=True, timeout=30)
         self.assertEqual(restarted.returncode, 0, restarted.stderr)
-        self.assertEqual(json.loads(restarted.stdout), self.store.get_preset(self.preset_two))
+        self.assertEqual(json.loads(restarted.stdout), self.store.get_preset())
 
     def test_new_public_skill_is_disabled_and_missing_packages_are_reported(self):
         self.create_choices()
@@ -235,8 +301,7 @@ class SkillPresetStoreTests(PresetFixture):
             lambda: self.store.update_preset(self.preset_one, skill_states={"alpha": "false"}),
             lambda: self.store.update_preset(self.preset_one, skill_states={"alpha": 1}),
             lambda: self.store.update_preset("missing", skill_states={}),
-            lambda: self.store.set_default_preset("missing"),
-            lambda: self.store.delete_preset(self.preset_one),
+            lambda: self.store.delete_preset("default"),
             lambda: self.store.delete_preset("missing"),
             lambda: self.store.resolve(""),
         ]
@@ -249,7 +314,7 @@ class SkillPresetStoreTests(PresetFixture):
         self.create_choices()
         original = self.store.read()
         invalid = ["{", '{"version":1,"version":1}', json.dumps(original | {"version": True}),
-                   json.dumps(original | {"presets": {}}), json.dumps(original | {"default_preset": "missing"})]
+                   json.dumps(original | {"presets": {}}), json.dumps(original | {"presets": {self.preset_one: original["presets"][self.preset_one]}})]
         for content in invalid:
             self.file.write_text(content)
             with self.subTest(content=content):
@@ -281,6 +346,7 @@ class SkillPresetStoreTests(PresetFixture):
             output, error = process.communicate(timeout=30)
             self.assertEqual(process.returncode, 0, (output, error))
         self.assertTrue(set(names) <= self.store.resolve(self.preset_one).enabled_skills)
+        self.assertTrue(all(json.loads(self.file.read_text())["presets"]["default"]["skills"][name] for name in names))
 
     def test_config_yaml_cannot_be_used_as_preset_file(self):
         with self.assertRaises(ValueError):
@@ -330,7 +396,7 @@ class SkillPresetStartupTests(PresetFixture):
 
     def assert_all_enabled_default(self, document):
         states = {"alpha": True, "beta": True}
-        self.assertEqual(document, {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": states}}})
+        self.assertEqual(document, {"version": 1, "presets": {"default": {"name": "默认预设", "skills": states}}})
         self.assertEqual(json.loads(self.file.read_text()), document)
         self.assertEqual(self.store.get_preset()["skills"], states)
         self.assertEqual(self.store.list_presets()["presets"][0]["skills"], states)
@@ -338,14 +404,19 @@ class SkillPresetStartupTests(PresetFixture):
 
     def test_invalid_formats_keep_exact_bytes_and_recover_without_private_changes(self):
         self.create_choices()
+        self.store.update_preset("default", skill_states={"alpha": False, "beta": False})
         valid = self.store.read()
         invalid_documents = [
             b"", b"{", b"[]", b"\xff\xfe\x00", b'{"version":1,"version":1}', b"[" * 2000 + b"]" * 2000,
             json.dumps(valid | {"version": True}).encode(),
             json.dumps(valid | {"presets": {}}).encode(),
-            json.dumps(valid | {"default_preset": "missing"}).encode(),
+            json.dumps({}).encode(), json.dumps({"version": 1}).encode(),
+            json.dumps({"presets": valid["presets"]}).encode(),
+            json.dumps(valid | {"presets": {self.preset_one: valid["presets"][self.preset_one]}}).encode(),
             json.dumps(valid | {"unexpected": True}).encode(),
-            json.dumps(valid | {"presets": {"default": {"name": "默认", "skills": {"alpha": "true"}}}, "default_preset": "default"}).encode(),
+            json.dumps(valid | {"presets": {"default": {"name": "默认"}}}).encode(),
+            json.dumps(valid | {"presets": {"default": {"skills": {}}}}).encode(),
+            json.dumps(valid | {"presets": {"default": {"name": "默认", "skills": {"alpha": "true"}}}}).encode(),
         ]
         write_skill(self.paths.user_custom_skills_dir("alice"), "alpha")
         write_skill(self.paths.user_custom_skills_dir("alice"), "personal")
@@ -383,11 +454,13 @@ class SkillPresetStartupTests(PresetFixture):
         self.assert_all_enabled_default(self.store.initialize())
         self.assertEqual(self.backups(), [])
 
-    def test_existing_empty_default_is_not_rewritten(self):
-        document = {"version": 1, "default_preset": "default", "presets": {"default": {"name": "已有预设", "skills": {}}}}
+    def test_existing_empty_default_is_completed_once(self):
+        document = {"version": 1, "presets": {"default": {"name": "已有预设", "skills": {}}}}
         self.file.write_text(json.dumps(document))
-        original = self.file.read_bytes()
+        document["presets"]["default"]["skills"] = {"alpha": True, "beta": True}
         self.assertEqual(self.store.initialize(), document)
+        self.assertEqual(json.loads(self.file.read_text()), document)
+        original = self.file.read_bytes()
         self.assertEqual(self.store.get_preset()["skills"], {"alpha": True, "beta": True})
         self.assertEqual(self.store.resolve().enabled_skills, {"alpha", "beta"})
         self.assertEqual(self.file.read_bytes(), original)
@@ -401,6 +474,7 @@ class SkillPresetStartupTests(PresetFixture):
         write_skill(store.skills_root / "public", "later")
         self.assertEqual(store.get_preset()["skills"], {"later": True})
         self.assertEqual(store.resolve().enabled_skills, {"later"})
+        self.assertEqual(json.loads(self.file.read_text())["presets"]["default"]["skills"], {"later": True})
 
     def test_backup_failure_never_overwrites_original(self):
         self.file.write_bytes(b"invalid\xff")
@@ -463,15 +537,14 @@ class SkillPresetRuntimeTests(PresetFixture):
             self.assertEqual(self.enabled(), set())
         self.assertEqual(self.user._skill_states_file.read_bytes(), private_before)
 
-    def test_snapshot_survives_updates_default_switch_and_deletion(self):
+    def test_snapshot_survives_updates_and_custom_preset_deletion(self):
         snapshot = self.store.resolve(self.preset_one)
         with public_skill_preset_scope(snapshot):
-            self.store.set_default_preset(self.preset_two)
             self.store.update_preset(self.preset_one, skill_states={"alpha": False})
             self.store.delete_preset(self.preset_one)
             self.assertEqual(self.enabled(), {"alpha"})
         self.assertIsNone(current_public_skill_preset())
-        self.assertEqual(self.enabled(), {"beta"})
+        self.assertEqual(self.enabled(), {"alpha", "beta"})
         with self.assertRaises(ValueError):
             self.store.resolve(self.preset_one)
 

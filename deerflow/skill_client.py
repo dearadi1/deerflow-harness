@@ -283,16 +283,16 @@ class _SkillOperations:
         except FileExistsError as error:
             return error
         try:
-            with self._reset_public_skill_states(directory.name):
+            with self._reset_public_skill_states(directory.name, creating=True):
                 self._write_text(directory, directory / SKILL_MD_FILE, content)
         except Exception:
             shutil.rmtree(directory)
             raise
         return None
 
-    def _reset_public_skill_states(self, name: str):
+    def _reset_public_skill_states(self, name: str, *, creating: bool = False):
         if self._category == SkillCategory.PUBLIC:
-            return preset_store_for_config(self._app_config).reset_skill_states(name)
+            return preset_store_for_config(self._app_config).reset_skill_states(name, creating=creating)
         return nullcontext()
 
     @_chinese_errors
@@ -717,9 +717,6 @@ class _PublicSkillClient:
     def update_preset(self, preset_id: str, *, skill_states: dict[str, bool], name: str | None = None) -> dict[str, Any]:
         return self._presets.update_preset(preset_id, skill_states=skill_states, name=name)
 
-    def set_default_preset(self, preset_id: str) -> dict[str, Any]:
-        return self._presets.set_default_preset(preset_id)
-
     def delete_preset(self, preset_id: str) -> None:
         self._presets.delete_preset(preset_id)
 
@@ -761,9 +758,11 @@ class DeerFlowSkillClient(_SkillOperations):
     custom 状态包含 global_enabled、user_enabled、最终 enabled，仍取两者交集。
     public 列表仅返回技能元数据；启用状态通过 get_preset 查询、update_preset 修改。
     create_preset 只接收名称，返回含随机 preset_id 的空预设详情；预设独立保存到
-    skill_presets.json。内置 default 未配置项默认启用，显式关闭有效；自定义预设
-    未配置项默认关闭。删除或重新创建公共包清除所有预设中的同名开关，内容编辑
-    保留选择；缺失项只作为诊断，不进入有效开关。预设修改在下一轮自动生效。
+    skill_presets.json，仅包含 version 和 presets。内置 default 固定且不可删除，
+    名称与开关可修改；聊天未传预设 ID 时使用它。未配置项默认启用，显式关闭有效；自定义预设
+    未配置项默认关闭。新增公共包将缺少的开关写入内置 default，保留其显式关闭，
+    并清除自定义预设的同名残留；删除清除所有预设同名项。预设读取也会补齐外部
+    新增公共包，内容编辑保留选择；缺失项只作为诊断。预设修改在下一轮自动生效。
     技能包与私有状态修改复用原有视图及缓存更新，已有 Agent 按原生命周期重建。
     """
 

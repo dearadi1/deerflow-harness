@@ -91,21 +91,19 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _validate_document(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict) or set(data) != {"version", "default_preset", "presets"}:
-        raise ValueError("预设文件必须且只能包含 version、default_preset、presets")
+    if not isinstance(data, dict) or set(data) != {"version", "presets"}:
+        raise ValueError("预设文件必须且只能包含 version、presets")
     if type(data["version"]) is not int or data["version"] != 1:
         raise ValueError("不支持的预设文件版本，version 必须为 1")
     presets = data["presets"]
-    if not isinstance(presets, dict) or not presets:
-        raise ValueError("至少需要保留一个公共技能预设")
+    if not isinstance(presets, dict) or "default" not in presets:
+        raise ValueError("预设文件必须包含 ID 为 default 的内置预设")
     for preset_id, preset in presets.items():
         validate_preset_id(preset_id)
         if not isinstance(preset, dict) or set(preset) != {"name", "skills"}:
             raise ValueError(f"预设 {preset_id} 必须且只能包含 name、skills")
         preset["name"] = _validate_name(preset["name"])
         preset["skills"] = _validate_skill_states(preset["skills"])
-    if validate_preset_id(data["default_preset"]) not in presets:
-        raise ValueError("default_preset 指向不存在的预设")
     return data
 
 
@@ -148,7 +146,7 @@ def _write_document(path: Path, data: dict[str, Any]) -> None:
 def _default_document(skills_root: Path) -> dict[str, Any]:
     # 显式保存初始化时的启用项，让配置文件与管理详情、运行快照保持一致。
     states = {skill.name: True for skill in load_public_skill_catalog(skills_root)}
-    return {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": states}}}
+    return {"version": 1, "presets": {"default": {"name": "默认预设", "skills": states}}}
 
 
 def _effective_skill_states(preset_id: str, configured_states: dict[str, bool], names: set[str]) -> dict[str, bool]:
@@ -178,6 +176,14 @@ class SkillPresetStore:
     def _read_existing(self) -> dict[str, Any]:
         return self._parse_document(self.path.read_bytes())
 
+    def _complete_default_skill_states(self, data: dict[str, Any]) -> bool:
+        """仅补齐固定内置预设，保留已有显式关闭及暂时缺失的选择。"""
+        preset = data["presets"]["default"]
+        names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
+        missing = names - preset["skills"].keys()
+        preset["skills"].update(dict.fromkeys(sorted(missing), True))
+        return bool(missing)
+
     def _backup_invalid_document(self, content: bytes) -> Path:
         """独占创建备份，完整写入后才允许调用方替换损坏文件。"""
         descriptor, backup_name = tempfile.mkstemp(dir=self.path.parent, prefix=f"{self.path.name}.invalid-", suffix=".bak")
@@ -200,40 +206,55 @@ class SkillPresetStore:
                 return self._read_existing()
             content = self.path.read_bytes()
             try:
-                return self._parse_document(content)
+                data = self._parse_document(content)
             except ValueError as error:
                 backup = self._backup_invalid_document(content)
                 data = _default_document(self.skills_root)
                 _write_document(self.path, data)
                 logger.warning("公共技能预设格式错误，已恢复全部启用的默认预设；原文件备份：%s；原因：%s", backup, error)
                 return data
+            if self._complete_default_skill_states(data):
+                _write_document(self.path, data)
+            return data
 
     def read(self) -> dict[str, Any]:
         if self.path.exists():
-            return self._read_existing()
+            data = self._read_existing()
+            if not self._complete_default_skill_states(data):
+                return data
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
             if not self.path.exists():
-                _write_document(self.path, _default_document(self.skills_root))
-            return self._read_existing()
+                data = _default_document(self.skills_root)
+                _write_document(self.path, data)
+                return data
+            # 锁外只判断是否需要同步，写入前重读并重扫，避免覆盖并发关闭或重新加入已删除项。
+            data = self._read_existing()
+            if self._complete_default_skill_states(data):
+                _write_document(self.path, data)
+            return data
 
     def _mutate(self, change: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
             data = self._read_existing() if self.path.exists() else _default_document(self.skills_root)
             change(data)
+            self._complete_default_skill_states(data)
             _write_document(self.path, _validate_document(data))
             return data
 
     @contextmanager
-    def reset_skill_states(self, skill_name: str) -> Iterator[None]:
-        """目录新增或删除成功后清除旧开关，锁覆盖目录变更以阻止并发写回残留。"""
+    def reset_skill_states(self, skill_name: str, *, creating: bool = False) -> Iterator[None]:
+        """锁覆盖目录变更与开关保存；新增保留内置预设显式选择，删除清除全部同名项。"""
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
             data = self._read_existing() if self.path.exists() else _default_document(self.skills_root)
             changed = False
-            for preset in data["presets"].values():
+            for preset_id, preset in data["presets"].items():
+                if creating and preset_id == "default":
+                    continue
                 if skill_name in preset["skills"]:
                     del preset["skills"][skill_name]
                     changed = True
             yield
+            changed = self._complete_default_skill_states(data) or changed
             if changed or not self.path.exists():
                 _write_document(self.path, data)
 
@@ -248,7 +269,7 @@ class SkillPresetStore:
         entry = self._entry(data, preset_id)
         states = _effective_skill_states(preset_id, entry["skills"], names)
         return {
-            "preset_id": preset_id, "name": entry["name"], "is_default": preset_id == data["default_preset"],
+            "preset_id": preset_id, "name": entry["name"], "is_default": preset_id == "default",
             "skills": states, "enabled_skills": sorted(name for name in names if states[name]),
             "missing_skills": sorted(entry["skills"].keys() - names),
         }
@@ -256,16 +277,16 @@ class SkillPresetStore:
     def list_presets(self) -> dict[str, Any]:
         data = self.read()
         names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
-        return {"default_preset": data["default_preset"], "presets": [self._details(data, preset_id, names) for preset_id in sorted(data["presets"])]}
+        return {"presets": [self._details(data, preset_id, names) for preset_id in sorted(data["presets"])]}
 
     def get_preset(self, preset_id: str | None = None) -> dict[str, Any]:
         data = self.read()
         names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
-        return self._details(data, data["default_preset"] if preset_id is None else preset_id, names)
+        return self._details(data, "default" if preset_id is None else preset_id, names)
 
     def resolve(self, preset_id: str | None = None) -> PublicSkillPreset:
         data = self.read()
-        selected = data["default_preset"] if preset_id is None else preset_id
+        selected = "default" if preset_id is None else preset_id
         entry = self._entry(data, selected)
         names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
         states = _effective_skill_states(selected, entry["skills"], names)
@@ -309,19 +330,11 @@ class SkillPresetStore:
         data = self._mutate(change)
         return self._details(data, preset_id, {skill.name for skill in load_public_skill_catalog(self.skills_root)})
 
-    def set_default_preset(self, preset_id: str) -> dict[str, Any]:
-        def change(data):
-            self._entry(data, preset_id)
-            data["default_preset"] = preset_id
-
-        data = self._mutate(change)
-        return self._details(data, preset_id, {skill.name for skill in load_public_skill_catalog(self.skills_root)})
-
     def delete_preset(self, preset_id: str) -> None:
         def change(data):
             self._entry(data, preset_id)
-            if data["default_preset"] == preset_id:
-                raise ValueError("不能删除默认预设，请先设置其他默认预设")
+            if preset_id == "default":
+                raise ValueError("不能删除 ID 为 default 的内置预设")
             del data["presets"][preset_id]
 
         self._mutate(change)
