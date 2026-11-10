@@ -59,6 +59,7 @@ from deerflow.config.extensions_config import (
 )
 from deerflow.config.paths import get_paths
 from deerflow.config.subagent_runtime_config import SubagentRuntimeConfig
+from deerflow.environment import temporary_environment_scope, validate_temporary_environment
 from deerflow.mcp.lifecycle import LIFECYCLE_KEY, plan_mcp_lifecycle
 from deerflow.mcp_scope import THREAD_INCARNATION_CONTEXT_KEY
 from deerflow.models import create_chat_model
@@ -900,6 +901,7 @@ class DeerFlowClient:
         replay_last_turn: bool = False,
         disabled_tools: list[str] | None = None,
         skill_preset: str | None = None,
+        temporary_env: dict[str, str] | None = None,
         **kwargs,
     ) -> Generator[ClientStreamEvent, None, None]:
         """Stream a conversation turn with a DeerFlow request trace context.
@@ -917,6 +919,8 @@ class DeerFlowClient:
         None 或空列表不额外禁用工具；不修改全局工具配置。
         skill_preset 选择本轮公共技能预设；None 使用文件中的当前默认值。
         本轮固定公共开关快照并由普通子智能体继承，私有状态保持原有规则。
+        temporary_env 只在本轮命令及普通子智能体中生效，覆盖同名公共／私有变量。
+        省略或空字典不会继承上一轮临时值，也不写入文件或 checkpoint。
         非空的 DEER_FLOW_RECURSION_LIMIT 环境变量优先于 kwargs.recursion_limit，
         两者均未设置时使用 100；环境变量必须是正整数。
         推荐追问统一由应用配置 suggestions.enabled 控制，默认生成 3 个。
@@ -924,6 +928,28 @@ class DeerFlowClient:
         注册的知识库检索函数，也可包含 dense_weight、sparse_weight 等宿主参数。
         模型仅提供 description、query、top_k；后续将改为正式的知识库上下文接口。
         """
+        return self._stream_with_turn_context(
+            message,
+            thread_id=thread_id,
+            replay_last_turn=replay_last_turn,
+            disabled_tools=disabled_tools,
+            skill_preset=skill_preset,
+            temporary_env=validate_temporary_environment(temporary_env),
+            **kwargs,
+        )
+
+    def _stream_with_turn_context(
+        self,
+        message: str,
+        *,
+        thread_id: str | None,
+        replay_last_turn: bool,
+        disabled_tools: list[str] | None,
+        skill_preset: str | None,
+        temporary_env: dict[str, str],
+        **kwargs,
+    ) -> Generator[ClientStreamEvent, None, None]:
+        """逐次推进及关闭时绑定本轮上下文，挂起期间不污染消费方。"""
         # Resolve the id once, without mutating the caller's context.
         trace_id = get_current_trace_id() or generate_trace_id()
 
@@ -945,7 +971,7 @@ class DeerFlowClient:
                 token = bind_trace_id(trace_id)
                 try:
                     try:
-                        with public_skill_preset_scope(preset):
+                        with public_skill_preset_scope(preset), temporary_environment_scope(temporary_env):
                             event = next(inner)
                     except StopIteration:
                         event = _EXHAUSTED
@@ -963,7 +989,7 @@ class DeerFlowClient:
             # when GC closes the generator from another Context.
             token = bind_trace_id(trace_id)
             try:
-                with public_skill_preset_scope(preset):
+                with public_skill_preset_scope(preset), temporary_environment_scope(temporary_env):
                     inner.close()
             finally:
                 reset_trace_id(token)
@@ -1117,7 +1143,7 @@ class DeerFlowClient:
             raise ValueError("disabled_tools 中的工具名称不能为空")
         return list(dict.fromkeys(disabled_tools))
 
-    def chat(self, message: str, *, thread_id: str | None = None, disabled_tools: list[str] | None = None, **kwargs) -> str:
+    def chat(self, message: str, *, thread_id: str | None = None, disabled_tools: list[str] | None = None, temporary_env: dict[str, str] | None = None, **kwargs) -> str:
         """Send a message and return the final text response.
 
         按消息 ID 累积主智能体的 answer_content，返回最后一条有正文的消息。
@@ -1127,6 +1153,7 @@ class DeerFlowClient:
             message: User message text.
             thread_id: Thread ID for conversation context. Auto-generated if None.
             disabled_tools: 本轮禁止使用的工具名称，语义与 stream() 相同。
+            temporary_env: 本轮临时环境变量，语义与 stream() 相同。
             **kwargs: Override client defaults (same as stream()).
 
         Returns:
@@ -1134,7 +1161,7 @@ class DeerFlowClient:
             if no AI text was produced.
         """
         answer = _AIMessageAccumulator()
-        for event in self.stream(message, thread_id=thread_id, disabled_tools=disabled_tools, **kwargs):
+        for event in self.stream(message, thread_id=thread_id, disabled_tools=disabled_tools, temporary_env=temporary_env, **kwargs):
             if event.type == "error":
                 raise RuntimeError(event.data.error)
             answer.observe(event)

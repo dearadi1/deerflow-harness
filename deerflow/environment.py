@@ -10,7 +10,9 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 from deerflow.config.extensions_config import extensions_config_file_lock
@@ -18,10 +20,39 @@ from deerflow.config.paths import Paths, get_paths
 
 _VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _STORE_LOCK = threading.RLock()
+_TEMPORARY_ENVIRONMENT: ContextVar[MappingProxyType | None] = ContextVar("deerflow_temporary_environment", default=None)
 
 
 class EnvironmentSnapshot(dict[str, str]):
     """标记一次命令已解析的环境，确保传输和输出脱敏使用同一份值。"""
+
+
+def validate_temporary_environment(variables: dict[str, str] | None) -> dict[str, str]:
+    """入口即复制，避免排队或延迟消费期间调用方修改本轮参数。"""
+    if variables is None:
+        return {}
+    if not isinstance(variables, dict):
+        raise TypeError("temporary_env 必须是字符串字典或 None")
+    snapshot = dict(variables)
+    for name, value in snapshot.items():
+        if not isinstance(value, str):
+            raise TypeError("temporary_env 的变量值必须是字符串")
+        _validate_variable(name, value)
+    return snapshot
+
+
+@contextmanager
+def temporary_environment_scope(variables: dict[str, str]) -> Iterator[None]:
+    """显式空作用域隔离相邻轮次；不通过共享沙盒对象或 checkpoint 传递临时值。"""
+    token = _TEMPORARY_ENVIRONMENT.set(MappingProxyType(dict(variables)))
+    try:
+        yield
+    finally:
+        _TEMPORARY_ENVIRONMENT.reset(token)
+
+
+def get_temporary_environment() -> dict[str, str]:
+    return dict(_TEMPORARY_ENVIRONMENT.get() or {})
 
 
 def _validate_variable(name: str, value: str | None = None) -> None:

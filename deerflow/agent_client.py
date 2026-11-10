@@ -49,6 +49,7 @@ from deerflow.agent_stream import ManagedAgentStream, ManagedStreamWorker, Strea
 from deerflow.client import DeerFlowClient
 from deerflow.client_config import load_client_config
 from deerflow.config.app_config import get_app_config
+from deerflow.environment import validate_temporary_environment
 from deerflow.runtime.client_async import StreamCleanupError
 from deerflow.runtime.user_context import CurrentUser, get_current_user, reset_current_user, set_current_user
 from deerflow.skills.presets import validate_preset_id
@@ -242,12 +243,17 @@ class DeerFlowClientPool:
         replay_last_turn: bool = False,
         disabled_tools: list[str] | None = None,
         skill_preset: str | None = None,
+        temporary_env: dict[str, str] | None = None,
         acquire_timeout: float | None = None,
         buffer_size: int = 64,
         **kwargs: Any,
     ) -> ManagedAgentStream:
-        """托管整轮生成，返回支持跨线程 close 的同步流；执行结束后自动归还实例。"""
+        """托管整轮生成，返回支持跨线程 close 的同步流；执行结束后自动归还实例。
+
+        temporary_env 在入口复制，仅在本轮沙盒命令中覆盖持久变量，不随会话保存。
+        """
         user = _resolve_user(user_id)
+        temporary_env = validate_temporary_environment(temporary_env)
         if skill_preset is not None:
             validate_preset_id(skill_preset)
         if not isinstance(replay_last_turn, bool):
@@ -261,6 +267,7 @@ class DeerFlowClientPool:
             "replay_last_turn": replay_last_turn,
             "disabled_tools": DeerFlowClient._validate_disabled_tools(disabled_tools),
             "skill_preset": skill_preset,
+            "temporary_env": temporary_env,
         }
         wait_timeout = self._acquire_timeout if acquire_timeout is None else _validate_timeout(acquire_timeout)
         owner = object()
@@ -443,6 +450,7 @@ class AgentClientSession:
         replay_last_turn: bool = False,
         disabled_tools: list[str] | None = None,
         skill_preset: str | None = None,
+        temporary_env: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> Iterator[Any]:
         """流式调用底层客户端，并在整个流期间保持 session 租约。
@@ -458,6 +466,7 @@ class AgentClientSession:
                 "replay_last_turn": replay_last_turn,
                 "disabled_tools": disabled_tools,
                 "skill_preset": skill_preset,
+                "temporary_env": validate_temporary_environment(temporary_env),
                 **kwargs,
             },
         )
@@ -468,13 +477,14 @@ class AgentClientSession:
         *,
         thread_id: str | None = None,
         disabled_tools: list[str] | None = None,
+        temporary_env: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> str:
-        """调用底层客户端并支持按轮禁用工具。"""
+        """调用底层客户端并支持按轮禁用工具、注入临时环境变量。"""
         return self._invoke(
             "chat",
             (message,),
-            {"thread_id": thread_id, "disabled_tools": disabled_tools, **kwargs},
+            {"thread_id": thread_id, "disabled_tools": disabled_tools, "temporary_env": validate_temporary_environment(temporary_env), **kwargs},
         )
 
     def __getattr__(self, name: str) -> Any:

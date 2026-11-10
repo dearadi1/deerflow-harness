@@ -24,7 +24,7 @@ from deerflow.authz.sandbox_authz import (
 from deerflow.config import get_app_config
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
 from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH
-from deerflow.environment import EnvironmentSnapshot, get_environment_variables
+from deerflow.environment import EnvironmentSnapshot, get_environment_variables, get_temporary_environment
 from deerflow.runtime.secret_context import read_active_secrets
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.sandbox.env_policy import is_blocked_env_name
@@ -2455,6 +2455,7 @@ def bash_tool(runtime: Runtime, description: str = "", *, command: str) -> str:
         # GitHub channel. Both are injected as per-call env into the subprocess,
         # never placed in the command string.
         managed_env = get_environment_variables(resolve_runtime_user_id(runtime))
+        temporary_env = get_temporary_environment()
         injected_env = read_active_secrets(getattr(runtime, "context", None)) or None
         identity_prefix = _channel_identity_prefix(runtime)
         user_prefix = _user_identity_prefix(runtime)
@@ -2465,8 +2466,9 @@ def bash_tool(runtime: Runtime, description: str = "", *, command: str) -> str:
         if lark_cli_env:
             injected_env = {**(injected_env or {}), **lark_cli_env}
         redaction_env = {name: value for name, value in managed_env.items() if is_blocked_env_name(name)}
+        redaction_env.update(temporary_env)
         redaction_env.update(injected_env or {})
-        injected_env = EnvironmentSnapshot({**managed_env, **(injected_env or {})})
+        injected_env = EnvironmentSnapshot({**managed_env, **temporary_env, **(injected_env or {})})
         if is_local_sandbox(runtime):
             # Match the credential-name policy used for inherited host env.
             # Keep benign operator settings readable and redact effective
