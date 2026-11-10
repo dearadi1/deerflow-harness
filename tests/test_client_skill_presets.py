@@ -96,7 +96,7 @@ class ClientSkillPresetTests(PresetFixture):
         self.assertEqual(json.loads(self.file.read_text())["presets"]["default"]["skills"], states)
         self.assertEqual(detail["skills"], states)
         self.assertEqual(detail["enabled_skills"], ["alpha", "beta"])
-        self.assertEqual(public.list_presets(), {"default_preset": "default", "presets": [detail]})
+        self.assertEqual(public.list_presets(), {"presets": [detail]})
         pool = self.pool(synchronous=True)
         with pool.session(user_id="alice") as client:
             list(client.stream("首次启动默认预设", thread_id="initial_sync"))
@@ -104,15 +104,28 @@ class ClientSkillPresetTests(PresetFixture):
             list(stream)
         self.assertEqual(self.observations, [("alice", "default", {"alpha", "beta"}), ("bob", "default", {"alpha", "beta"})])
 
-    def test_session_stream_selects_preset_and_omission_uses_current_default(self):
+    def test_session_stream_omission_and_none_use_fixed_builtin_default(self):
         pool = self.pool(synchronous=True, size=1)
         with pool.session(user_id="alice") as client:
             list(client.stream("第一轮", thread_id="session_1", skill_preset=self.preset_two))
             self.assertIsNone(current_public_skill_preset())
             list(client.stream("第二轮", thread_id="session_1"))
-            self.store.set_default_preset(self.preset_two)
-            list(client.stream("第三轮", thread_id="session_1"))
-        self.assertEqual(self.observations, [("alice", self.preset_two, {"beta"}), ("alice", self.preset_one, {"alpha"}), ("alice", self.preset_two, {"beta"})])
+            self.store.update_preset("default", skill_states={"alpha": False})
+            list(client.stream("第三轮", thread_id="session_1", skill_preset=None))
+        self.assertEqual(self.observations, [("alice", self.preset_two, {"beta"}), ("alice", "default", {"alpha", "beta"}), ("alice", "default", {"beta"})])
+
+    def test_chat_persists_new_builtin_skill_without_changing_selected_preset(self):
+        self.store.update_preset("default", skill_states={"alpha": False})
+        pool = self.pool(synchronous=True)
+        write_skill(self.skills / "public", "later")
+        with pool.session(user_id="alice") as client:
+            list(client.stream("使用自定义预设", thread_id="new_skill_custom", skill_preset=self.preset_one))
+        document = json.loads(self.file.read_text())
+        self.assertEqual(set(document), {"version", "presets"})
+        self.assertEqual(document["presets"]["default"]["skills"], {"alpha": False, "beta": True, "later": True})
+        with pool.start_stream("使用内置默认预设", user_id="alice", thread_id="new_skill_builtin") as stream:
+            list(stream)
+        self.assertEqual(self.observations, [("alice", self.preset_one, {"alpha"}), ("alice", "default", {"beta", "later"})])
 
     def test_sync_generators_do_not_leak_preset_between_yields_or_close(self):
         first = self.client(synchronous=True).stream("甲", thread_id="sync_1", skill_preset=self.preset_one)
@@ -145,7 +158,7 @@ class ClientSkillPresetTests(PresetFixture):
             second.close(timeout=5)
         self.assertIn(("alice", self.preset_one, {"alpha"}), self.observations)
         self.assertIn(("bob", self.preset_two, {"beta"}), self.observations)
-        with pool.start_stream("新轮次", user_id="alice", thread_id="managed_1") as stream:
+        with pool.start_stream("新轮次", user_id="alice", thread_id="managed_1", skill_preset=self.preset_one) as stream:
             list(stream)
         self.assertEqual(self.observations[-1], ("alice", self.preset_one, {"beta"}))
 
@@ -160,7 +173,7 @@ class ClientSkillPresetTests(PresetFixture):
             self.release.set()
         with pool.start_stream("继续", user_id="alice", thread_id="cancel_1") as following:
             list(following)
-        self.assertEqual(self.observations, [("alice", self.preset_one, {"alpha"})])
+        self.assertEqual(self.observations, [("alice", "default", {"alpha", "beta"})])
 
     def test_unknown_preset_fails_and_pool_remains_usable(self):
         pool = self.pool(size=1)
@@ -169,7 +182,7 @@ class ClientSkillPresetTests(PresetFixture):
                 list(stream)
         with pool.start_stream("有效", user_id="alice") as stream:
             list(stream)
-        self.assertEqual(self.observations[-1][1], self.preset_one)
+        self.assertEqual(self.observations[-1][1], "default")
 
     def test_invalid_preset_arguments_do_not_leak_pool_slots_or_context(self):
         pool = self.pool(synchronous=True, size=1)
@@ -191,17 +204,16 @@ class ClientSkillPresetTests(PresetFixture):
         pool = self.pool(synchronous=True, size=1)
         with pool.session(user_id="alice") as client:
             self.assertEqual(client.chat("显式选择", skill_preset=self.preset_two), self.preset_two)
-            self.assertEqual(client.chat("默认选择"), self.preset_one)
-        self.assertEqual([item[1] for item in self.observations], [self.preset_two, self.preset_one])
+            self.assertEqual(client.chat("默认选择"), "default")
+        self.assertEqual([item[1] for item in self.observations], [self.preset_two, "default"])
 
     def test_replay_selects_requested_preset_without_inheriting_previous_choice(self):
         pool = self.pool(synchronous=True, size=1)
         with pool.session(user_id="alice") as client:
             list(client.stream("原始输入", thread_id="preset_replay", skill_preset=self.preset_two))
             list(client.stream("替换输入", thread_id="preset_replay", replay_last_turn=True, skill_preset=self.preset_one))
-            self.store.set_default_preset(self.preset_two)
             list(client.stream("再次替换", thread_id="preset_replay", replay_last_turn=True))
-        self.assertEqual([item[1] for item in self.observations], [self.preset_two, self.preset_one, self.preset_two])
+        self.assertEqual([item[1] for item in self.observations], [self.preset_two, self.preset_one, "default"])
 
     def test_agent_cache_rebuilds_for_preset_and_content_revision(self):
         client = DeerFlowClient(checkpointer=self.saver)

@@ -70,7 +70,7 @@ with pool.start_stream(
 | `thread_id` | `None` | 自动生成；继续对话时复用同一 ID，并配置可用的 checkpointer |
 | `replay_last_turn` | `False` | 替换最近一轮输入并重新生成；必须提供已有 `thread_id` |
 | `disabled_tools` | `None` | 本轮主智能体禁用的工具名称列表；不修改全局工具配置 |
-| `skill_preset` | `None` | 公共技能预设 ID；不传时使用当前默认预设 |
+| `skill_preset` | `None` | 公共技能预设 ID；不传时固定使用 `default` |
 | `temporary_env` | `None` | 本轮沙盒临时变量 `dict[str, str]`；覆盖同名公共／私有值，不随会话保存 |
 | `acquire_timeout` | `None` | `None` 沿用池的等待时间；非负数字覆盖本次等待时间 |
 | `buffer_size` | `64` | 正整数，未消费事件的缓冲数量上限；缓冲满时执行端等待消费 |
@@ -199,9 +199,9 @@ with pool.start_stream(
 
 示例要求公共技能 `shared-summary` 已存在。预设管理及文件格式见 [SKILL_AGENTS.md](SKILL_AGENTS.md#公共技能预设)。
 
-- 不传或传 `None`，每轮读取当前默认预设，不继承上一轮的显式选择。
-- 显式选择只影响本轮，不修改文件中的默认值；不存在的 ID 会报错。
-- 每轮固定公共开关快照。修改预设、切换默认值或删除预设影响后续轮次，已有池下一轮会自动识别，无需调用 `invalidate_agents()`。
+- 不传或传 `None`，每轮固定读取 ID 为 `default` 的预设，不继承上一轮的显式选择。
+- 显式选择只影响本轮；不存在的 ID 会报错。
+- 每轮固定公共开关快照。修改预设或删除自定义预设影响后续轮次，已有池下一轮会自动识别，无需调用 `invalidate_agents()`。内置 `default` 无法删除。
 - 私有技能不参与预设；技能文件内容、Agent 技能范围和授权规则仍按各自规则生效。
 - 运行预设需要沙箱支持线程级技能文件隔离。开启宿主机 bash 的 `LocalSandboxProvider` 不支持该隔离方式，需使用支持隔离的沙箱或关闭宿主机 bash。
 
@@ -212,7 +212,7 @@ with pool.start_stream(
 
 预设文件默认位于 `.deer-flow/skill_presets.json`；设置 `DEER_FLOW_HOME` 时位于该数据目录。可通过 `DEER_FLOW_SKILL_PRESETS_PATH` 显式指定其他路径。
 
-内置 `default` 初始启用全部公共 Skill，未配置的新技能也默认启用，可通过预设接口逐个关闭。自定义预设未配置项仍默认关闭，选作当前默认预设也不会自动全开。初始化时会校验预设文件；格式错误时先在同目录保存 `skill_presets.json.invalid-<随机值>.bak`，再恢复为全部启用的 `default` 预设，私有状态保持不变。备份或替换失败会阻止初始化，原文件保留；运行中的格式错误仍会报错。
+内置 `default` 初始启用全部公共 Skill，新增公共技能自动补写为 `true`，已有显式关闭项保持不变。该预设可以修改名称与开关，但不能删除。自定义预设未配置项默认关闭，聊天时必须显式选择。文件顶层仅包含 `version` 和 `presets`，并要求存在内置 `default`。初始化发现结构不完整或格式错误时先在同目录保存 `skill_presets.json.invalid-<随机值>.bak`，再恢复为全部启用的 `default` 预设，私有状态保持不变。备份或替换失败会阻止初始化，原文件保留；运行中的格式错误仍会报错。
 
 ## 事件与异常
 

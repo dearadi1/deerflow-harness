@@ -42,7 +42,7 @@ stream：校验并复制本轮临时变量
 | `thread_id` | `str \| None = None` | `None` 时生成 UUID 字符串；显式值必须为 1–64 个 ASCII 字母、数字、下划线或连字符，否则抛出 `ValueError`。空字符串不会触发自动生成。 |
 | `replay_last_turn` | `bool = False` | `False` 发起普通一轮；`True` 替换最近一轮输入并重新执行。非布尔值抛出 `TypeError`。 |
 | `disabled_tools` | `list[str] \| None = None` | 本轮主智能体禁止绑定的工具名称，按工具实际 `name` 精确匹配（区分大小写）。`None` / `[]` 不额外禁用；重复名称自动去重，未知名称忽略。非列表或含非字符串元素抛出 `TypeError`，空白名称抛出 `ValueError`。 |
-| `skill_preset` | `str \| None = None` | 本轮公共技能预设 ID；省略时读取当前默认预设。 |
+| `skill_preset` | `str \| None = None` | 本轮公共技能预设 ID；省略或传 `None` 时固定读取 `default`。 |
 | `temporary_env` | `dict[str, str] \| None = None` | 本轮沙盒临时变量；覆盖同名公共／私有值。省略、`None` 或 `{}` 不沿用上一轮临时值。 |
 
 除 `message` 外的显式参数必须以关键字传入。自动生成的 `thread_id` 可从输出事件的同名字段取得。
@@ -68,7 +68,7 @@ for event in client.stream(
 
 ### 2.2 按轮选择公共技能预设
 
-`stream(..., skill_preset="preset_1")` 显式选择公共技能预设；不传或传 `None` 时使用独立 `skill_presets.json` 中的当前默认预设。每轮重新选择，不继承上一轮显式值，也不修改默认值。未知预设在迭代准备时抛出 `ValueError`。
+`stream(..., skill_preset="preset_1")` 显式选择公共技能预设；不传或传 `None` 时固定使用独立 `skill_presets.json` 中 ID 为 `default` 的预设。每轮重新选择，不继承上一轮显式值。内置 `default` 可以修改但不能删除；未知预设在迭代准备时抛出 `ValueError`。
 
 本轮公共开关固定为快照，普通子 agent 继承；下一轮自动按内容签名更新缓存。私有技能开关、Agent 白名单和授权规则保持原有约束。`chat()`、session 和 `pool.start_stream()` 支持同名参数。文件格式与管理接口见 [SKILL_AGENTS.md](SKILL_AGENTS.md#公共技能预设)，沙箱隔离要求见 [AGENT_AGENTS.md](AGENT_AGENTS.md#每轮选择公共技能预设)。
 

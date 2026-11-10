@@ -72,6 +72,9 @@ class SkillClientPublicTests(unittest.TestCase):
         self.users = {}
         self.public_factory = self.enterContext(patch("deerflow.skill_client.get_or_new_skill_storage", return_value=self.storage))
         self.user_factory = self.enterContext(patch("deerflow.skill_client.get_or_new_user_skill_storage", side_effect=self.user_storage))
+        # 隔离此前加载的全局提示词后台扫描；缓存行为测试会注入自己的受控模块。
+        modules = {name: Mock() for name in ("deerflow.agents.lead_agent.prompt", "deerflow.agents.lead_agent.prompt_zh")}
+        self.enterContext(patch.dict(sys.modules, modules))
         self.client = DeerFlowSkillClient()
         self.public = self.client.public
         self.public_root = self.root / "configured-skills/public"
@@ -97,6 +100,7 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertEqual(self.public.list_skills(), [])
         path = self.public.create_skill("example", "描述", license="MIT")
         self.assertEqual(path, str(self.public_root / "example"))
+        self.assertEqual(json.loads(self.public._presets.path.read_text())["presets"]["default"]["skills"], {"example": True})
         self.assertEqual(self.public.get_skill_info("example")["license"], "MIT")
         self.assertEqual(self.public.list_skills(), [{
             "name": "example", "description": "描述",
@@ -125,7 +129,6 @@ class SkillClientPublicTests(unittest.TestCase):
         preset_id = created["preset_id"]
         self.assertEqual(created["enabled_skills"], [])
         self.public.update_preset(preset_id, skill_states={"example": True})
-        self.public.set_default_preset(preset_id)
         self.assertEqual(self.public.list_skills(), original)
         with self.assertRaises(TypeError):
             self.public.list_skills(preset_id=preset_id)
@@ -459,9 +462,8 @@ class SkillClientPublicTests(unittest.TestCase):
 
     def test_public_deletion_cleans_all_presets_and_recreation_uses_new_skill_defaults(self):
         enabled = self.prepare_preset_lifecycle()
-        self.public.set_default_preset(enabled)
         before = self.public._presets.read()
-        snapshot = self.public._presets.resolve()
+        snapshot = self.public._presets.resolve(enabled)
         self.public.delete_skill("example")
         self.assert_example_removed_from_presets()
         self.assertFalse((self.view / "example").exists())
@@ -471,13 +473,13 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertEqual(self.public._presets.read(), expected)
         self.assertEqual(DeerFlowSkillClient().public.list_presets(), self.public.list_presets())
         self.assertTrue(snapshot.is_enabled("example"))
-        self.assertNotEqual(self.public._presets.resolve().signature, snapshot.signature)
+        self.assertNotEqual(self.public._presets.resolve(enabled).signature, snapshot.signature)
         self.public.create_skill("example", "重新创建")
         for detail in self.public.list_presets()["presets"]:
             self.assertEqual(detail["skills"]["example"], detail["preset_id"] == "default")
-        self.assertFalse(self.public.get_preset()["skills"]["example"])
+        self.assertFalse(self.public.get_preset(enabled)["skills"]["example"])
 
-    def test_creation_clears_historical_missing_states_without_query_side_effects(self):
+    def test_creation_preserves_builtin_explicit_disable_and_clears_custom_history(self):
         self.prepare_preset_lifecycle()
         directory = self.public_root / "example"
         (directory / "SKILL.md").unlink()
@@ -489,8 +491,36 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertEqual(self.public._presets.path.read_bytes(), original)
         self.public.create_skill("example", "重新安装")
         for detail in self.public.list_presets()["presets"]:
-            self.assertEqual(detail["skills"]["example"], detail["preset_id"] == "default")
+            self.assertFalse(detail["skills"]["example"])
             self.assertEqual(detail["missing_skills"], [])
+
+    def test_creation_persists_only_builtin_state_and_preserves_custom_presets(self):
+        selected = self.prepare_preset_lifecycle()
+        expected = json.loads(self.public._presets.path.read_text())
+        self.public.create_skill("new", "新增公共技能")
+        expected["presets"]["default"]["skills"]["new"] = True
+        self.assertEqual(json.loads(self.public._presets.path.read_text()), expected)
+        self.assertFalse(self.public.get_preset(selected)["skills"]["new"])
+        self.assertTrue(self.public.get_preset("default")["skills"]["new"])
+
+    def test_builtin_default_remains_selected_and_cannot_be_deleted(self):
+        created = self.public.create_preset("默认预设")
+        self.assertFalse(created["is_default"])
+        self.assertTrue(self.public.get_preset()["is_default"])
+        original = self.public._presets.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "不能删除.*default"):
+            self.public.delete_preset("default")
+        self.assertEqual(self.public._presets.path.read_bytes(), original)
+        self.public.delete_preset(created["preset_id"])
+        self.assertEqual(self.public.list_presets(), {"presets": [self.public.get_preset()]})
+
+    def test_creation_rolls_back_when_new_builtin_state_cannot_be_saved(self):
+        original = self.public._presets.path.read_bytes()
+        with patch("deerflow.skills.presets._write_document", side_effect=OSError("模拟磁盘失败")):
+            with self.assertRaises(OSError):
+                self.public.create_skill("new", "新增公共技能")
+        self.assertFalse((self.public_root / "new").exists())
+        self.assertEqual(self.public._presets.path.read_bytes(), original)
 
     def test_content_resources_queries_and_private_mutations_preserve_public_presets(self):
         self.prepare_preset_lifecycle()
