@@ -1,6 +1,7 @@
 """通过同步池入口和真实 LangGraph 托管执行验证预设生命周期。"""
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from deerflow.agent_client import DeerFlowClientPool
 from deerflow.agents.thread_state import get_thread_state_schema
 from deerflow.client import DeerFlowClient
 from deerflow.runtime.user_context import get_effective_user_id
+from deerflow.skill_client import DeerFlowSkillClient
 from deerflow.skills.presets import current_public_skill_preset, public_skill_preset_scope
 from deerflow.skills.storage import UserScopedSkillStorage
 from test_skill_presets import PresetFixture, write_skill
@@ -69,6 +71,7 @@ class ClientSkillPresetTests(PresetFixture):
         write_skill(self.paths.user_custom_skills_dir("alice"), "personal")
         self.file.write_bytes(b"{")
         synchronous = self.pool(synchronous=True)
+        self.assertEqual(json.loads(self.file.read_text())["presets"]["default"]["skills"], {"alpha": True, "beta": True})
         with synchronous.session(user_id="alice") as client:
             for _ in range(2):
                 list(client.stream("默认全开预设", thread_id="recovered_sync"))
@@ -83,6 +86,23 @@ class ClientSkillPresetTests(PresetFixture):
             self.assertEqual(pool.stats["borrowed"], 0)
             self.assertEqual(pool.stats["available"], 2)
         self.assertEqual(len(list(self.root.glob("skill_presets.json.invalid-*.bak"))), 1)
+
+    def test_missing_file_default_matches_management_and_chat(self):
+        self.file.unlink()
+        with patch("deerflow.skill_client.load_client_config", return_value=self.config):
+            public = DeerFlowSkillClient().public
+        detail = public.get_preset()
+        states = {"alpha": True, "beta": True}
+        self.assertEqual(json.loads(self.file.read_text())["presets"]["default"]["skills"], states)
+        self.assertEqual(detail["skills"], states)
+        self.assertEqual(detail["enabled_skills"], ["alpha", "beta"])
+        self.assertEqual(public.list_presets(), {"default_preset": "default", "presets": [detail]})
+        pool = self.pool(synchronous=True)
+        with pool.session(user_id="alice") as client:
+            list(client.stream("首次启动默认预设", thread_id="initial_sync"))
+        with pool.start_stream("首次启动默认预设", user_id="bob", thread_id="initial_managed") as stream:
+            list(stream)
+        self.assertEqual(self.observations, [("alice", "default", {"alpha", "beta"}), ("bob", "default", {"alpha", "beta"})])
 
     def test_session_stream_selects_preset_and_omission_uses_current_default(self):
         pool = self.pool(synchronous=True, size=1)

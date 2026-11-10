@@ -74,6 +74,7 @@ class SkillPresetStoreTests(PresetFixture):
         self.assertFalse(created["is_default"])
         document = json.loads(self.file.read_text())
         self.assertEqual(document["presets"][preset_id], {"name": "同名预设", "skills": {}})
+        self.assertEqual(document["presets"]["default"]["skills"], {"alpha": True, "beta": True})
         self.assertEqual(document["default_preset"], "default")
         self.assertEqual(SkillPresetStore(self.skills).get_preset(preset_id), created)
         created["skills"]["alpha"] = True
@@ -101,6 +102,7 @@ class SkillPresetStoreTests(PresetFixture):
         self.assertEqual(snapshot.preset_id, "default")
         self.assertEqual(snapshot.enabled_skills, {"alpha", "beta"})
         self.assertEqual(self.store.get_preset()["skills"], {"alpha": True, "beta": True})
+        self.assertEqual(json.loads(self.file.read_text())["presets"]["default"]["skills"], {"alpha": True, "beta": True})
         self.assertEqual(self.enabled(), {"beta"})
         self.assertEqual(self.extension_file.read_bytes(), original)
         self.extension_file.write_text("{}")
@@ -327,7 +329,11 @@ class SkillPresetStartupTests(PresetFixture):
         return list(self.file.parent.glob(f"{self.file.name}.invalid-*.bak"))
 
     def assert_all_enabled_default(self, document):
-        self.assertEqual(document, {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": {}}}})
+        states = {"alpha": True, "beta": True}
+        self.assertEqual(document, {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": states}}})
+        self.assertEqual(json.loads(self.file.read_text()), document)
+        self.assertEqual(self.store.get_preset()["skills"], states)
+        self.assertEqual(self.store.list_presets()["presets"][0]["skills"], states)
         self.assertEqual(self.store.resolve().enabled_skills, {"alpha", "beta"})
 
     def test_invalid_formats_keep_exact_bytes_and_recover_without_private_changes(self):
@@ -371,9 +377,30 @@ class SkillPresetStartupTests(PresetFixture):
 
     def test_missing_file_enables_all_public_skills_without_migrating_legacy_states(self):
         self.extension_file.write_text('{"skills":{"alpha":{"enabled":false}}}')
-        self.store.initialize()
-        self.assertEqual(self.store.resolve().enabled_skills, {"alpha", "beta"})
+        write_skill(self.paths.user_custom_skills_dir("alice"), "personal")
+        invalid = write_skill(self.skills / "public", "invalid")
+        (invalid / "SKILL.md").write_text("缺少技能元数据", encoding="utf-8")
+        self.assert_all_enabled_default(self.store.initialize())
         self.assertEqual(self.backups(), [])
+
+    def test_existing_empty_default_is_not_rewritten(self):
+        document = {"version": 1, "default_preset": "default", "presets": {"default": {"name": "已有预设", "skills": {}}}}
+        self.file.write_text(json.dumps(document))
+        original = self.file.read_bytes()
+        self.assertEqual(self.store.initialize(), document)
+        self.assertEqual(self.store.get_preset()["skills"], {"alpha": True, "beta": True})
+        self.assertEqual(self.store.resolve().enabled_skills, {"alpha", "beta"})
+        self.assertEqual(self.file.read_bytes(), original)
+        self.assertEqual(self.backups(), [])
+
+    def test_initially_empty_catalog_enables_public_skills_added_later(self):
+        store = SkillPresetStore(self.root / "empty-skills")
+        document = store.initialize()
+        self.assertEqual(document["presets"]["default"]["skills"], {})
+        self.assertEqual(store.get_preset()["enabled_skills"], [])
+        write_skill(store.skills_root / "public", "later")
+        self.assertEqual(store.get_preset()["skills"], {"later": True})
+        self.assertEqual(store.resolve().enabled_skills, {"later"})
 
     def test_backup_failure_never_overwrites_original(self):
         self.file.write_bytes(b"invalid\xff")
