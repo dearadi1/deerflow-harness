@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares.model_response import append_visible_text, has_tool_call_intent, has_visible_content
+from deerflow.answer_errors import mark_answer_error
 
 _FALLBACK_CONTENT = "The model completed the tool run but returned no final response. Please try again or use a different model."
 
@@ -63,7 +64,7 @@ class TerminalResponseMiddleware(AgentMiddleware[AgentState]):
                 "additional_kwargs": additional_kwargs,
             }
         )
-        return {"messages": [fallback]}
+        return {"messages": [mark_answer_error(fallback, _FALLBACK_CONTENT)]}
 
     @override
     def after_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:

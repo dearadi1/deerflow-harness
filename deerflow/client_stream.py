@@ -11,6 +11,8 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage, messages_from_dict
 
+from deerflow.answer_errors import answer_text, project_answer_error
+from deerflow.config.error_handling_config import DEFAULT_ERROR_MESSAGE
 from deerflow.protocol import ClientStreamEvent, ContextUsedData, SuggestionsData, TokenCost, parse_stream_event
 
 from deerflow.client_stream_pricing import ClientStreamPricing, exclude_attributed_child_usage, sum_costs, unpriced_cost
@@ -39,17 +41,12 @@ def _message(value: Any) -> Any:
 def _content_parts(message: AIMessage) -> dict[str, str]:
     parts: dict[str, list[str]] = {"answer_content": [], "reasoning_content": []}
     content = message.content
-    if isinstance(content, str):
-        parts["answer_content"].append(content)
-    elif isinstance(content, list):
+    parts["answer_content"].append(answer_text(content))
+    if isinstance(content, list):
         for block in content:
-            if isinstance(block, str):
-                parts["answer_content"].append(block)
-            elif isinstance(block, dict):
+            if isinstance(block, dict):
                 kind = block.get("type")
-                if kind in {"text", "text_delta", "output_text"}:
-                    parts["answer_content"].append(block.get("text", ""))
-                elif kind in {"reasoning", "thinking", "reasoning_content", "reasoning_delta", "thinking_delta"}:
+                if kind in {"reasoning", "thinking", "reasoning_content", "reasoning_delta", "thinking_delta"}:
                     parts["reasoning_content"].append(block.get("reasoning") or block.get("thinking") or block.get("text") or "")
     # 部分供应商同时填充标准块和私有字段，只选一个来源以免重复输出思考。
     if not any(parts["reasoning_content"]):
@@ -62,10 +59,11 @@ def _content_parts(message: AIMessage) -> dict[str, str]:
 class ClientStreamParser:
     """来源处理器可按 mode 扩展；状态键包含 agent 和消息身份，隔离并行调用。"""
 
-    def __init__(self, thread_id: str, run_id: str, *, pricing: ClientStreamPricing | None = None) -> None:
+    def __init__(self, thread_id: str, run_id: str, *, pricing: ClientStreamPricing | None = None, error_message: str = DEFAULT_ERROR_MESSAGE) -> None:
         self.thread_id = thread_id
         self.run_id = run_id
         self.seq = 0
+        self._error_message = error_message
         self._pricing = pricing or ClientStreamPricing()
         self._agent_models: dict[str, str | None] = {"main": self._pricing.default_model}
         self._message_models: dict[tuple[str, str], str | None] = {}
@@ -193,8 +191,8 @@ class ClientStreamParser:
         self._bind_message_model(key, message, metadata)
         incremental = isinstance(message, AIMessageChunk)
         parts = _content_parts(message)
-        extra = message.additional_kwargs
-        changed_metadata = extra != self._metadata.get(key) and bool(extra.get("deerflow_error_fallback"))
+        parts["answer_content"], extra = project_answer_error(message, self._error_message)
+        changed_metadata = extra != self._metadata.get(key) and bool(extra.get("deerflow_error_fallback") or extra.get("error"))
         self._metadata[key] = copy.deepcopy(extra)
         for kind in ("reasoning_content", "answer_content"):
             text_key = (*key, kind)
@@ -205,7 +203,7 @@ class ClientStreamParser:
                 self._text[text_key] = previous + delta
             if delta or (kind == "answer_content" and changed_metadata):
                 data = {"id": message_id, "content": delta}
-                if changed_metadata:
+                if kind == "answer_content" and changed_metadata:
                     data["additional_kwargs"] = copy.deepcopy(extra)
                 yield self.event(kind, agent_id, data)
         if incremental and message.tool_call_chunks:

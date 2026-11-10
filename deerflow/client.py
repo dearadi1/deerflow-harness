@@ -1128,7 +1128,10 @@ class DeerFlowClient:
             getattr(getattr(self, "_app_config", None), "models", ()),
             default_model=effective_model_name or configurable.get("model_name") or self._model_name,
         )
-        parser = ClientStreamParser(thread_id, run_id, pricing=pricing)
+        from deerflow.config.error_handling_config import ErrorHandlingConfig
+
+        error_handling = getattr(self._app_config, "error_handling", None) or ErrorHandlingConfig()
+        parser = ClientStreamParser(thread_id, run_id, pricing=pricing, error_message=error_handling.fallback_message)
         return _ClientTurn(self._agent, state, config, context, parser)
 
     @staticmethod

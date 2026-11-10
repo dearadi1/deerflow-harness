@@ -33,6 +33,7 @@ from deerflow.agents.middlewares.model_length_termination_detectors import (
 )
 from deerflow.agents.middlewares.model_response import append_visible_text, has_tool_call_intent, has_visible_content
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
+from deerflow.answer_errors import mark_answer_error
 from deerflow.utils.custom_events import aemit_custom_event, emit_custom_event
 
 MODEL_LENGTH_CAPPED_STOP_REASON = "model_length_capped"
@@ -176,7 +177,7 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
                 "response_metadata": last.response_metadata,
             }
         )
-        return {"messages": [replacement]}
+        return {"messages": [mark_answer_error(replacement, _MODEL_LENGTH_CAPPED_CONTENT)]}
 
     @override
     def after_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:

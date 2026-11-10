@@ -8,6 +8,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
+from deerflow.answer_errors import mark_answer_error
 from deerflow.config.subagents_config import (
     DEFAULT_MAX_TOTAL_SUBAGENTS_PER_RUN,
     MAX_CONCURRENT_SUBAGENT_CALLS,
@@ -170,6 +171,8 @@ class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
         # Replace the AIMessage with truncated tool_calls (same id triggers replacement)
         content = _append_text(last_msg.content, _TOTAL_LIMIT_STOP_MSG) if remaining_total == 0 else None
         updated_msg = clone_ai_message_with_tool_calls(last_msg, truncated_tool_calls, content=content)
+        if remaining_total == 0:
+            updated_msg = mark_answer_error(updated_msg, _TOTAL_LIMIT_STOP_MSG)
         return {"messages": [updated_msg]}
 
     @override

@@ -21,6 +21,7 @@ from deerflow.config.checkpointer_config import CheckpointerConfig, load_checkpo
 from deerflow.config.database_config import DatabaseConfig
 from deerflow.config.dedupe_storage_config import DedupeStorageConfig
 from deerflow.config.deployment_config import DeploymentConfig
+from deerflow.config.error_handling_config import ErrorHandlingConfig
 from deerflow.config.extensions_config import ExtensionsConfig, get_extensions_config
 from deerflow.config.file_signature import ConfigSignature as _ConfigSignature
 from deerflow.config.file_signature import get_config_signature as _get_config_signature
@@ -310,6 +311,7 @@ class AppConfig(BaseModel):
     suggestions: SuggestionsConfig = Field(default_factory=SuggestionsConfig, description="Follow-up suggestions configuration.")
     circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig, description="LLM circuit breaker configuration")
     llm_call: LlmCallConfig = Field(default_factory=LlmCallConfig, description="LLM call execution configuration (concurrency / rate shaping)")
+    error_handling: ErrorHandlingConfig = Field(default_factory=ErrorHandlingConfig, description="客户端回答错误提示配置，不改变执行和重试策略")
     channel_connections: ChannelConnectionsConfig = Field(
         default_factory=ChannelConnectionsConfig,
         description=format_field_description(

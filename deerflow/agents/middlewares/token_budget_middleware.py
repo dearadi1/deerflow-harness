@@ -57,6 +57,7 @@ from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
+from deerflow.answer_errors import mark_answer_error
 from deerflow.config.token_budget_config import TokenBudgetConfig
 
 logger = logging.getLogger(__name__)
@@ -238,7 +239,7 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
     def _build_hard_stop_update(self, msg: AIMessage, stop_msg: str) -> dict[str, Any]:
         """Build the state update dictionary for a hard stop."""
         stopped_msg = clone_ai_message_with_tool_calls(msg, [], content=self._append_text(msg.content, stop_msg))
-        return {"messages": [stopped_msg]}
+        return {"messages": [mark_answer_error(stopped_msg, stop_msg)]}
 
     def _apply(self, state: AgentState, runtime: Runtime) -> dict | None:
         if not self._config.enabled:
