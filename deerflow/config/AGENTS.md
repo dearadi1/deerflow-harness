@@ -39,6 +39,8 @@ raise, and API create/update validation remains strict.
 
 **Main Configuration** (`config.yaml`):
 
+`error_handling.fallback_message` 配置客户端 `answer_content` 中间件错误提示，默认“当前访问繁忙，您可稍后重试，或切换其他模型”，不接受空白、null 或非字符串。每轮解析器读取客户端持有的 AppConfig，默认和显式注入配置使用同一路径；不改变重试、内部消息、工具结果或终态。真实详情见 `additional_kwargs.error`，适用范围见 `../protocol/AGENTS.md`。该字段不属于启动基础设施配置。
+
 Setup: Copy root `config.example.yaml` to `config.yaml`. Startup callers use
 `deerflow.env.load_selected_env_file()` for optional `DEER_FLOW_ENV_FILE` (cwd-relative,
 strict readable file, process env wins). Reject a disabling `PYTHON_DOTENV_DISABLED`

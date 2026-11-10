@@ -63,6 +63,7 @@ from deerflow.agents.middlewares.safety_termination_detectors import (
     default_detectors,
 )
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
+from deerflow.answer_errors import mark_answer_error
 from deerflow.runtime.events.catalog import MIDDLEWARE_SAFETY_TERMINATION_TAG
 from deerflow.utils.custom_events import aemit_custom_event, emit_custom_event
 from deerflow.utils.messages import message_content_to_text
@@ -221,7 +222,7 @@ class SafetyFinishReasonMiddleware(AgentMiddleware[AgentState]):
             "suppressed_tool_call_names": suppressed_names,
             "extras": dict(termination.extras) if termination.extras else {},
         }
-        return cleared.model_copy(update={"additional_kwargs": kwargs})
+        return mark_answer_error(cleared.model_copy(update={"additional_kwargs": kwargs}), explanation)
 
     # ----- observability ---------------------------------------------------
 

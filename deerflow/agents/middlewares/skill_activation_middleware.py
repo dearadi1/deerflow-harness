@@ -96,6 +96,7 @@ class _Activation:
 class _ActivationResolution:
     activation: _Activation | None = None
     failure_message: str | None = None
+    failure_detail: str | None = None
     # A retry of the call that already activated: re-inject the reminder, but the
     # once-per-activation side effects (audit, usage record) already happened.
     replayed: bool = False
@@ -332,9 +333,12 @@ class SkillActivationMiddleware(AgentMiddleware):
 
         try:
             skill_content = self._read_skill_content(resolved.skill.skill_file, storage.get_skills_root_path(), storage=storage)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as error:
             logger.exception("Failed to read slash-activated skill %s", resolved.skill.name)
-            return _ActivationResolution(failure_message=f"Skill `/{reference.name}` could not be loaded safely. Please check the skill installation.")
+            return _ActivationResolution(
+                failure_message=f"Skill `/{reference.name}` could not be loaded safely. Please check the skill installation.",
+                failure_detail=f"{type(error).__name__}: {error}",
+            )
 
         content_hash = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
         # CUSTOM skills are editable; PUBLIC and LEGACY are read-only
@@ -533,7 +537,9 @@ Follow this skill before choosing a general workflow. Load supporting resources 
 
         target_index, target, resolution, run_key = target_and_resolution
         if resolution.failure_message:
-            return AIMessage(content=resolution.failure_message), None
+            from deerflow.answer_errors import mark_answer_error
+
+            return mark_answer_error(AIMessage(content=resolution.failure_message), resolution.failure_message, detail=resolution.failure_detail), None
 
         activation = resolution.activation
         if activation is None:

@@ -1,5 +1,7 @@
 ### Middleware Chain
 
+客户端错误展示通过 `deerflow/answer_errors.py` 分离：LLMErrorHandling、TerminalResponse、SkillActivation、ModelLengthFinishReason、SafetyFinishReason、LoopDetection、TokenBudget 和 SubagentLimit 在生成原有提示后调用 `mark_answer_error`，记录精确正文位置及真实详情。不得用统一文案改写内部消息或新增错误状态，以免改变后续模型上下文、子任务结果或停止语义。`ClientStreamParser` 仅投影公开正文，按 `error_handling.fallback_message` 替换标记片段，传递 `additional_kwargs.error` 并去重；成功重试和可恢复工具路径不加标记。验证为 `tests/test_answer_error_fallback.py` 和 `tests/test_answer_error_stream.py`，覆盖公开同步/托管流及 full/delta 存储。
+
 Async gate waiters own separate cross-loop futures. Cancel only their signal;
 notify outside the state lock. `_await_off_thread` drains started I/O across
 repeated cancellation.

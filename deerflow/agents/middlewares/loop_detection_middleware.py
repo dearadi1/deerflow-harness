@@ -83,6 +83,7 @@ from deerflow.agents.middlewares.audit_context import (
     resolve_audit_recorder,
 )
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
+from deerflow.answer_errors import mark_answer_error
 from deerflow.runtime.events.catalog import MIDDLEWARE_LOOP_DETECTION_TAG
 
 if TYPE_CHECKING:
@@ -831,7 +832,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             last_msg = messages[-1]
             content = self._append_text(last_msg.content, warning or _HARD_STOP_MSG)
             stripped_msg = clone_ai_message_with_tool_calls(last_msg, [], content=content)
-            return {"messages": [stripped_msg]}
+            return {"messages": [mark_answer_error(stripped_msg, warning or _HARD_STOP_MSG)]}
 
         if decision.action == "warn":
             # Defer injection to the next model call. We must NOT alter the

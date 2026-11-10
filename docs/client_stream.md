@@ -259,6 +259,7 @@ token使用统计块
 - 当前子智能体来自 `task_running.message`，以完整步骤输出，不提供逐 token 的子智能体流。子智能体的调用、结果、思考、正文及用量仍按同一协议解析，同一消息 ID 在不同 agent 下分别绑定，避免跨智能体冲突。规划模式的 `write_todos` 作为普通工具处理。
 - `values` 用于补齐完整调用、标题及未流式输出的消息；历史消息不重新输出或记账。正文只追加快照相对已输出文本的后缀，避免把完整快照重放一次。工具结果保留原始内容以及非空 `artifact`；错误消息保留 `additional_kwargs` 供 CLI 判断失败。
 - 解析入口在 `deerflow/client_stream.py` 的 `ClientStreamParser`。后续数据源可通过 `register_source(mode, handler)` 注册；未知 mode 不会误作 `values`。新处理器应使用 `event()` 构造输出，以共享 seq，并保持上述 ID 和用量约定。
+- 中间件最终失败或主动保护的正文提示使用 `config.yaml` 中的 `error_handling.fallback_message`，默认“当前访问繁忙，您可稍后重试，或切换其他模型”。已有正常正文保留，原始详情位于 `answer_content.data.additional_kwargs.error`（字符串）。同一消息只追加一次统一提示，重复快照不重复输出；重试成功不进入该流程。此展示转换不改变内部消息、工具结果、停止条件和原有 `end`/`error` 事件。详细范围见[回答块协议](../deerflow/protocol/AGENTS.md#2-回答块-answer_content)。
 
 真实运行核对时需注意：`TokenUsageMiddleware` 会把子任务累计用量回写到派发 `task` 的主 AI 消息，并给对应工具结果标记 `subagent_token_usage_attributed=true`。协议中的逐消息 `token_usage` 保留该 AI 模型调用自身的用量，子智能体另外统计；对照最终线程快照时，需要按调用 ID 扣除已归属的子任务部分，不能再将快照总数与子任务数重复相加。
 

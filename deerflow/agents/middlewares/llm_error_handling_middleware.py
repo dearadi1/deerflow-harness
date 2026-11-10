@@ -26,6 +26,7 @@ from langgraph.errors import GraphBubbleUp
 
 from deerflow.agents.middlewares.model_response import append_visible_text, finish_reason, has_tool_call_intent, has_visible_content, last_ai_message
 from deerflow.config.app_config import AppConfig
+from deerflow.answer_errors import mark_answer_error
 from deerflow.models.request_admission import AdmissionError
 from deerflow.utils.custom_events import aemit_custom_event, emit_custom_event
 from deerflow.utils.retry_after import bounded_retry_after_ms
@@ -835,13 +836,15 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             }
         )
         if response_message is not None:
-            return response_message.model_copy(
+            message = response_message.model_copy(
                 update={
                     "content": append_visible_text(response_message, content),
                     "additional_kwargs": additional_kwargs,
                 }
             )
-        return AIMessage(content=content, additional_kwargs=additional_kwargs)
+        else:
+            message = AIMessage(content=content, additional_kwargs=additional_kwargs)
+        return mark_answer_error(message, content, detail=detail)
 
     def _build_user_message(self, exc: BaseException, reason: str) -> str:
         detail = _extract_error_detail(exc)
