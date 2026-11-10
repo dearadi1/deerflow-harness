@@ -144,8 +144,12 @@ def _write_document(path: Path, data: dict[str, Any]) -> None:
 
 
 def _default_document(skills_root: Path) -> dict[str, Any]:
+    return _default_document_for_names({skill.name for skill in load_public_skill_catalog(skills_root)})
+
+
+def _default_document_for_names(names: set[str]) -> dict[str, Any]:
     # 显式保存初始化时的启用项，让配置文件与管理详情、运行快照保持一致。
-    states = {skill.name: True for skill in load_public_skill_catalog(skills_root)}
+    states = dict.fromkeys(sorted(names), True)
     return {"version": 1, "presets": {"default": {"name": "默认预设", "skills": states}}}
 
 
@@ -176,10 +180,11 @@ class SkillPresetStore:
     def _read_existing(self) -> dict[str, Any]:
         return self._parse_document(self.path.read_bytes())
 
-    def _complete_default_skill_states(self, data: dict[str, Any]) -> bool:
+    def _complete_default_skill_states(self, data: dict[str, Any], names: set[str] | None = None) -> bool:
         """仅补齐固定内置预设，保留已有显式关闭及暂时缺失的选择。"""
         preset = data["presets"]["default"]
-        names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
+        if names is None:
+            names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
         missing = names - preset["skills"].keys()
         preset["skills"].update(dict.fromkeys(sorted(missing), True))
         return bool(missing)
@@ -218,20 +223,26 @@ class SkillPresetStore:
             return data
 
     def read(self) -> dict[str, Any]:
+        return self._read_with_catalog()[0]
+
+    def _read_with_catalog(self) -> tuple[dict[str, Any], set[str]]:
+        """同一次读取复用目录快照，避免首块前重复扫描；需要写入时仍锁内重读重扫。"""
         if self.path.exists():
             data = self._read_existing()
-            if not self._complete_default_skill_states(data):
-                return data
+            names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
+            if not self._complete_default_skill_states(data, names):
+                return data, names
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
+            names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
             if not self.path.exists():
-                data = _default_document(self.skills_root)
+                data = _default_document_for_names(names)
                 _write_document(self.path, data)
-                return data
+                return data, names
             # 锁外只判断是否需要同步，写入前重读并重扫，避免覆盖并发关闭或重新加入已删除项。
             data = self._read_existing()
-            if self._complete_default_skill_states(data):
+            if self._complete_default_skill_states(data, names):
                 _write_document(self.path, data)
-            return data
+            return data, names
 
     def _mutate(self, change: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
@@ -275,20 +286,17 @@ class SkillPresetStore:
         }
 
     def list_presets(self) -> dict[str, Any]:
-        data = self.read()
-        names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
+        data, names = self._read_with_catalog()
         return {"presets": [self._details(data, preset_id, names) for preset_id in sorted(data["presets"])]}
 
     def get_preset(self, preset_id: str | None = None) -> dict[str, Any]:
-        data = self.read()
-        names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
+        data, names = self._read_with_catalog()
         return self._details(data, "default" if preset_id is None else preset_id, names)
 
     def resolve(self, preset_id: str | None = None) -> PublicSkillPreset:
-        data = self.read()
+        data, names = self._read_with_catalog()
         selected = "default" if preset_id is None else preset_id
         entry = self._entry(data, selected)
-        names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
         states = _effective_skill_states(selected, entry["skills"], names)
         signature = hashlib.sha256(json.dumps([str(self.path), selected, entry, states], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         return PublicSkillPreset(selected, entry["name"], frozenset(name for name, enabled in states.items() if enabled), signature)

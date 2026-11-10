@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import threading
+import time
 from collections.abc import AsyncIterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
@@ -16,6 +18,9 @@ from deerflow.protocol import ClientStreamEvent
 from deerflow.runtime.client_replay import ClientTurnReplay, _reserve_turn
 from deerflow.runtime.turn_cancellation import get_turn_cancellation_event, turn_cancellation_scope
 from deerflow.skills.presets import preset_store_for_config, public_skill_preset_scope
+
+
+logger = logging.getLogger(__name__)
 
 
 class StreamCleanupError(RuntimeError):
@@ -171,13 +176,16 @@ async def stream_managed_turn(
     """仅在本轮独占的事件循环中调用，锁覆盖图退出、存储恢复和后台任务排空。"""
     disabled_tools = client._validate_disabled_tools(disabled_tools)
     temporary_env = validate_temporary_environment(temporary_env)
+    preset_started_at = time.monotonic()
     preset = await _sync_call(preset_store_for_config(getattr(client, "_app_config", None)).resolve, skill_preset)
+    preset_elapsed = time.monotonic() - preset_started_at
     with _reserve_turn(client, thread_id), public_skill_preset_scope(preset), temporary_environment_scope(temporary_env):
         replay = ClientTurnReplay(enabled=replay_last_turn)
         turn = None
         stream = None
         completed = False
         parent = asyncio.current_task()
+        preparation_started_at = time.monotonic()
         preparation = asyncio.create_task(asyncio.to_thread(
             client._prepare_stream_turn, message, thread_id=thread_id,
             _turn_replay=replay, disabled_tools=disabled_tools, **kwargs,
@@ -188,6 +196,10 @@ async def stream_managed_turn(
             except asyncio.CancelledError:
                 turn = await _settle(preparation)
                 raise
+            logger.info(
+                "Managed stream prepared: preset_ms=%.1f preparation_ms=%.1f",
+                preset_elapsed * 1000, (time.monotonic() - preparation_started_at) * 1000,
+            )
             # 保留客户端缓存图及同步 accessor 的 saver，适配只作用于本轮图副本。
             graph = copy.copy(turn.agent)
             if graph.checkpointer is not None:
