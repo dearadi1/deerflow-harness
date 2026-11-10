@@ -24,6 +24,13 @@ from deerflow.authz.sandbox_authz import (
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.sandbox import get_sandbox_provider
 from deerflow.sandbox.exceptions import SandboxAuthorizationError, SandboxRuntimeError
+from deerflow.sandbox.lazy_init import (
+    LAZY_SANDBOX_CONTEXT_KEY,
+    LazySandboxInitialization,
+    get_lazy_sandbox_initialization,
+    inherited_sandbox_initialization,
+    sandbox_initialization_scope,
+)
 from deerflow.sandbox.lease import (
     ensure_sandbox_lease_owner,
     get_sandbox_lease_manager,
@@ -236,10 +243,36 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
 
     @override
     def before_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:
+        if (runtime.context or {}).get("thread_id") is not None:
+            self._apply_network_policy_response(state, runtime)
+        if self._defer_sandbox_initialization(state, runtime):
+            return None
+        return self._initialize_sandbox(state, runtime)
+
+    def _defer_sandbox_initialization(self, state: SandboxMiddlewareState, runtime: Runtime) -> bool:
+        context = runtime.context
+        if not self._lazy_init or context is None or not context.get("thread_id"):
+            return False
+        ensure_sandbox_lease_owner(context)
+        if not self._owns_agent_skill_projection:
+            initialization = inherited_sandbox_initialization()
+        else:
+            from deerflow.skills.presets import current_public_skill_preset
+
+            initialization = LazySandboxInitialization(
+                context=context,
+                user_id=resolve_runtime_user_id(runtime),
+                preset=current_public_skill_preset(),
+                initialize=lambda: self._initialize_sandbox(state, runtime, authorization_checked=True),
+                initialize_async=lambda: self._initialize_sandbox_async(state, runtime, authorization_checked=True),
+            )
+        context[LAZY_SANDBOX_CONTEXT_KEY] = initialization
+        return True
+
+    def _initialize_sandbox(self, state: SandboxMiddlewareState, runtime: Runtime, *, authorization_checked: bool = False) -> dict | None:
         thread_id = (runtime.context or {}).get("thread_id")
         if thread_id is None:
             return super().before_agent(state, runtime)
-        self._apply_network_policy_response(state, runtime)
         user_id = resolve_runtime_user_id(runtime)
         projection = self._prepare_agent_skill_projection(thread_id, user_id=user_id)
         owner_id = ensure_sandbox_lease_owner(runtime.context)
@@ -265,10 +298,11 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
             # abort here because retaining an older checkpointed sandbox would
             # bypass the new filesystem view.
             try:
-                authorize_sandbox_execution(
-                    context=runtime.context or {},
-                    app_config=safe_app_config(),
-                )
+                if not authorization_checked:
+                    authorize_sandbox_execution(
+                        context=runtime.context or {},
+                        app_config=safe_app_config(),
+                    )
             except SandboxAuthorizationError:
                 if projection is not None:
                     # An explicit skill policy cannot leave a checkpointed,
@@ -359,12 +393,18 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
 
     @override
     async def abefore_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:
+        if (runtime.context or {}).get("thread_id") is not None:
+            await run_sync_lifecycle_operation(self._apply_network_policy_response, state, runtime)
+        if self._defer_sandbox_initialization(state, runtime):
+            return None
+        return await self._initialize_sandbox_async(state, runtime)
+
+    async def _initialize_sandbox_async(self, state: SandboxMiddlewareState, runtime: Runtime, *, authorization_checked: bool = False) -> dict | None:
         thread_id = (runtime.context or {}).get("thread_id")
         if thread_id is None:
             return await super().abefore_agent(state, runtime)
-        await run_sync_lifecycle_operation(self._apply_network_policy_response, state, runtime)
         user_id = resolve_runtime_user_id(runtime)
-        projection = await asyncio.to_thread(
+        projection = await run_sync_lifecycle_operation(
             self._prepare_agent_skill_projection,
             thread_id,
             user_id=user_id,
@@ -381,10 +421,11 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
             # deny, shared-view runs skip and defer to the lazy tool gate;
             # policy-scoped runs abort before an older sandbox can be reused.
             try:
-                await authorize_sandbox_execution_async(
-                    context=runtime.context or {},
-                    app_config=await safe_app_config_async(),
-                )
+                if not authorization_checked:
+                    await authorize_sandbox_execution_async(
+                        context=runtime.context or {},
+                        app_config=await safe_app_config_async(),
+                    )
             except SandboxAuthorizationError:
                 if projection is not None:
                     raise
@@ -438,6 +479,8 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
 
     @override
     def after_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:
+        if self._sandbox_initialization_pending(runtime):
+            return None
         sandbox, fork_restored = unwrap_sandbox(state.get("sandbox"))
         if sandbox is not None:
             sandbox_id = sandbox["sandbox_id"]
@@ -471,6 +514,8 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
 
     @override
     async def aafter_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:
+        if self._sandbox_initialization_pending(runtime):
+            return None
         sandbox, fork_restored = unwrap_sandbox(state.get("sandbox"))
         if sandbox is not None:
             sandbox_id = sandbox["sandbox_id"]
@@ -512,6 +557,18 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
     #   a fresh lazy init by diffing the state snapshot before/after the
     #   handler and emit a proper state update via ``Command``.
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sandbox_initialization_pending(runtime) -> bool:
+        initialization = get_lazy_sandbox_initialization(getattr(runtime, "context", None))
+        return initialization is not None and not initialization.completed
+
+    @staticmethod
+    def _publish_initialized_sandbox(runtime) -> None:
+        # 子代理可能先创建沙盒；父工具也要发布状态更新，不能只保留上下文中的新 ID。
+        initialization = get_lazy_sandbox_initialization(getattr(runtime, "context", None))
+        if initialization is not None:
+            initialization.publish_if_completed(runtime)
 
     @staticmethod
     def _read_sandbox_id_from_state(state: object) -> str | None:
@@ -567,7 +624,9 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
         prev_sandbox_id = self._read_sandbox_id_from_request(request)
-        result = handler(request)
+        with sandbox_initialization_scope(getattr(request.runtime, "context", None)):
+            result = handler(request)
+        self._publish_initialized_sandbox(request.runtime)
         curr_sandbox_id = self._read_sandbox_id_from_request(request)
         if curr_sandbox_id is not None and curr_sandbox_id != prev_sandbox_id:
             result = self._attach_sandbox_update(
@@ -575,7 +634,8 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
                 curr_sandbox_id,
                 overwrite=prev_sandbox_id is not None,
             )
-        return self._maybe_request_network_approval(request, result, curr_sandbox_id or prev_sandbox_id)
+        sandbox_id = None if self._sandbox_initialization_pending(request.runtime) else curr_sandbox_id or prev_sandbox_id
+        return self._maybe_request_network_approval(request, result, sandbox_id)
 
     @override
     async def awrap_tool_call(
@@ -584,7 +644,9 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
         prev_sandbox_id = self._read_sandbox_id_from_request(request)
-        result = await handler(request)
+        with sandbox_initialization_scope(getattr(request.runtime, "context", None)):
+            result = await handler(request)
+        self._publish_initialized_sandbox(request.runtime)
         curr_sandbox_id = self._read_sandbox_id_from_request(request)
         if curr_sandbox_id is not None and curr_sandbox_id != prev_sandbox_id:
             result = self._attach_sandbox_update(
@@ -592,7 +654,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
                 curr_sandbox_id,
                 overwrite=prev_sandbox_id is not None,
             )
-        sandbox_id = curr_sandbox_id or prev_sandbox_id
+        sandbox_id = None if self._sandbox_initialization_pending(request.runtime) else curr_sandbox_id or prev_sandbox_id
         if sandbox_id is None:
             return result
         context = getattr(request.runtime, "context", None) or {}

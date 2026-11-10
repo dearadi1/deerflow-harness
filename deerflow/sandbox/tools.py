@@ -34,6 +34,7 @@ from deerflow.sandbox.exceptions import (
     SandboxRuntimeError,
 )
 from deerflow.sandbox.file_operation_lock import get_file_operation_lock
+from deerflow.sandbox.lazy_init import get_lazy_sandbox_initialization
 from deerflow.sandbox.lease import (
     get_sandbox_lease_manager,
     run_sync_lifecycle_operation,
@@ -1741,6 +1742,10 @@ def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
             app_config=safe_app_config(),
         )
 
+    initialization = get_lazy_sandbox_initialization(runtime.context)
+    if initialization is not None:
+        initialization.ensure(runtime)
+
     # Check if sandbox already exists in state. A fork-restored execution keeps
     # the wrapper so after_agent cannot park the parent's sandbox, but it still
     # binds a non-releasing holder: parent cleanup cannot close the client under
@@ -1842,6 +1847,10 @@ async def ensure_sandbox_initialized_async(runtime: Runtime | None = None) -> Sa
             context=runtime.context or {},
             app_config=await safe_app_config_async(),
         )
+
+    initialization = get_lazy_sandbox_initialization(runtime.context)
+    if initialization is not None:
+        await initialization.ensure_async(runtime)
 
     # Same borrowed-holder rule as the sync path above: keep the fork wrapper
     # while counting the child as an active client user.
