@@ -145,8 +145,10 @@ def _write_document(path: Path, data: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _default_document() -> dict[str, Any]:
-    return {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": {}}}}
+def _default_document(skills_root: Path) -> dict[str, Any]:
+    # 显式保存初始化时的启用项，让配置文件与管理详情、运行快照保持一致。
+    states = {skill.name: True for skill in load_public_skill_catalog(skills_root)}
+    return {"version": 1, "default_preset": "default", "presets": {"default": {"name": "默认预设", "skills": states}}}
 
 
 def _effective_skill_states(preset_id: str, configured_states: dict[str, bool], names: set[str]) -> dict[str, bool]:
@@ -194,14 +196,14 @@ class SkillPresetStore:
         """仅在启动边界恢复格式错误；锁内校验和备份同一份原始字节。"""
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
             if not self.path.exists():
-                _write_document(self.path, _default_document())
+                _write_document(self.path, _default_document(self.skills_root))
                 return self._read_existing()
             content = self.path.read_bytes()
             try:
                 return self._parse_document(content)
             except ValueError as error:
                 backup = self._backup_invalid_document(content)
-                data = _default_document()
+                data = _default_document(self.skills_root)
                 _write_document(self.path, data)
                 logger.warning("公共技能预设格式错误，已恢复全部启用的默认预设；原文件备份：%s；原因：%s", backup, error)
                 return data
@@ -211,12 +213,12 @@ class SkillPresetStore:
             return self._read_existing()
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
             if not self.path.exists():
-                _write_document(self.path, _default_document())
+                _write_document(self.path, _default_document(self.skills_root))
             return self._read_existing()
 
     def _mutate(self, change: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
-            data = self._read_existing() if self.path.exists() else _default_document()
+            data = self._read_existing() if self.path.exists() else _default_document(self.skills_root)
             change(data)
             _write_document(self.path, _validate_document(data))
             return data
@@ -225,7 +227,7 @@ class SkillPresetStore:
     def reset_skill_states(self, skill_name: str) -> Iterator[None]:
         """目录新增或删除成功后清除旧开关，锁覆盖目录变更以阻止并发写回残留。"""
         with _WRITE_LOCK, extensions_config_file_lock(self.path):
-            data = self._read_existing() if self.path.exists() else _default_document()
+            data = self._read_existing() if self.path.exists() else _default_document(self.skills_root)
             changed = False
             for preset in data["presets"].values():
                 if skill_name in preset["skills"]:
