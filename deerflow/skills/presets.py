@@ -151,7 +151,7 @@ def _default_document() -> dict[str, Any]:
 
 def _effective_skill_states(preset_id: str, configured_states: dict[str, bool], names: set[str]) -> dict[str, bool]:
     # 内置预设自动接纳新增公共技能；显式关闭和自定义预设的选择仍由文件决定。
-    return {name: configured_states.get(name, preset_id == "default") for name in sorted(names | configured_states.keys())}
+    return {name: configured_states.get(name, preset_id == "default") for name in sorted(names)}
 
 
 class SkillPresetStore:
@@ -221,6 +221,20 @@ class SkillPresetStore:
             _write_document(self.path, _validate_document(data))
             return data
 
+    @contextmanager
+    def reset_skill_states(self, skill_name: str) -> Iterator[None]:
+        """目录新增或删除成功后清除旧开关，锁覆盖目录变更以阻止并发写回残留。"""
+        with _WRITE_LOCK, extensions_config_file_lock(self.path):
+            data = self._read_existing() if self.path.exists() else _default_document()
+            changed = False
+            for preset in data["presets"].values():
+                if skill_name in preset["skills"]:
+                    del preset["skills"][skill_name]
+                    changed = True
+            yield
+            if changed or not self.path.exists():
+                _write_document(self.path, data)
+
     @staticmethod
     def _entry(data: dict[str, Any], preset_id: str) -> dict[str, Any]:
         validate_preset_id(preset_id)
@@ -251,7 +265,7 @@ class SkillPresetStore:
         data = self.read()
         selected = data["default_preset"] if preset_id is None else preset_id
         entry = self._entry(data, selected)
-        names = {skill.name for skill in load_public_skill_catalog(self.skills_root)} if selected == "default" else set()
+        names = {skill.name for skill in load_public_skill_catalog(self.skills_root)}
         states = _effective_skill_states(selected, entry["skills"], names)
         signature = hashlib.sha256(json.dumps([str(self.path), selected, entry, states], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         return PublicSkillPreset(selected, entry["name"], frozenset(name for name, enabled in states.items() if enabled), signature)
@@ -279,13 +293,14 @@ class SkillPresetStore:
         return self._details(data, preset_id, {skill.name for skill in load_public_skill_catalog(self.skills_root)})
 
     def update_preset(self, preset_id: str, *, skill_states: dict[str, bool], name: str | None = None) -> dict[str, Any]:
-        states = self._checked_states(skill_states)
+        states = _validate_skill_states(skill_states)
         if name is not None:
             name = _validate_name(name)
 
         def change(data):
             entry = self._entry(data, preset_id)
-            entry["skills"].update(states)
+            # 与目录增删共用预设事务锁，不能在等待锁之前确认技能仍然存在。
+            entry["skills"].update(self._checked_states(states))
             if name is not None:
                 entry["name"] = name
 

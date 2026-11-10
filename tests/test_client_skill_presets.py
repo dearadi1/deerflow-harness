@@ -313,3 +313,18 @@ class ClientSkillPresetTests(PresetFixture):
         manager.delete_skill("alice", "personal")
         self.assertEqual(self.assemble_skills(client, prompt), {"beta"})
         self.assertEqual(create.call_count, 5)
+
+    def test_public_deletion_and_recreation_refresh_cached_custom_preset(self):
+        from deerflow.skill_client import DeerFlowSkillClient
+
+        with patch("deerflow.skill_client.load_client_config", return_value=self.config):
+            public = DeerFlowSkillClient().public
+        client, prompt, create = self.cached_skill_client()
+        self.assertEqual(self.assemble_skills(client, prompt), {"beta"})
+        public.delete_skill("beta")
+        self.assertIsNone(self.assemble_skills(client, prompt))
+        public.create_skill("beta", "重新创建")
+        self.assertIsNone(self.assemble_skills(client, prompt))
+        public.update_preset(self.preset_two, skill_states={"beta": True})
+        self.assertEqual(self.assemble_skills(client, prompt), {"beta"})
+        self.assertEqual(create.call_count, 4)
