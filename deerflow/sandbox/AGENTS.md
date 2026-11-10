@@ -12,6 +12,18 @@
 
 Sandbox restore requires a thread ID, even forks.
 
+**预设与延迟初始化**：`lazy_init=True` 的 `before_agent` 仅登记本轮准备任务，
+不扫描或复制技能视图、不获取沙盒。`ensure_sandbox_initialized*` 在授权之后、
+任何旧沙盒复用之前执行该任务，仍按本轮公共预设快照和主代理白名单生成物理视图，
+通过规范 acquire 替换旧共享沙盒，并完成提供方的技能同步后才允许工具访问。
+同轮并行工具共用一次准备；工具包装器通过 ContextVar 将任务传给普通子代理，
+子代理先使用沙盒时也不能用自己的白名单重建主代理视图。
+任务只存放在运行上下文中，不进入 checkpoint；下一轮重新登记。
+异步等待使用独立锁执行器，取消后排空视图写入和远端同步，再归还租约。
+纯聊天不触碰历史沙盒；`lazy_init=False` 保留预先初始化。
+验证：`test_lazy_skill_sandbox.py`、`test_client_temporary_environment.py`，
+以及显式启用的 `test_temporary_environment_docker_live.py`。
+
 **Network approval policy**: `SandboxMiddleware` uses
 `resolve_run_interaction_policy()`. Autonomous, webhook, scheduled, legacy
 unattended and GitHub-fallback runs auto-deny; explicit interactive overrides

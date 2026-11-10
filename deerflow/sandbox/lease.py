@@ -33,6 +33,7 @@ SANDBOX_SERVER_OWNED_CONTEXT_KEYS = frozenset(
     {
         SANDBOX_LEASE_OWNER_CONTEXT_KEY,
         SANDBOX_COMMAND_SCOPE_CONTEXT_KEY,
+        "__deerflow_lazy_sandbox",
     }
 )
 

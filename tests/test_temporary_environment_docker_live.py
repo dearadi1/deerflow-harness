@@ -3,6 +3,7 @@
 import json
 import os
 import platform
+import shlex
 import subprocess
 import threading
 import time
@@ -13,7 +14,9 @@ from uuid import uuid4
 
 import yaml
 
-from temporary_environment_support import EnvironmentChatHarness, PROBE_NAMES
+from deerflow.skills.presets import SkillPresetStore
+from temporary_environment_support import EnvironmentChatHarness, PROBE_NAMES, digest
+from test_skill_presets import write_skill
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -145,6 +148,35 @@ class TemporaryEnvironmentDockerLiveTests(EnvironmentChatHarness):
         checkpoints = repr(list(self.saver.list(None)))
         for value in ("previous", "new-replay", "cancelled"):
             self.assertNotIn(value, checkpoints)
+
+    def test_real_preset_snapshot_and_switch_preserve_container_and_environment(self):
+        skills = self.root / "skills"
+        for name in ("alpha", "beta"):
+            write_skill(skills / "public", name)
+        presets = SkillPresetStore(skills)
+        selected = presets.create_preset("测试预设")["preset_id"]
+        presets.update_preset(selected, skill_states={"alpha": True})
+        script = (
+            "import pathlib,json,os,hashlib; "
+            "value=os.environ.get('DF_ENV_TEMP'); "
+            "print(json.dumps({'skills':sorted(p.name for p in pathlib.Path('/mnt/skills/public').iterdir()), "
+            "'temporary':hashlib.sha256(value.encode()).hexdigest() if value else None}))"
+        )
+        self.command = "python3 -c " + shlex.quote(script)
+
+        def change_after_model_entry():
+            self.assertEqual(self.docker("ps", "-aq", "--filter", f"name={self.prefix}"), "")
+            presets.update_preset(selected, skill_states={"alpha": False, "beta": True})
+
+        self.before_choose = change_after_model_entry
+        first = self.managed(skill_preset=selected, temporary_env={"DF_ENV_TEMP": "first-turn"})
+        self.assertEqual(first, {"skills": ["alpha"], "temporary": digest("first-turn")})
+        container_id = self.warm_container()
+        self.before_choose = None
+        self.assertEqual(self.managed(skill_preset=selected), {"skills": ["beta"], "temporary": None})
+        self.assertEqual(self.warm_container(), container_id)
+        self.assertEqual(self.managed(), {"skills": ["alpha", "beta"], "temporary": None})
+        self.assertEqual(self.warm_container(), container_id)
 
 
 if __name__ == "__main__":
