@@ -259,10 +259,10 @@ class ClientStreamParser:
         call["pending"].clear()
 
     def _complete_tools(self, message: AIMessage, agent_id: str, message_id: str) -> Iterator[ClientStreamEvent]:
-        from deerflow.agents.middlewares.model_length_recovery import awaiting_write_recovery
+        from deerflow.agents.middlewares.model_length_recovery import awaiting_tool_recovery
 
         key = (agent_id, message_id)
-        if awaiting_write_recovery(message):
+        if awaiting_tool_recovery(message):
             return
         calls = self._tools.setdefault(key, {})
         for position, complete in enumerate(message.tool_calls):

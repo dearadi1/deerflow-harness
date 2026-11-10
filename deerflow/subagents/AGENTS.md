@@ -143,7 +143,7 @@ captures every new AI/ToolMessage in each values tail, including multi-call Tool
 outputs. When compaction uses `RemoveMessage(id=REMOVE_ALL_MESSAGES)` and
 `total < processed_count`, reset the cursor to the new tail; `capture_step_message`
 deduplicates by ID/content so later steps survive without replaying old ones.
-长度触顶的 `write_file` 原始快照暂缓捕获，等待相同消息 ID 的参数恢复或终止快照；避免未恢复快照提前占据去重位置，让主流漏掉完整工具调用。覆盖 `tests/test_write_file_length_recovery.py`。
+长度触顶的 `write_file` / `bash` 原始快照暂缓捕获，等待相同消息 ID 的参数恢复或终止快照；避免未恢复快照提前占据去重位置，让主流漏掉完整工具调用。覆盖 `tests/test_write_file_length_recovery.py` 和 `tests/test_bash_length_recovery.py`。
 `runtime/runs/worker.py::_SubagentEventBuffer` stores `task_*` as
 `subagent.start|step|end` in `RunEventStore`, category `subagent`, task ID in metadata.
 Use `put_batch` at terminal end, `FLUSH_THRESHOLD`, and worker `finally`; per-step

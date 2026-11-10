@@ -111,7 +111,7 @@ class ArgumentRecoveryTests(unittest.TestCase):
 
     def test_other_tools_safety_and_duplicate_calls_keep_length_fallback(self):
         middleware = ModelLengthFinishReasonMiddleware()
-        for name in ["bash", "str_replace"]:
+        for name in ["read_file", "str_replace"]:
             message = truncated_message('{"command":"partial', name=name)
             updated = middleware.after_model({"messages": [message]}, Runtime(context={}))
             self.assertEqual(updated["messages"][0].tool_calls, [])

@@ -1,4 +1,4 @@
-"""恢复长度截断的 write_file；其他无法恢复的调用保留终止保护。"""
+"""恢复长度截断的 write_file 和 bash；其他调用保留终止保护。"""
 
 from __future__ import annotations
 
@@ -14,11 +14,13 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
+from deerflow.agents.middlewares.bash_length_recovery import BASH_COMMAND_PREVIEW_CHARS, BASH_REGENERATION_PROMPT
 from deerflow.agents.middlewares.model_length_recovery import (
     CONTINUATION_PROMPT,
     FALLBACK_CONTINUATION_PROMPT,
     RECOVERY_ADAPTERS,
     RawToolCallCapture,
+    bash_regeneration_result,
     continue_write_result,
     recover_tool_call,
     recovery_event,
@@ -70,7 +72,7 @@ def _tool_call_summary(message: AIMessage, cleaned_content: Any) -> tuple[int, l
 
 
 class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
-    """放行可恢复的文件调用，其余长度截断仍终止本轮工具执行。"""
+    """恢复文件片段或提示重生成 bash，其余长度截断仍终止工具执行。"""
 
     def __init__(self, detectors: list[ModelLengthTerminationDetector] | None = None) -> None:
         super().__init__()
@@ -88,6 +90,9 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
             "continuation_prompt_hash": canonical_hash(CONTINUATION_PROMPT),
             "missing_write_path": "workspace_recovery_file",
             "fallback_continuation_prompt_hash": canonical_hash(FALLBACK_CONTINUATION_PROMPT),
+            "bash_recovery_execution": False,
+            "bash_command_preview_chars": BASH_COMMAND_PREVIEW_CHARS,
+            "bash_regeneration_prompt_hash": canonical_hash(BASH_REGENERATION_PROMPT),
         }
 
     def _detect(self, message: AIMessage) -> ModelLengthTermination | None:
@@ -207,8 +212,12 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
 
     @override
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolMessage | Command]) -> ToolMessage | Command:
+        if (result := bash_regeneration_result(request)) is not None:
+            return result
         return continue_write_result(request, handler(request))
 
     @override
     async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]) -> ToolMessage | Command:
+        if (result := bash_regeneration_result(request)) is not None:
+            return result
         return continue_write_result(request, await handler(request))

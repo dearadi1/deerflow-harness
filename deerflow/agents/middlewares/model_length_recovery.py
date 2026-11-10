@@ -1,4 +1,4 @@
-"""长度截断的工具恢复通道，当前只注册 write_file 适配器。"""
+"""长度截断的工具恢复通道，只注册 write_file 和 bash 适配器。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from deerflow.agents.middlewares.bash_length_recovery import BASH_REGENERATION_PROMPT, recover_bash_arguments
 from deerflow.agents.middlewares.message_utils import is_genuine_user_message
 from deerflow.agents.middlewares.model_length_termination_detectors import default_detectors
 from deerflow.agents.middlewares.safety_termination_detectors import default_detectors as safety_detectors
@@ -24,7 +25,7 @@ from deerflow.config.paths import VIRTUAL_PATH_PREFIX
 
 RECOVERY_MARKER = "model_length_recovery"
 RECOVERY_EVENT = "tool_call_recovered"
-RECOVERY_ADAPTERS = {"write_file": recover_write_file_arguments}
+RECOVERY_ADAPTERS = {"write_file": recover_write_file_arguments, "bash": recover_bash_arguments}
 CONTINUATION_PROMPT = (
     "上一轮 write_file 因模型单次输出达到上限而被截断，已恢复的正文片段已成功写入，但文件尚未完成。"
     "请自动继续原任务，不要停下来等待用户追问。先用 read_file 读取该文件当前末尾，"
@@ -99,9 +100,9 @@ class RawToolCallCapture(BaseCallbackHandler):
 
 def recovery_marker(message: AIMessage) -> dict[str, Any] | None:
     marker = message.additional_kwargs.get(RECOVERY_MARKER)
-    if not isinstance(marker, dict) or marker.get("version") != 1 or marker.get("tool_name") != "write_file":
+    if not isinstance(marker, dict) or marker.get("version") != 1 or not isinstance(marker.get("tool_name"), str) or marker["tool_name"] not in RECOVERY_ADAPTERS:
         return None
-    matches = [call for call in message.tool_calls if call.get("id") == marker.get("tool_call_id") and call.get("name") == "write_file"]
+    matches = [call for call in message.tool_calls if call.get("id") == marker.get("tool_call_id") and call.get("name") == marker["tool_name"]]
     return marker if len(matches) == 1 else None
 
 
@@ -147,7 +148,7 @@ def continue_write_result(request: ToolCallRequest, result: ToolMessage | Comman
         return result
     last = next((message for message in reversed(request.state.get("messages") or []) if isinstance(message, AIMessage)), None)
     marker = recovery_marker(last) if last is not None else None
-    if marker is None or marker["tool_call_id"] != request.tool_call.get("id"):
+    if marker is None or marker["tool_name"] != "write_file" or marker["tool_call_id"] != request.tool_call.get("id"):
         return result
     if isinstance(result, ToolMessage):
         return _continue_after_write(result, marker)
@@ -161,6 +162,32 @@ def continue_write_result(request: ToolCallRequest, result: ToolMessage | Comman
     else:
         return result
     return replace(result, update={**result.update, "messages": updated})
+
+
+def bash_regeneration_result(request: ToolCallRequest) -> ToolMessage | None:
+    """用关联的失败结果闭合截断调用，绝不把恢复出的命令前缀交给 shell。"""
+    if request.tool_call.get("name") != "bash":
+        return None
+    last = next((message for message in reversed(request.state.get("messages") or []) if isinstance(message, AIMessage)), None)
+    marker = recovery_marker(last) if last is not None else None
+    if marker is None or marker["tool_name"] != "bash" or marker["tool_call_id"] != request.tool_call.get("id"):
+        return None
+    return ToolMessage(
+        content=BASH_REGENERATION_PROMPT,
+        name="bash",
+        tool_call_id=marker["tool_call_id"],
+        status="error",
+        additional_kwargs={
+            RECOVERY_MARKER: marker,
+            "deerflow_tool_meta": {
+                "status": "error",
+                "error_type": "unknown",
+                "recoverable_by_model": True,
+                "recommended_next_action": "rewrite_query",
+                "source": "tool_return",
+            },
+        },
+    )
 
 
 def _candidate_calls(message: AIMessage) -> list[dict[str, Any]]:
@@ -189,8 +216,8 @@ def _complete_arguments(value: Any) -> dict[str, Any] | None:
 
 
 def _prepare_calls(calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
-    """只修复一个被截断的写入，其余调用必须具有完整参数和唯一身份。"""
-    prepared, incomplete, writes = [], [], []
+    """只恢复一个适配工具，其余调用必须具有完整参数和唯一身份。"""
+    prepared, incomplete, recoverable = [], [], []
     seen = set()
     for call in calls:
         call_id, name = call.get("id"), call.get("name")
@@ -198,14 +225,14 @@ def _prepare_calls(calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], d
             return None
         seen.add(call_id)
         arguments = _complete_arguments(call.get("args"))
-        if name == "write_file":
-            writes.append(call)
+        if name in RECOVERY_ADAPTERS:
+            recoverable.append(call)
         if arguments is None:
             if name not in RECOVERY_ADAPTERS:
                 return None
             incomplete.append(call)
         prepared.append({"id": call_id, "name": name, "args": arguments, "type": "tool_call"})
-    candidates = incomplete or writes
+    candidates = incomplete or recoverable
     return (prepared, candidates[0]) if len(candidates) == 1 else None
 
 
@@ -239,7 +266,7 @@ def recover_tool_call(message: AIMessage, messages: list[Any]) -> AIMessage | No
     arguments, fallback_path = _recover_arguments(message, call)
     if arguments is None:
         return None
-    pending = pending_write_recovery(messages[:-1])
+    pending = pending_write_recovery(messages[:-1]) if name == "write_file" else None
     if fallback_path is None and pending is not None and pending.get("path") == arguments["path"]:
         # 续写的 append 若排在截断正文之后，则继承已明确下达的追加语义。
         arguments = RECOVERY_ADAPTERS[name](call.get("args"), continue_append=True)
@@ -256,12 +283,12 @@ def recover_tool_call(message: AIMessage, messages: list[Any]) -> AIMessage | No
     return cleaned.model_copy(update={"tool_calls": calls, "response_metadata": metadata, "additional_kwargs": {**cleaned.additional_kwargs, RECOVERY_MARKER: marker}})
 
 
-def awaiting_write_recovery(message: AIMessage) -> bool:
+def awaiting_tool_recovery(message: AIMessage) -> bool:
     if recovery_marker(message) is not None:
         return False
     candidates = [*message.tool_calls, *message.invalid_tool_calls, *(getattr(message, "tool_call_chunks", None) or [])]
     candidates.extend(_candidate_calls(message))
-    if not any(call.get("name") == "write_file" for call in candidates):
+    if not any(isinstance(call.get("name"), str) and call["name"] in RECOVERY_ADAPTERS for call in candidates):
         return False
     return any(detector.detect(message) is not None for detector in default_detectors())
 
