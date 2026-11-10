@@ -199,6 +199,25 @@ class SkillPresetStoreTests(PresetFixture):
         self.assertEqual(detail["missing_skills"], ["alpha"])
         self.assertEqual(detail["enabled_skills"], [])
 
+    def test_missing_skills_are_diagnostic_only_in_all_presets_and_snapshots(self):
+        self.create_choices()
+        self.store.update_preset("default", skill_states={"alpha": True})
+        snapshots = {preset_id: self.store.resolve(preset_id) for preset_id in ("default", self.preset_one)}
+        original = self.file.read_bytes()
+        (self.skills / "public/alpha/SKILL.md").unlink()
+        for preset_id, snapshot in snapshots.items():
+            with self.subTest(preset_id=preset_id):
+                detail = self.store.get_preset(preset_id)
+                self.assertNotIn("alpha", detail["skills"])
+                self.assertEqual(detail["missing_skills"], ["alpha"])
+                following = self.store.resolve(preset_id)
+                self.assertFalse(following.is_enabled("alpha"))
+                self.assertNotEqual(following.signature, snapshot.signature)
+                self.assertTrue(snapshot.is_enabled("alpha"))
+        self.assertEqual(self.file.read_bytes(), original)
+        write_skill(self.skills / "public", "alpha")
+        self.assertEqual(self.store.resolve(self.preset_one), snapshots[self.preset_one])
+
     def test_invalid_operations_leave_file_unchanged(self):
         self.create_choices()
         original = self.file.read_bytes()

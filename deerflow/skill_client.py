@@ -10,7 +10,7 @@ import stat
 import sys
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from functools import lru_cache, wraps
 from pathlib import Path
@@ -283,11 +283,17 @@ class _SkillOperations:
         except FileExistsError as error:
             return error
         try:
-            self._write_text(directory, directory / SKILL_MD_FILE, content)
+            with self._reset_public_skill_states(directory.name):
+                self._write_text(directory, directory / SKILL_MD_FILE, content)
         except Exception:
             shutil.rmtree(directory)
             raise
         return None
+
+    def _reset_public_skill_states(self, name: str):
+        if self._category == SkillCategory.PUBLIC:
+            return preset_store_for_config(self._app_config).reset_skill_states(name)
+        return nullcontext()
 
     @_chinese_errors
     def copy_skill(self, source_user_id: str, target_user_id: str, skill_name: str) -> str:
@@ -375,10 +381,30 @@ class _SkillOperations:
 
     @_chinese_errors
     def delete_skill(self, user_id: str, skill_name: str) -> None:
-        """删除技能目录、历史记录和该用户的启用状态。"""
+        """删除技能包及所属作用域的状态；公共技能同时清除所有预设中的开关。"""
         with self._mutation(user_id, skill_name) as (storage, directory):
-            self._delete_skill_metadata(storage, directory.name)
-            shutil.rmtree(directory)
+            if self._category == SkillCategory.PUBLIC:
+                self._delete_public_skill(directory)
+            else:
+                self._delete_skill_metadata(storage, directory.name)
+                shutil.rmtree(directory)
+
+    def _delete_public_skill(self, directory: Path) -> None:
+        # 同文件系统暂存包；预设保存失败时恢复原目录，避免半完成的逻辑删除。
+        staging_root = Path(tempfile.mkdtemp(prefix=".delete-skill-", dir=directory.parent))
+        staged = staging_root / directory.name
+        try:
+            with self._reset_public_skill_states(directory.name):
+                directory.rename(staged)
+        except BaseException:
+            if staged.exists():
+                staged.rename(directory)
+            raise
+        finally:
+            # 回滚本身失败时保留暂存包供恢复，不能由临时目录清理再次删除。
+            if not staged.exists():
+                staging_root.rmdir()
+        shutil.rmtree(staging_root)
 
     @staticmethod
     def _metadata_signature(skill_file: Path) -> tuple[int, ...]:
@@ -736,7 +762,8 @@ class DeerFlowSkillClient(_SkillOperations):
     public 列表仅返回技能元数据；启用状态通过 get_preset 查询、update_preset 修改。
     create_preset 只接收名称，返回含随机 preset_id 的空预设详情；预设独立保存到
     skill_presets.json。内置 default 未配置项默认启用，显式关闭有效；自定义预设
-    未配置项默认关闭。预设修改在下一轮自动生效。
+    未配置项默认关闭。删除或重新创建公共包清除所有预设中的同名开关，内容编辑
+    保留选择；缺失项只作为诊断，不进入有效开关。预设修改在下一轮自动生效。
     技能包与私有状态修改复用原有视图及缓存更新，已有 Agent 按原生命周期重建。
     """
 

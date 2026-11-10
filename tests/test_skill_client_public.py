@@ -436,6 +436,147 @@ class SkillClientPublicTests(unittest.TestCase):
         self.assertFalse(self.extensions.skills["example"].enabled)
         self.assertFalse(storage.get_skill_enabled_state("example"))
 
+    def prepare_preset_lifecycle(self):
+        self.public.create_skill("example", "公共描述")
+        self.public.create_skill("other", "其他技能")
+        enabled = self.public.create_preset("启用预设")["preset_id"]
+        disabled = self.public.create_preset("关闭预设")["preset_id"]
+        self.public.create_preset("未配置预设")
+        self.public.update_preset("default", skill_states={"example": False, "other": True})
+        self.public.update_preset(enabled, skill_states={"example": True, "other": False})
+        self.public.update_preset(disabled, skill_states={"example": False})
+        return enabled
+
+    def assert_example_removed_from_presets(self):
+        document = json.loads(self.public._presets.path.read_text())
+        for preset in document["presets"].values():
+            self.assertNotIn("example", preset["skills"])
+        for detail in self.public.list_presets()["presets"]:
+            self.assertNotIn("example", detail["skills"])
+            self.assertNotIn("example", detail["enabled_skills"])
+            self.assertEqual(detail["missing_skills"], [])
+            self.assertFalse(self.public._presets.resolve(detail["preset_id"]).is_enabled("example"))
+
+    def test_public_deletion_cleans_all_presets_and_recreation_uses_new_skill_defaults(self):
+        enabled = self.prepare_preset_lifecycle()
+        self.public.set_default_preset(enabled)
+        before = self.public._presets.read()
+        snapshot = self.public._presets.resolve()
+        self.public.delete_skill("example")
+        self.assert_example_removed_from_presets()
+        self.assertFalse((self.view / "example").exists())
+        expected = before
+        for preset in expected["presets"].values():
+            preset["skills"].pop("example", None)
+        self.assertEqual(self.public._presets.read(), expected)
+        self.assertEqual(DeerFlowSkillClient().public.list_presets(), self.public.list_presets())
+        self.assertTrue(snapshot.is_enabled("example"))
+        self.assertNotEqual(self.public._presets.resolve().signature, snapshot.signature)
+        self.public.create_skill("example", "重新创建")
+        for detail in self.public.list_presets()["presets"]:
+            self.assertEqual(detail["skills"]["example"], detail["preset_id"] == "default")
+        self.assertFalse(self.public.get_preset()["skills"]["example"])
+
+    def test_creation_clears_historical_missing_states_without_query_side_effects(self):
+        self.prepare_preset_lifecycle()
+        directory = self.public_root / "example"
+        (directory / "SKILL.md").unlink()
+        directory.rmdir()
+        original = self.public._presets.path.read_bytes()
+        for detail in self.public.list_presets()["presets"]:
+            self.assertNotIn("example", detail["skills"])
+        self.assertEqual(self.public.get_preset()["missing_skills"], ["example"])
+        self.assertEqual(self.public._presets.path.read_bytes(), original)
+        self.public.create_skill("example", "重新安装")
+        for detail in self.public.list_presets()["presets"]:
+            self.assertEqual(detail["skills"]["example"], detail["preset_id"] == "default")
+            self.assertEqual(detail["missing_skills"], [])
+
+    def test_content_resources_queries_and_private_mutations_preserve_public_presets(self):
+        self.prepare_preset_lifecycle()
+        original = self.public._presets.path.read_bytes()
+        self.public.upload_file("example", "SKILL.md", self.markdown("修改描述"))
+        self.public.create_folder("example", "resources")
+        self.public.create_file("example", "resources/sample.txt")
+        self.public.upload_file("example", "resources/sample.txt", b"sample")
+        self.public.move_file("example", "resources/sample.txt", "resources/renamed.txt")
+        self.public.move_folder("example", "resources", "references")
+        self.public.get_skill_info("example")
+        self.public.list_skills()
+        self.public.get_resource_tree("example")
+        self.public.download_file("example", "references/renamed.txt")
+        self.public.delete_file("example", "references/renamed.txt")
+        self.public.delete_folder("example", "references")
+        self.public.copy_skill("example", "alice")
+        self.client.set_skill_enabled("alice", "example", False)
+        self.client.delete_skill("alice", "example")
+        self.assertEqual(self.public._presets.path.read_bytes(), original)
+
+    def test_failed_public_mutations_preserve_preset_choices(self):
+        self.prepare_preset_lifecycle()
+        original = self.public._presets.path.read_bytes()
+        operations = (
+            (lambda: self.public.create_skill("example", "重复创建"), FileExistsError),
+            (lambda: self.public.delete_skill("missing"), FileNotFoundError),
+            (lambda: self.public.upload_file("example", "SKILL.md", self.markdown(name="renamed")), ValueError),
+        )
+        for operation, error in operations:
+            with self.subTest(operation=operation), self.assertRaises(error):
+                operation()
+            self.assertEqual(self.public._presets.path.read_bytes(), original)
+
+    def test_public_deletion_rolls_back_when_staging_or_preset_save_fails(self):
+        self.prepare_preset_lifecycle()
+        original = self.public._presets.path.read_bytes()
+        source = self.public_root / "example/SKILL.md"
+        content = source.read_bytes()
+        for target in ("deerflow.skill_client.Path.rename", "deerflow.skills.presets._write_document"):
+            with self.subTest(target=target), patch(target, side_effect=OSError("模拟磁盘失败")):
+                with self.assertRaises(OSError):
+                    self.public.delete_skill("example")
+            self.assertEqual(source.read_bytes(), content)
+            self.assertEqual(self.public._presets.path.read_bytes(), original)
+            self.assertEqual(list(self.public_root.glob(".delete-skill-*")), [])
+        self.public._presets.path.write_text("{")
+        with self.assertRaisesRegex(ValueError, "预设文件无效"):
+            self.public.delete_skill("example")
+        self.assertEqual(source.read_bytes(), content)
+        self.assertEqual(self.public._presets.path.read_text(), "{")
+
+    def test_recreation_rolls_back_when_stale_preset_cleanup_fails(self):
+        self.prepare_preset_lifecycle()
+        directory = self.public_root / "example"
+        (directory / "SKILL.md").unlink()
+        directory.rmdir()
+        original = self.public._presets.path.read_bytes()
+        with patch("deerflow.skills.presets._write_document", side_effect=OSError("模拟磁盘失败")):
+            with self.assertRaises(OSError):
+                self.public.create_skill("example", "重新创建")
+        self.assertFalse(directory.exists())
+        self.assertEqual(self.public._presets.path.read_bytes(), original)
+
+    def test_update_waiting_for_deletion_cannot_restore_removed_skill_state(self):
+        enabled = self.prepare_preset_lifecycle()
+        ready, resume = Event(), Event()
+        mutate = self.public._presets._mutate
+
+        def delayed_mutate(change):
+            ready.set()
+            if not resume.wait(5):
+                raise TimeoutError("等待删除完成超时")
+            return mutate(change)
+
+        with patch.object(self.public._presets, "_mutate", side_effect=delayed_mutate), ThreadPoolExecutor(max_workers=1) as executor:
+            updating = executor.submit(self.public.update_preset, enabled, skill_states={"example": True})
+            try:
+                self.assertTrue(ready.wait(5))
+                self.public.delete_skill("example")
+            finally:
+                resume.set()
+            with self.assertRaisesRegex(ValueError, "公共技能不存在"):
+                updating.result(timeout=5)
+        self.assert_example_removed_from_presets()
+
     def test_cache_notifications_are_global_for_public_and_user_scoped_for_copy(self):
         modules = {name: Mock() for name in ("deerflow.agents.lead_agent.prompt", "deerflow.agents.lead_agent.prompt_zh")}
         marker = SharedResetMarker("skills-cache-reset")
