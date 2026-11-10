@@ -4,6 +4,9 @@
 获取及复用路径调用 `bind_sandbox_environment` 绑定用户；提供方的命令入口调用
 `command_environment(env)`，AIO 的作用域分流前也需调用，防止绕过临时 env 会话。
 仅绑定身份，不缓存变量值或写入容器创建环境；删除后不再注入旧值。
+命令环境合并顺序为管理器变量、本轮 `temporary_env`、显式工具 env；后者覆盖前者。
+临时值来自任务局部作用域，不绑定到复用实例；`EnvironmentSnapshot` 保证传输和
+输出脱敏使用同一份快照。AIO 在有临时值时使用独立 bash 会话，下一轮不会残留。
 存储及运行边界见 [ENVIRONMENT_AGENTS.md](../ENVIRONMENT_AGENTS.md)，验证为
 `test_environment_client.py` 和 `test_sandbox_environment.py`。
 

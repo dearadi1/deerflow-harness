@@ -71,6 +71,7 @@ with pool.start_stream(
 | `replay_last_turn` | `False` | 替换最近一轮输入并重新生成；必须提供已有 `thread_id` |
 | `disabled_tools` | `None` | 本轮主智能体禁用的工具名称列表；不修改全局工具配置 |
 | `skill_preset` | `None` | 公共技能预设 ID；不传时使用当前默认预设 |
+| `temporary_env` | `None` | 本轮沙盒临时变量 `dict[str, str]`；覆盖同名公共／私有值，不随会话保存 |
 | `acquire_timeout` | `None` | `None` 沿用池的等待时间；非负数字覆盖本次等待时间 |
 | `buffer_size` | `64` | 正整数，未消费事件的缓冲数量上限；缓冲满时执行端等待消费 |
 | `**kwargs` | 无 | 透传底层流式参数，见 [CLIENT_AGENTS.md](CLIENT_AGENTS.md) |
@@ -128,8 +129,8 @@ with pool.session(user_id="user_001") as client:
 
 | 方法 | 返回值 |
 | --- | --- |
-| `client.chat(message, *, thread_id=None, disabled_tools=None, **kwargs)` | 主智能体最终回答的字符串；没有回答正文时为空字符串 |
-| `client.stream(message, *, thread_id=None, replay_last_turn=False, disabled_tools=None, skill_preset=None, **kwargs)` | 支持上下文管理的同步事件迭代器 |
+| `client.chat(message, *, thread_id=None, disabled_tools=None, temporary_env=None, **kwargs)` | 主智能体最终回答的字符串；没有回答正文时为空字符串 |
+| `client.stream(message, *, thread_id=None, replay_last_turn=False, disabled_tools=None, skill_preset=None, temporary_env=None, **kwargs)` | 支持上下文管理的同步事件迭代器 |
 | `client.close()` | 关闭当前流并归还实例，返回 `None`；通常由退出 `with` 自动调用 |
 | 其他 `DeerFlowClient` 公开方法 | 保留底层方法的返回值，如 `list_models()`、`get_thread_state()`、`upload_files()` |
 
@@ -144,6 +145,33 @@ with pool.session(user_id="user_001") as client:
 - session 只代理公开方法，不暴露底层客户端属性。方法中显式传入的 `user_id` 必须与 session 用户一致。
 
 异步服务使用 session 时，应将整个 `with pool.session(...)` 及其内部操作放入同一次工作线程调用，不能把借用、`next()`、关闭分别派发到不同线程。
+
+## 每轮传入临时环境变量
+
+```python
+with pool.start_stream(
+    "运行需要本轮凭据的脚本",
+    user_id="user_001",
+    thread_id=thread_id,
+    temporary_env={"SERVICE_TOKEN": "token-for-this-turn", "REGION": "beijing"},
+) as events:
+    for event in events:
+        print(event.model_dump(mode="json"))
+```
+
+`session.chat()`、`session.stream()` 和底层 `DeerFlowClient.chat()` / `stream()`
+支持同名参数。变量在调用入口校验并复制，调用后修改原字典不影响本轮。
+变量名遵循 `[A-Za-z_][A-Za-z0-9_]*`，值必须为无 NUL 的字符串，允许空字符串。
+非法类型抛出 `TypeError`，非法名称或 NUL 抛出 `ValueError`。
+
+临时值覆盖同名公共／私有变量，但不修改 `.bashrc`。后续轮次须重新传入；
+省略、`None` 和 `{}` 都表示本轮没有临时变量，同名持久变量恢复当前值。
+重生成也只使用本次参数，不恢复历史临时值。并发轮次互相隔离，普通子智能体
+继承本轮值；参数不放入运行配置、模型输入或 checkpoint。
+
+即使复用十分钟保留中的同一个 Docker 容器，每条命令仍使用当前轮次的合并环境，
+无需重建容器或刷新 Agent 缓存。已经启动的进程保留其启动时环境。
+注入优先级、输出脱敏和适用边界见 [ENVIRONMENT_AGENTS.md](ENVIRONMENT_AGENTS.md#注入与复用)。
 
 ## 每轮选择公共技能预设
 

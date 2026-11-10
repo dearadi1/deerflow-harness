@@ -101,14 +101,16 @@ class Sandbox(ABC):
 
     def command_environment(self, env: dict[str, str] | None = None) -> dict[str, str] | None:
         """每次启动命令时重读变量；本次请求的显式注入拥有最高优先级。"""
-        user_id = getattr(self, "_environment_user_id", None)
-        if user_id is None:
-            return env
-        from deerflow.environment import EnvironmentSnapshot, get_environment_variables
+        from deerflow.environment import EnvironmentSnapshot, get_environment_variables, get_temporary_environment
 
         if isinstance(env, EnvironmentSnapshot):
             return env
-        return EnvironmentSnapshot({**get_environment_variables(user_id), **(env or {})})
+        user_id = getattr(self, "_environment_user_id", None)
+        temporary_env = get_temporary_environment()
+        if user_id is None and not temporary_env:
+            return env
+        managed_env = get_environment_variables(user_id) if user_id is not None else {}
+        return EnvironmentSnapshot({**managed_env, **temporary_env, **(env or {})})
 
     @property
     def id(self) -> str:

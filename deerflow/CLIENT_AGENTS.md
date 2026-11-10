@@ -13,19 +13,21 @@ def stream(
     replay_last_turn: bool = False,
     disabled_tools: list[str] | None = None,
     skill_preset: str | None = None,
+    temporary_env: dict[str, str] | None = None,
     **kwargs,
 ) -> Generator[ClientStreamEvent, None, None]:
     ...
 ```
 
-返回同步生成器，逐项产出 `deerflow.protocol.ClientStreamEvent` 联合类型中的具体事件模型。调用 `stream()` 只创建生成器；参数检查、线程占用、模型调用等发生在迭代时。使用普通 `for` 消费，方法本身不生成 HTTP 响应或 SSE 文本。
+返回同步生成器，逐项产出 `deerflow.protocol.ClientStreamEvent` 联合类型中的具体事件模型。调用 `stream()` 时立即校验并复制 `temporary_env`；其他运行准备、线程占用、模型调用等发生在迭代时。使用普通 `for` 消费，方法本身不生成 HTTP 响应或 SSE 文本。
 
 需要从停止监听线程中断正在等待下一帧的执行时，使用池的 `start_stream()`，返回支持跨线程 `close(timeout=...)` 的 `ManagedAgentStream`。原 `stream()` 和 session 流不增加跨线程关闭能力。新入口仍复用本文的输入参数和输出事件模型，差异及后端接入见 [AGENT_AGENTS.md](AGENT_AGENTS.md)。
 
 内部调用链：
 
 ```text
-stream
+stream：校验并复制本轮临时变量
+  → _stream_with_turn_context：每次推进及关闭时绑定作用域
   → stream_client_turn：参数检查、客户端/线程锁、重生成恢复
   → _prepare_stream_turn：运行配置、上下文、HumanMessage、Agent 准备
   → _stream_turn：同步 Agent 执行
@@ -39,10 +41,11 @@ stream
 | `message` | `str`，必填 | 作为本轮 `HumanMessage.content`；重生成时作为替换后的用户输入。入口没有额外的非空检查。 |
 | `thread_id` | `str \| None = None` | `None` 时生成 UUID 字符串；显式值必须为 1–64 个 ASCII 字母、数字、下划线或连字符，否则抛出 `ValueError`。空字符串不会触发自动生成。 |
 | `replay_last_turn` | `bool = False` | `False` 发起普通一轮；`True` 替换最近一轮输入并重新执行。非布尔值抛出 `TypeError`。 |
-
 | `disabled_tools` | `list[str] \| None = None` | 本轮主智能体禁止绑定的工具名称，按工具实际 `name` 精确匹配（区分大小写）。`None` / `[]` 不额外禁用；重复名称自动去重，未知名称忽略。非列表或含非字符串元素抛出 `TypeError`，空白名称抛出 `ValueError`。 |
+| `skill_preset` | `str \| None = None` | 本轮公共技能预设 ID；省略时读取当前默认预设。 |
+| `temporary_env` | `dict[str, str] \| None = None` | 本轮沙盒临时变量；覆盖同名公共／私有值。省略、`None` 或 `{}` 不沿用上一轮临时值。 |
 
-`thread_id`、`replay_last_turn` 和 `disabled_tools` 必须以关键字传入。自动生成的 `thread_id` 可从输出事件的同名字段取得。
+除 `message` 外的显式参数必须以关键字传入。自动生成的 `thread_id` 可从输出事件的同名字段取得。
 
 复用 `thread_id` 是否能够恢复对话，取决于是否存在可用的 checkpointer。代码先使用构造客户端时传入的 `checkpointer`，为 `None` 时再调用全局 `get_checkpointer()`；两者均不可用时没有持久化的多轮状态。
 
@@ -68,6 +71,14 @@ for event in client.stream(
 `stream(..., skill_preset="preset_1")` 显式选择公共技能预设；不传或传 `None` 时使用独立 `skill_presets.json` 中的当前默认预设。每轮重新选择，不继承上一轮显式值，也不修改默认值。未知预设在迭代准备时抛出 `ValueError`。
 
 本轮公共开关固定为快照，普通子 agent 继承；下一轮自动按内容签名更新缓存。私有技能开关、Agent 白名单和授权规则保持原有约束。`chat()`、session 和 `pool.start_stream()` 支持同名参数。文件格式与管理接口见 [SKILL_AGENTS.md](SKILL_AGENTS.md#公共技能预设)，沙箱隔离要求见 [AGENT_AGENTS.md](AGENT_AGENTS.md#每轮选择公共技能预设)。
+
+### 2.3 按轮注入临时变量
+
+`stream(..., temporary_env={"SERVICE_TOKEN": "this-turn-token"})` 通过独立的本轮作用域
+传给沙盒命令及其子进程，普通子智能体继承。`chat()`、session 和 `pool.start_stream()`
+使用相同语义；同步生成器挂起时不会把本轮变量暴露给消费方上下文。
+参数不写入 `.bashrc`、`runtime.context`、运行配置或 checkpoint，重生成必须重新传入。
+变量校验、调用示例及容器复用约定见 [AGENT_AGENTS.md](AGENT_AGENTS.md#每轮传入临时环境变量)。
 
 ## 3. kwargs 中实际读取的参数
 

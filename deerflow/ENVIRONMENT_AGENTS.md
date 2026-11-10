@@ -59,7 +59,7 @@ environment.public.delete_variable("SERVICE_URL")
 不需要把两份文件复制进容器或执行 `source ~/.bashrc`；变量不会写入宿主进程的
 `os.environ`、工具参数或 checkpoint。两个用户的私有值不会混用。
 
-优先级为：本次调用的显式环境／技能凭据 > 管理器变量 > 提供方已有默认环境。
+优先级为：工具本次调用的显式环境／技能凭据 > 聊天入口 `temporary_env` > 管理器变量 > 提供方已有默认环境。
 DeerFlow 的可信身份变量仍由框架设置。删除管理器中的变量后停止注入该值；
 如果提供方或操作系统本来就有同名默认变量，它会恢复为默认值。
 
@@ -67,17 +67,26 @@ DeerFlow 的可信身份变量仍由框架设置。删除管理器中的变量�
 一次管理修改成功后，后续开始的命令读取最新值。已开始执行的命令和其后台进程
 继续使用启动时的环境，若需要更新这些进程，应重新启动相应进程。
 
+聊天入口可通过 `temporary_env={"NAME": "value"}` 传入单轮临时变量，允许覆盖持久变量。
+每轮入口立即校验并复制，以任务局部作用域传递，普通子智能体继承；不会写入
+`.bashrc`、宿主环境、共享沙盒对象、运行配置或 checkpoint。下一轮省略、传 `None`
+或 `{}` 就不再注入临时值；重生成和失败重试也须重新传入。不同并发轮次不会串值。
+完整接口见 [AGENT_AGENTS.md](AGENT_AGENTS.md#每轮传入临时环境变量)。
+
 Local、AIO、E2B、BoxLite、Tenki 和 OpenSandbox 的命令入口均接入同一刷新逻辑。
 主代理、子代理以及同步／异步 `bash` 工具共享这一行为。第三方提供方通过
 `bash` 工具也会收到合并后的 `env`；若直接调用自定义 `Sandbox.execute_command`，
 实现应先调用 `self.command_environment(env)`。
 
-AIO 有托管变量时沿用现有临时 `bash.exec(env=...)` 会话，避免删除后的值残留在
+AIO 有管理器变量或单轮临时变量时沿用现有临时 `bash.exec(env=...)` 会话，避免删除后的值残留在
 持久 shell 中。此模式下跨命令的 `cd`、`export`、激活虚拟环境等 shell 状态不继承，
 相关步骤应放在同一条命令里。没有变量且没有请求凭据时仍使用原有持久会话。
 镜像需要支持项目已有的 `bash.exec` 环境注入接口，不支持时沿用提供方的明确错误。
 
-`bash` 输出沿用凭据名称识别规则进行脱敏；普通配置值可正常读取。
+管理器变量的 `bash` 输出沿用凭据名称识别规则进行脱敏；普通配置值可正常读取。
+`temporary_env` 与请求级凭据一样参与输出脱敏：长度至少 8 的非空值按字面匹配替换
+为 `[redacted]`，短值沿用现有规则不替换，避免破坏退出码等输出。容器内程序读取
+到的仍是原值；此规则不阻止脚本主动将值写入文件或编码输出。
 文件工具本身没有进程环境；通过 `bash` 运行的脚本及其子进程可直接读取变量。
 宿主 MCP 服务、宿主 ACP 进程或其他独立外部服务不属于沙盒变量注入范围。
 
@@ -89,7 +98,22 @@ AIO 有托管变量时沿用现有临时 `bash.exec(env=...)` 会话，避免删
 .venv/bin/python -m unittest discover -s tests -p 'test_management_client_config.py' -v
 .venv/bin/python -m unittest discover -s tests -p 'test_sandbox_async_arguments.py' -v
 .venv/bin/python -m unittest discover -s tests -p 'test_package_imports.py' -v
+.venv/bin/python -m unittest discover -s tests -p 'test_client_temporary_environment.py' -v
 ```
 
 本地 shell 测试验证真实进程继承；远程测试使用实际适配器与离线传输替身验证
 更新、删除、作用域及结构化 env 参数，不依赖 Docker 或云服务。
+
+真实 Docker 验收单独显式启用，使用 `config.yaml` 中 AIO 的镜像；可通过
+`DEER_FLOW_TEST_CONFIG_PATH` 指定另一配置文件。需 Docker 可连接且镜像已在本机。
+
+```bash
+DEER_FLOW_RUN_DOCKER_ENV_TESTS=1 .venv/bin/python -m unittest discover -s tests -p 'test_temporary_environment_docker_live.py' -v
+```
+
+测试使用真实聊天入口、LangGraph、`bash` 工具、AIO 和 Docker，只用确定性测试图
+替代模型决策，不调用外部模型。沙盒内 Python 及子进程读取变量后返回摘要，断言
+完整容器 ID 在跨轮调用中相同，并验证覆盖、变更、移除、空值、引号及多行字面值、
+并发用户和并行工具、取消、失败、重生成及管理器热更新。
+测试使用独立数据目录和唯一容器前缀，结束后校验容器已清理。
+macOS 下将临时数据放在项目目录，以适配 Colima 的 `/Users` 共享挂载。
