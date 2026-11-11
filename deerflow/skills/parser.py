@@ -1,5 +1,6 @@
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -9,6 +10,22 @@ from .frontmatter import _FRONTMATTER_RE
 from .types import SKILL_MD_FILE, SecretRequirement, Skill, SkillCategory
 
 logger = logging.getLogger(__name__)
+
+_FRONTMATTER_CACHE_MAX_CHARS = 16 * 1024
+
+
+@lru_cache(maxsize=512)
+def _cached_frontmatter(source: str) -> object:
+    """只复用相同文本的 YAML 解析结果；文件读取、权限和启用状态仍逐次检查。"""
+    return yaml.safe_load(source)
+
+
+def _load_frontmatter(source: str) -> object:
+    # 限制缓存保留的文本大小；大型元数据仍按原规则解析，不长期占用进程内存。
+    if len(source) > _FRONTMATTER_CACHE_MAX_CHARS:
+        return yaml.safe_load(source)
+    return _cached_frontmatter(source)
+
 
 # Valid POSIX environment-variable name.
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -226,7 +243,7 @@ def parse_skill_file(skill_file: Path, category: SkillCategory, relative_path: P
             return None
         front_matter_text = front_matter_match.group(1)
         try:
-            metadata = yaml.safe_load(front_matter_text)
+            metadata = _load_frontmatter(front_matter_text)
         except yaml.YAMLError as exc:
             if diagnostics is not None:
                 diagnostics.append(yaml_load_diagnostic((relative_path or Path(skill_file.parent.name)).as_posix(), exc, front_matter_text, content.count("\n", 0, front_matter_match.start(1))))

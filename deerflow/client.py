@@ -81,6 +81,7 @@ from deerflow.subagents.capacity import configure_subagent_execution_capacity
 from deerflow.tools.builtins.tool_search import assemble_deferred_tools, build_mcp_routing_middleware, get_mcp_routing_hints_prompt_section
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, bind_trace_id, ensure_trace_id, generate_trace_id, get_current_trace_id, reset_trace_id
 from deerflow.tracing import build_tracing_callbacks, inject_langfuse_metadata
+from deerflow.tracing.first_model_timing import with_first_model_timing
 from deerflow.uploads.manager import (
     UnsafeUploadPathError,
     claim_unique_filename,
@@ -1014,7 +1015,7 @@ class DeerFlowClient:
             disabled_tools=disabled_tools, **kwargs,
         )
         agent_items = turn.agent.stream(
-            turn.state, config=turn.config, context=turn.context,
+            turn.state, config=with_first_model_timing(turn.config), context=turn.context,
             stream_mode=["messages", "values", "custom"],
         )
         items = _stream_with_sandbox_lease_cleanup(agent_items, turn.context)

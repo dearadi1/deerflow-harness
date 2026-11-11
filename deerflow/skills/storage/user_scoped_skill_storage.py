@@ -49,6 +49,11 @@ from deerflow.skills.types import SkillCategory
 logger = logging.getLogger(__name__)
 
 
+def _enabled_from_states(states: dict, skill_name: str) -> bool:
+    entry = states.get(skill_name)
+    return True if entry is None else entry.get("enabled", True)
+
+
 class UserScopedSkillStorage(LocalSkillStorage):
     """Skill storage with per-user isolation for custom skills.
 
@@ -148,11 +153,7 @@ class UserScopedSkillStorage(LocalSkillStorage):
 
         Default is ``True`` (newly created skills are enabled by default).
         """
-        states = self._read_skill_states()
-        entry = states.get(skill_name)
-        if entry is None:
-            return True
-        return entry.get("enabled", True)
+        return _enabled_from_states(self._read_skill_states(), skill_name)
 
     def set_skill_enabled_state(self, skill_name: str, enabled: bool) -> None:
         """Set the enabled state for a custom/legacy skill and persist."""
@@ -198,8 +199,11 @@ class UserScopedSkillStorage(LocalSkillStorage):
         from deerflow.config.extensions_config import ExtensionsConfig
 
         extensions_config = ExtensionsConfig.from_file()
+        # 一次发现使用同一份私有开关快照，避免每个技能重复读取并解析同一文件。
+        has_private_skills = any(skill.category != SkillCategory.PUBLIC for skill in skills)
+        skill_states = self._read_skill_states() if has_private_skills else {}
         skills = [
-            dataclasses.replace(s, enabled=self.get_skill_enabled_state(s.name) and extensions_config.is_skill_enabled(s.name, s.category.value if hasattr(s.category, "value") else s.category))
+            dataclasses.replace(s, enabled=_enabled_from_states(skill_states, s.name) and extensions_config.is_skill_enabled(s.name, s.category.value if hasattr(s.category, "value") else s.category))
             if dataclasses.is_dataclass(s) and not isinstance(s, type) and (s.category.value if hasattr(s.category, "value") else s.category) != SkillCategory.PUBLIC.value
             else s
             for s in skills
