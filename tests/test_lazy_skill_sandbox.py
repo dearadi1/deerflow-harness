@@ -103,7 +103,10 @@ class LazySkillSandboxTests(PresetFixture):
         return client
 
     def test_chat_entry_emits_first_block_without_projection_or_sandbox_io(self):
-        with patch.object(SandboxMiddleware, "_prepare_agent_skill_projection", side_effect=AssertionError("首块前准备技能视图")):
+        with (
+            patch.object(SandboxMiddleware, "_prepare_agent_skill_projection", side_effect=AssertionError("首块前准备技能视图")),
+            patch("deerflow.environment.EnvironmentStore.effective", side_effect=AssertionError("纯聊天读取沙盒环境变量")),
+        ):
             for managed in (False, True):
                 with self.subTest(managed=managed):
                     client = self.client()
@@ -133,6 +136,16 @@ class LazySkillSandboxTests(PresetFixture):
         following = self.prepare(self.runtime(sandbox_id=sandbox.id))
         tools.ensure_sandbox_initialized(following)
         self.assertEqual(self.provider.syncs[-1][1], {"beta"})
+
+    def test_reused_sandbox_keeps_fresh_projection_without_copying_again(self):
+        first_runtime = self.prepare(self.runtime())
+        first_sandbox = tools.ensure_sandbox_initialized(first_runtime)
+        release_sandbox_execution_lease(first_runtime.context)
+        second_runtime = self.prepare(self.runtime(sandbox_id=first_sandbox.id))
+        with patch("deerflow.skills.projection._rebuild_thread_locked", side_effect=AssertionError("复用未变化的视图不应再次复制")):
+            second_sandbox = tools.ensure_sandbox_initialized(second_runtime)
+        self.assertEqual(first_sandbox.id, second_sandbox.id)
+        self.assertEqual(self.provider.syncs[-1][1], {"alpha"})
 
     def test_parallel_tools_initialize_and_sync_once(self):
         runtime = self.prepare(self.runtime())

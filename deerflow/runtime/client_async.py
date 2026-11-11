@@ -18,6 +18,7 @@ from deerflow.protocol import ClientStreamEvent
 from deerflow.runtime.client_replay import ClientTurnReplay, _reserve_turn
 from deerflow.runtime.turn_cancellation import get_turn_cancellation_event, turn_cancellation_scope
 from deerflow.skills.presets import preset_store_for_config, public_skill_preset_scope
+from deerflow.tracing.first_model_timing import with_first_model_timing
 
 
 logger = logging.getLogger(__name__)
@@ -205,7 +206,7 @@ async def stream_managed_turn(
             if graph.checkpointer is not None:
                 graph.checkpointer = _AsyncCheckpointAdapter(graph.checkpointer)
             stream = graph.astream(
-                turn.state, config=turn.config, context=turn.context,
+                turn.state, config=with_first_model_timing(turn.config), context=turn.context,
                 stream_mode=["messages", "values", "custom"],
             )
             async for item in stream:

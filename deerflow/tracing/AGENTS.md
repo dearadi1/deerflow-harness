@@ -1,5 +1,7 @@
 ### Tracing System (`packages/harness/deerflow/tracing/`)
 
+嵌入式客户端的 `first_model_timing.py` 在 INFO 日志启用时为每轮图调用添加独立回调，覆盖同步 `stream` 和托管异步流。`graph_to_model_ms` 记录开始运行图到主 `model` 节点首次调用模型的耗时；`model_to_response_ms` 记录该调用到首个有效正文、思考或工具分片的耗时。空分片和标题模型不计入；非流式返回标注 `kind=complete`，不能当作首 token。计时包括模型适配器处理，不等同于 HTTP 首字节；图开始前的预设／Agent 准备及图外的 Voris 转发需要另行对齐。回调只记录耗时和类型，不修改调用方的回调列表／管理器，不采集输入、输出或环境变量；验证见 `tests/test_first_model_timing.py`。
+
 LangSmith and Langfuse are both supported. The wiring lives in two layers:
 
 - `factory.py::build_tracing_callbacks()` — returns the LangChain `CallbackHandler` list for the providers currently enabled via env vars (`LANGSMITH_TRACING`, `LANGFUSE_TRACING`, etc.). The handlers are attached at the **graph invocation root** for in-graph runs (`make_lead_agent` and `DeerFlowClient.stream` both append them to `config["callbacks"]` before invoking the graph) so a single run produces one trace with all node / LLM / tool calls as child spans. Standalone callers — anything that invokes a model outside such a graph (e.g. `MemoryUpdater`) — keep `create_chat_model`'s default `attach_tracing=True`, which falls back to model-level callback attachment.
